@@ -1,0 +1,14 @@
+[package]
+name = "xmip-template"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/IlleNilsson/xmip-template"
+description = "Starter template for a Rust-based Xmip component repository."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
