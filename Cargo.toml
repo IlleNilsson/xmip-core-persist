@@ -2,16 +2,19 @@
 [workspace]
 
 [package]
-name = "xmip-template"
+name = "xmip-core-persist"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/IlleNilsson/xmip-template"
-description = "Starter template for a Rust-based Xmip component repository."
-publish = false
+repository = "https://github.com/IlleNilsson/xmip-core-persist"
+description = "Durable storage for Xmip runtime state."
 
 [lib]
 path = "src/lib.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v7"] }
