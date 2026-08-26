@@ -1,3 +1,6 @@
+# Its own workspace root, so this repository builds on its own.
+[workspace]
+
 [package]
 name = "xmip-template"
 version = "0.1.0"
