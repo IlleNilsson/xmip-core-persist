@@ -80,3 +80,120 @@ pub trait RuntimeStore {
     fn release_recovery_lease(&self, lease: &RecoveryLease) -> Result<(), String>;
     fn remember_deduplication(&self, record: DeduplicationRecord) -> Result<(), String>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    /// A store in memory: enough of [`RuntimeStore`] to prove the shape a
+    /// real engine implements, including that a lease is held once.
+    #[derive(Default)]
+    struct Memory {
+        journeys: Mutex<BTreeMap<(String, Uuid), DurableJourneyState>>,
+        leases: Mutex<BTreeMap<(String, Uuid), RecoveryLease>>,
+    }
+
+    impl RuntimeStore for Memory {
+        fn persist_journey_state(&self, state: DurableJourneyState) -> Result<(), String> {
+            let key = (state.cluster_name.clone(), state.journey_id);
+            self.journeys
+                .lock()
+                .map_err(|_| "poisoned")?
+                .insert(key, state);
+            Ok(())
+        }
+
+        fn load_journey_state(
+            &self,
+            cluster_name: &str,
+            journey_id: Uuid,
+        ) -> Result<Option<DurableJourneyState>, String> {
+            let key = (cluster_name.to_string(), journey_id);
+            Ok(self
+                .journeys
+                .lock()
+                .map_err(|_| "poisoned")?
+                .get(&key)
+                .cloned())
+        }
+
+        fn persist_checkpoint(&self, _: DurableExecutionCheckpoint) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn load_checkpoint(
+            &self,
+            _: &DurableRecordIdentity,
+        ) -> Result<Option<DurableExecutionCheckpoint>, String> {
+            Ok(None)
+        }
+
+        fn acquire_recovery_lease(&self, lease: RecoveryLease) -> Result<bool, String> {
+            let key = (lease.cluster_name.clone(), lease.journey_id);
+            let mut leases = self.leases.lock().map_err(|_| "poisoned")?;
+            if leases.contains_key(&key) {
+                return Ok(false);
+            }
+            leases.insert(key, lease);
+            Ok(true)
+        }
+
+        fn release_recovery_lease(&self, lease: &RecoveryLease) -> Result<(), String> {
+            let key = (lease.cluster_name.clone(), lease.journey_id);
+            self.leases.lock().map_err(|_| "poisoned")?.remove(&key);
+            Ok(())
+        }
+
+        fn remember_deduplication(&self, _: DeduplicationRecord) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn lease() -> RecoveryLease {
+        RecoveryLease {
+            cluster_name: "c".to_string(),
+            journey_id: Uuid::from_u128(7),
+            owner_node_name: "n1".to_string(),
+            lease_token: "t".to_string(),
+            expires_utc: "2026-09-10T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_journey_state_comes_back_as_it_was_stored() {
+        let store = Memory::default();
+        let state = DurableJourneyState {
+            cluster_name: "c".to_string(),
+            journey_id: Uuid::from_u128(7),
+            state: JourneyRecoveryState::Waiting,
+            current_xmip_process: Some("orders".to_string()),
+            last_known_step: None,
+            active_message_ids: vec![Uuid::from_u128(8)],
+            audit_position: 3,
+        };
+        store.persist_journey_state(state.clone()).expect("stored");
+        assert_eq!(
+            store
+                .load_journey_state("c", Uuid::from_u128(7))
+                .expect("loaded"),
+            Some(state)
+        );
+        assert_eq!(
+            store
+                .load_journey_state("c", Uuid::from_u128(9))
+                .expect("loaded"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_recovery_lease_is_held_by_one_owner_until_released() {
+        let store = Memory::default();
+        assert!(store.acquire_recovery_lease(lease()).expect("first"));
+        assert!(!store.acquire_recovery_lease(lease()).expect("second"));
+        store.release_recovery_lease(&lease()).expect("released");
+        assert!(store.acquire_recovery_lease(lease()).expect("again"));
+    }
+}
