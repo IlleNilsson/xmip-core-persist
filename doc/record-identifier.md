@@ -19,8 +19,8 @@ sequence. Against an LSM store that is the difference between appending and
 scattering: random v4 keys distribute writes across the entire keyspace, forcing
 compaction to rewrite everything, while v7 keys append. The ToDo is a work
 queue written constantly and read by key, which is exactly the access pattern v7
-was designed for — the engine choice in the table above and this choice are the
-same decision seen twice.
+was designed for — the engine choice in `doc/architecture/deployment-model.md`
+section 7 and this choice are the same decision seen twice.
 
 It also buys two things for free. A range scan over an identifier range **is** a
 range scan over a time window, so "everything this node accepted between 09:00
