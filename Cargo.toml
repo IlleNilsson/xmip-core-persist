@@ -17,4 +17,8 @@ unsafe_code = "forbid"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+# The identifiers a record is keyed by and the Journey state it records are
+# the estate's, not this crate's: a raw UUID and a copy of the state enum were
+# retired on 2026-09-14 (ADR-0044).
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+journey = { package = "xmip-core-journey", git = "https://github.com/IlleNilsson/xmip-core-journey", branch = "main" }
