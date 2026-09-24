@@ -12,7 +12,7 @@
 //!
 //! The times are still text, RFC 3339 in UTC, as they were.
 
-use journey::JourneyState;
+use journey::Journey;
 use serde::{Deserialize, Serialize};
 use xcore::{ClusterId, JourneyId, MessageId, NodeId};
 
@@ -41,19 +41,24 @@ pub struct RecoveryWaitCondition {
     pub timeout_utc: Option<String>,
 }
 
-/// A Journey's state as last written, with where it was and which Message
-/// generations it held — enough to resume it from its last checkpoint.
+/// A Journey as last written, and where recovery picks it up.
 ///
-/// `state` is every [`JourneyState`], `Dismissed` included: a Journey an
-/// operator stopped is a terminal record like any other, and the store has
-/// no reason to refuse to write it (ADR-0013).
+/// The [`Journey`] is stored whole — its state, its chain back to the Journey
+/// that caused it, its depth and its entries. Until 2026-09-23 this held a
+/// cut-down copy of the Journey's fields, which dropped `previous_journey_id`,
+/// `cause`, `depth` and the entries: a Journey recovered from it restarted its
+/// depth at zero, and the chain limit (ADR-0026) forgot every link made before
+/// the restart (open-problems.md, problem 25, row a). What is here beside it
+/// is persistence's own.
+///
+/// Every state is written, `Dismissed` included: a Journey an operator
+/// stopped is a terminal record like any other (ADR-0013).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DurableJourneyState {
     pub cluster_id: ClusterId,
-    pub journey_id: JourneyId,
-    pub state: JourneyState,
-    pub current_xmip_process: Option<String>,
+    pub journey: Journey,
     pub last_known_step: Option<String>,
+    /// The generations of [`Journey::messages`] still in flight.
     pub active_message_ids: Vec<MessageId>,
     pub audit_position: u64,
 }
@@ -94,8 +99,10 @@ pub trait RuntimeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use journey::{ChainCause, ChainLimit, JourneyEntry, JourneyState};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
+    use xcore::ExecutionId;
 
     /// A store in memory: enough of [`RuntimeStore`] to prove the shape a
     /// real engine implements, including that a lease is held once.
@@ -107,7 +114,7 @@ mod tests {
 
     impl RuntimeStore for Memory {
         fn persist_journey_state(&self, state: DurableJourneyState) -> Result<(), String> {
-            let key = (state.cluster_id, state.journey_id);
+            let key = (state.cluster_id, state.journey.journey_id);
             self.journeys
                 .lock()
                 .map_err(|_| "poisoned")?
@@ -175,11 +182,12 @@ mod tests {
     #[test]
     fn a_journey_state_comes_back_as_it_was_stored() {
         let store = Memory::default();
+        let mut journey = Journey::new(JourneyId::new(7));
+        journey.state = JourneyState::Waiting;
+        journey.current_xmip_process = Some("orders".to_string());
         let state = DurableJourneyState {
             cluster_id: CLUSTER,
-            journey_id: JourneyId::new(7),
-            state: JourneyState::Waiting,
-            current_xmip_process: Some("orders".to_string()),
+            journey,
             last_known_step: None,
             active_message_ids: vec![MessageId::new(8)],
             audit_position: 3,
@@ -213,11 +221,11 @@ mod tests {
         // The store writes every state the Journey defines; the copy this
         // crate carried stopped at Failed and could not record a decision.
         let store = Memory::default();
+        let mut journey = Journey::new(JourneyId::new(11));
+        journey.state = JourneyState::Dismissed;
         let state = DurableJourneyState {
             cluster_id: CLUSTER,
-            journey_id: JourneyId::new(11),
-            state: JourneyState::Dismissed,
-            current_xmip_process: None,
+            journey,
             last_known_step: None,
             active_message_ids: Vec::new(),
             audit_position: 0,
@@ -227,7 +235,65 @@ mod tests {
             .load_journey_state(CLUSTER, JourneyId::new(11))
             .expect("loaded")
             .expect("present");
-        assert!(loaded.state.is_terminal());
+        assert!(loaded.journey.state.is_terminal());
         assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn a_recovered_journey_keeps_its_chain_and_the_limit_still_holds() {
+        // Row a of problem 25: the copy this crate kept had no depth, so a
+        // Journey two links deep came back at zero and the limit restarted.
+        // Written and read as JSON, the shape a real store writes, not only
+        // cloned through memory.
+        let limit = ChainLimit::new(2);
+        let first = Journey::new(JourneyId::new(20));
+        let second = Journey::following(
+            JourneyId::new(21),
+            &first,
+            ChainCause::subscription("orders"),
+            limit,
+        )
+        .expect("one link");
+        let third = Journey::following(
+            JourneyId::new(22),
+            &second,
+            ChainCause::subscription("orders"),
+            limit,
+        )
+        .expect("two links")
+        .append(
+            JourneyEntry {
+                execution_id: ExecutionId::new(1),
+                message_id: MessageId::new(2),
+                action: "deliver".to_string(),
+                outcome: "sent".to_string(),
+                timestamp_unix_nanos: 1_789_000_000_000_000_000,
+            },
+            JourneyState::Waiting,
+        );
+
+        let state = DurableJourneyState {
+            cluster_id: CLUSTER,
+            journey: third,
+            last_known_step: Some("deliver".to_string()),
+            active_message_ids: vec![MessageId::new(2)],
+            audit_position: 1,
+        };
+        let written = serde_json::to_string(&state).expect("written");
+        let read: DurableJourneyState = serde_json::from_str(&written).expect("read");
+
+        assert_eq!(read, state);
+        assert_eq!(read.journey.depth, 2);
+        assert_eq!(read.journey.previous_journey_id, Some(JourneyId::new(21)));
+        let refused = Journey::following(
+            JourneyId::new(23),
+            &read.journey,
+            ChainCause::subscription("orders"),
+            limit,
+        );
+        assert!(
+            refused.is_err(),
+            "the limit counts the links made before the restart"
+        );
     }
 }
