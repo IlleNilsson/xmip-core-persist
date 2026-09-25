@@ -5,6 +5,14 @@ The paragraph that named the generation sites of 2026-08-26 is gone with the
 crates it named (`doc/planning/allocation.toml`); every store keys by `Uuid::now_v7()`.
 
 
+**Since 2026-09-25 the engine does not see this key.** ADR-0063 encrypts
+everything Xmip stores, and `EncryptedStore` hands an engine HMAC-SHA-256 of a
+record's kind and key, not the key itself, so a record's name does not leak.
+A keyed hash does not keep order: what follows about appending and range scans
+holds for the identifier, not for what RocksDB is keyed by, and a scan by time
+needs an index of its own when it is wanted. That is the cost the owner's
+requirement carries, and it is recorded rather than hidden.
+
 **Every record in either database is keyed by a UUIDv7**, per RFC 9562.
 
 RFC 9562 replaced RFC 4122 in May 2024 and defines versions 6, 7 and 8. The

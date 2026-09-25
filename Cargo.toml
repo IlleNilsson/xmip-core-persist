@@ -7,13 +7,22 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-persist"
-description = "Durable storage for Xmip runtime state."
+description = "Durable storage for Xmip runtime state, every record encrypted and authenticated before an engine sees it (ADR-0063)."
 
 [lib]
-path = "src/lib.rs"
+# A host crate: the engines mount beside this source (ADR-0049).
+path = ".src/lib.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[lints.clippy]
+too_many_lines = "warn"
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+unwrap_used = "warn"
+expect_used = "allow"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,7 +31,22 @@ serde = { version = "1", features = ["derive"] }
 # retired on 2026-09-14 (ADR-0044).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 journey = { package = "xmip-core-journey", git = "https://github.com/IlleNilsson/xmip-core-journey", branch = "main" }
+# The key home: the data key a store's records are sealed under, wrapped by a
+# key-encryption key of the platform's key store, and the sealing itself
+# (ADR-0063). Persist says what is sealed and where; secret seals it.
+secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main" }
+# A runtime record as bytes, and its key: JSON, the shape the records were
+# proved in before any engine existed.
+serde_json = "1"
+
+[features]
+# The engine in memory and the checks every engine runs against itself, from
+# the crate's `fixture` module. An engine enables it from its dev-dependencies
+# only, so neither is ever in a production build.
+test-support = ["secret/test-support"]
 
 [dev-dependencies]
-# A durable record is proved by writing and reading it, not by cloning it.
-serde_json = "1"
+# The tests seal under a key-encryption key held in memory, never the
+# machine's own key store; the feature is enabled here so it is never part
+# of a production build.
+secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
