@@ -1,0 +1,6 @@
+[submodule "xmip-core-persist-rocksdb"]
+	path = rocksdb
+	url = https://github.com/IlleNilsson/xmip-core-persist-rocksdb.git
+[submodule "xmip-core-persist-sqlite"]
+	path = sqlite
+	url = https://github.com/IlleNilsson/xmip-core-persist-sqlite.git
