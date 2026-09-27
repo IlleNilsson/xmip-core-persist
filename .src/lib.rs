@@ -64,7 +64,9 @@ pub struct DurableExecutionCheckpoint {
 pub struct RecoveryWaitCondition {
     pub condition_name: String,
     pub correlation_key: String,
-    pub timeout_utc: Option<String>,
+    /// When the wait gives up, in nanoseconds since the Unix epoch — the
+    /// unit of `xcore::Clock`.
+    pub timeout_unix_nanos: Option<i128>,
 }
 
 /// A Journey as last written, and where recovery picks it up.
@@ -95,7 +97,9 @@ pub struct RecoveryLease {
     pub journey_id: JourneyId,
     pub owner_node_id: NodeId,
     pub lease_token: String,
-    pub expires_utc: String,
+    /// When the lease lapses, in nanoseconds since the Unix epoch — the
+    /// unit of `xcore::Clock`.
+    pub expires_unix_nanos: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

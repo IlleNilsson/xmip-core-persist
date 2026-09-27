@@ -101,7 +101,7 @@ fn decode<T: DeserializeOwned>(bytes: Option<Vec<u8>>) -> Result<Option<T>, Pers
 
 impl<E: Engine> RuntimeStore for EncryptedStore<E> {
     fn persist_journey_state(&self, state: DurableJourneyState) -> Result<(), PersistError> {
-        let key = encode(&(state.cluster_id, state.journey.journey_id))?;
+        let key = encode(&(state.cluster_id, state.journey.journey_id()))?;
         self.put(JOURNEY, &key, &encode(&state)?)
     }
 
@@ -170,7 +170,7 @@ mod tests {
             journey_id: JourneyId::new(7),
             owner_node_id: NodeId::new(2),
             lease_token: token.to_string(),
-            expires_utc: "2026-09-10T00:00:00Z".to_string(),
+            expires_unix_nanos: 1_789_000_000_000_000_000,
         }
     }
 
@@ -259,8 +259,8 @@ mod tests {
             .expect("loaded")
             .expect("present");
 
-        assert_eq!(read.journey.depth, 2);
-        assert_eq!(read.journey.previous_journey_id, Some(JourneyId::new(21)));
+        assert_eq!(read.journey.depth(), 2);
+        assert_eq!(read.journey.previous_journey_id(), Some(JourneyId::new(21)));
         let refused = Journey::following(JourneyId::new(23), &read.journey, cause(), limit);
         assert!(
             refused.is_err(),
