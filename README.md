@@ -8,7 +8,9 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
 
 - **The records** — `DurableJourneyState` (the whole Journey, so the chain
   limit survives a restart), `DurableExecutionCheckpoint`, `RecoveryLease`,
-  `DeduplicationRecord`, keyed by the estate's identifiers.
+  `DeduplicationRecord`, keyed by the estate's identifiers. A moment in a
+  record — when a wait gives up, when a lease lapses — is nanoseconds since
+  the Unix epoch, the unit of `xcore::Clock`, never text.
 - **`RuntimeStore`** — what the runtime writes and recovers them through.
   Every error is a `PersistError`.
 - **`Engine`** — bytes under bytes: `read`, `write` (durable on return),
