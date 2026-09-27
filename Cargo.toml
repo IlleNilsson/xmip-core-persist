@@ -50,3 +50,6 @@ test-support = ["secret/test-support"]
 # machine's own key store; the feature is enabled here so it is never part
 # of a production build.
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
+
+[profile.dev.package."*"]
+opt-level = 3
