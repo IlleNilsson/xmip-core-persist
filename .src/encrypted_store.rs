@@ -46,7 +46,7 @@ impl<E: Engine> EncryptedStore<E> {
         let data = if let Some(wrapped) = engine.read(DATA_KEY)? {
             keys.unwrap(kek, &wrapped)?
         } else {
-            let fresh = DataKey::generate()?;
+            let fresh = DataKey::generate();
             let wrapped = keys.wrap(kek, &fresh)?;
             if engine.write_new(DATA_KEY, &wrapped)? {
                 fresh

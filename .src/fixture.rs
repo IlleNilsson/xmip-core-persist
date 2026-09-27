@@ -157,7 +157,7 @@ fn refuses_a_tampered_record<E: Engine>(open: &impl Fn() -> E, keys: &dyn KeySto
 fn refuses_another_key<E: Engine>(open: &impl Fn() -> E) {
     let other = Held::new(secret::fixture::Memory::default());
     other
-        .wrap(&kek(), &DataKey::generate().expect("key"))
+        .wrap(&kek(), &DataKey::generate())
         .expect("another key of the same name");
     let refused = EncryptedStore::open(open(), &other, &kek());
     assert!(
