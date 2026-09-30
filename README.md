@@ -11,6 +11,13 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   `DeduplicationRecord`, keyed by the estate's identifiers. A moment in a
   record — when a wait gives up, when a lease lapses — is nanoseconds since
   the Unix epoch, the unit of `xcore::Clock`, never text.
+- **What a paused Subscription leaves** — `SubscriptionHold`, a
+  Subscription's standing on a node (paused or not, by whom, since when,
+  and the range of what it holds), and `HeldMessage`, each
+  Message it held while paused, in the order held. A keyed store keeps no
+  order, so the range is the index. A held Message is released once its
+  Subscription picks it up; the Message has gone on its way (ADR-0013,
+  amendment 2026-09-30).
 - **`RuntimeStore`** — what the runtime writes and recovers them through.
   Every error is a `PersistError`.
 - **`Engine`** — bytes under bytes: `read`, `write` (durable on return),
