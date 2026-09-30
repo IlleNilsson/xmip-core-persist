@@ -45,6 +45,31 @@ pub trait Engine: Send + Sync {
     fn remove(&self, key: &[u8]) -> Result<(), PersistError>;
 }
 
+/// An engine boxed is an engine: a program that links several opens the one
+/// its configuration names, whichever it is (ADR-0018, amendment
+/// 2026-09-30).
+impl<E: Engine + ?Sized> Engine for Box<E> {
+    fn engine(&self) -> &'static str {
+        (**self).engine()
+    }
+
+    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
+        (**self).read(key)
+    }
+
+    fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
+        (**self).write(key, value)
+    }
+
+    fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
+        (**self).write_new(key, value)
+    }
+
+    fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
+        (**self).remove(key)
+    }
+}
+
 /// An engine lent is an engine: a test opens the layer again over the same
 /// records without giving the engine up.
 impl<E: Engine + ?Sized> Engine for &E {
