@@ -183,6 +183,15 @@ mod tests {
     }
 
     #[test]
+    fn the_layer_over_a_boxed_engine_passes_what_every_engine_must() {
+        let memory = Memory::default();
+        conformance(
+            || -> Box<dyn Engine + '_> { Box::new(&memory) },
+            || memory.everything(),
+        );
+    }
+
+    #[test]
     fn a_record_moved_under_another_key_is_refused() {
         let keys = Held::new(secret::fixture::Memory::default());
         let store = EncryptedStore::open(Memory::default(), &keys, &kek()).expect("open");
