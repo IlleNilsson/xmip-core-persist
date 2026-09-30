@@ -22,7 +22,10 @@
 //! ciphertext only. The keys come from the key home, `xmip-core-secret`.
 //!
 //! [`RuntimeStore`] is what the runtime writes a Journey's durable state
-//! through, and [`EncryptedStore`] over any engine is one.
+//! through, and [`EncryptedStore`] over any engine is one. Since 2026-09-30
+//! it also keeps what an operator's pause of a Subscription leaves: the
+//! Subscription's [`SubscriptionHold`] and each [`HeldMessage`] (ADR-0013,
+//! amendment 2026-09-30).
 
 // Each subject in a file of its own, and each reached at one path: the
 // crate's root.
@@ -32,11 +35,13 @@ mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixture;
 mod runtime_store;
+mod subscription_hold;
 
 pub use encrypted_store::EncryptedStore;
 pub use engine::Engine;
 pub use error::PersistError;
 pub use runtime_store::RuntimeStore;
+pub use subscription_hold::{HeldMessage, SubscriptionHold};
 
 use journey::Journey;
 use serde::{Deserialize, Serialize};

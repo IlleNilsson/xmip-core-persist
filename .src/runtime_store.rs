@@ -3,7 +3,7 @@
 
 use crate::{
     DeduplicationRecord, DurableExecutionCheckpoint, DurableJourneyState, DurableRecordIdentity,
-    EncryptedStore, Engine, PersistError, RecoveryLease,
+    EncryptedStore, Engine, HeldMessage, PersistError, RecoveryLease, SubscriptionHold,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -75,6 +75,56 @@ pub trait RuntimeStore {
     ///
     /// When the record cannot be encoded, sealed or written.
     fn remember_deduplication(&self, record: DeduplicationRecord) -> Result<(), PersistError>;
+
+    /// Write a Subscription's standing, replacing the last.
+    ///
+    /// # Errors
+    ///
+    /// When the record cannot be encoded, sealed or written.
+    fn persist_subscription_hold(&self, hold: &SubscriptionHold) -> Result<(), PersistError>;
+
+    /// A Subscription's standing on `node` as last written, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`RuntimeStore::load_journey_state`].
+    fn load_subscription_hold(
+        &self,
+        node: &str,
+        subscription: &str,
+    ) -> Result<Option<SubscriptionHold>, PersistError>;
+
+    /// Keep a Message a paused Subscription holds.
+    ///
+    /// # Errors
+    ///
+    /// When the record cannot be encoded, sealed or written.
+    fn hold_message(&self, held: &HeldMessage) -> Result<(), PersistError>;
+
+    /// The Message a Subscription holds under `sequence`, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`RuntimeStore::load_journey_state`].
+    fn load_held_message(
+        &self,
+        node: &str,
+        subscription: &str,
+        sequence: u64,
+    ) -> Result<Option<HeldMessage>, PersistError>;
+
+    /// Let go of a held Message once its Subscription has picked it up: the
+    /// Message has gone on its way, and this record of its wait is done.
+    ///
+    /// # Errors
+    ///
+    /// When the engine cannot write.
+    fn release_held_message(
+        &self,
+        node: &str,
+        subscription: &str,
+        sequence: u64,
+    ) -> Result<(), PersistError>;
 }
 
 /// The kinds of record a runtime store keeps, each its own place.
@@ -82,6 +132,8 @@ const JOURNEY: &str = "journey";
 const CHECKPOINT: &str = "checkpoint";
 const LEASE: &str = "lease";
 const DEDUPLICATION: &str = "deduplication";
+const SUBSCRIPTION: &str = "subscription";
+const HELD: &str = "held";
 
 /// A record or its key as bytes. JSON, the shape the records were proved in.
 fn encode(value: &impl Serialize) -> Result<Vec<u8>, PersistError> {
@@ -145,6 +197,42 @@ impl<E: Engine> RuntimeStore for EncryptedStore<E> {
     fn remember_deduplication(&self, record: DeduplicationRecord) -> Result<(), PersistError> {
         let key = encode(&(record.journey_id, record.message_id))?;
         self.put(DEDUPLICATION, &key, &encode(&record)?)
+    }
+
+    fn persist_subscription_hold(&self, hold: &SubscriptionHold) -> Result<(), PersistError> {
+        let key = encode(&(&hold.node, &hold.subscription))?;
+        self.put(SUBSCRIPTION, &key, &encode(hold)?)
+    }
+
+    fn load_subscription_hold(
+        &self,
+        node: &str,
+        subscription: &str,
+    ) -> Result<Option<SubscriptionHold>, PersistError> {
+        decode(self.get(SUBSCRIPTION, &encode(&(node, subscription))?)?)
+    }
+
+    fn hold_message(&self, held: &HeldMessage) -> Result<(), PersistError> {
+        let key = encode(&(&held.node, &held.subscription, held.sequence))?;
+        self.put(HELD, &key, &encode(held)?)
+    }
+
+    fn load_held_message(
+        &self,
+        node: &str,
+        subscription: &str,
+        sequence: u64,
+    ) -> Result<Option<HeldMessage>, PersistError> {
+        decode(self.get(HELD, &encode(&(node, subscription, sequence))?)?)
+    }
+
+    fn release_held_message(
+        &self,
+        node: &str,
+        subscription: &str,
+        sequence: u64,
+    ) -> Result<(), PersistError> {
+        self.remove(HELD, &encode(&(node, subscription, sequence))?)
     }
 }
 
@@ -266,6 +354,47 @@ mod tests {
             refused.is_err(),
             "the limit counts the links made before the restart"
         );
+    }
+
+    #[test]
+    fn a_subscriptions_pause_and_what_it_holds_come_back_and_a_release_lets_go() {
+        let store = store();
+        let hold = SubscriptionHold {
+            node: "xmip:///CT/node/beta".to_string(),
+            subscription: "structured".to_string(),
+            paused: true,
+            by: "ilian".to_string(),
+            since_unix_nanos: 5,
+            first_held: 0,
+            next_held: 1,
+        };
+        store.persist_subscription_hold(&hold).expect("stored");
+        let message = HeldMessage {
+            node: hold.node.clone(),
+            subscription: hold.subscription.clone(),
+            sequence: 0,
+            held_unix_nanos: 6,
+            message_id: Some(MessageId::new(3)),
+            content: b"{}".to_vec(),
+            said: vec![("contract".to_string(), "json".to_string())],
+        };
+        store.hold_message(&message).expect("held");
+
+        let back = store.load_subscription_hold(&hold.node, &hold.subscription);
+        assert_eq!(back.expect("loaded"), Some(hold.clone()));
+        assert_eq!(hold.held(), 1);
+        let kept = store.load_held_message(&hold.node, &hold.subscription, 0);
+        assert_eq!(
+            kept.expect("loaded").expect("there").said("contract"),
+            Some("json")
+        );
+        store
+            .release_held_message(&hold.node, &hold.subscription, 0)
+            .expect("released");
+        let gone = store.load_held_message(&hold.node, &hold.subscription, 0);
+        assert_eq!(gone.expect("loaded"), None);
+        let other = store.load_subscription_hold(&hold.node, "edi");
+        assert_eq!(other.expect("loaded"), None);
     }
 
     #[test]
