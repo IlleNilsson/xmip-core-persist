@@ -25,7 +25,7 @@ significant position, then random entropy.
 values sort chronologically as raw bytes, so records written in sequence land in
 sequence. Against an LSM store that is the difference between appending and
 scattering: random v4 keys distribute writes across the entire keyspace, forcing
-compaction to rewrite everything, while v7 keys append. The ToDo is a work
+compaction to rewrite everything, while v7 keys append. The Ledger is a work
 queue written constantly and read by key, which is exactly the access pattern v7
 was designed for — the engine choice in `doc/architecture/deployment-model.md`
 section 7 and this choice are the same decision seen twice.
