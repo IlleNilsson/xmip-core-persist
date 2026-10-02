@@ -35,10 +35,11 @@ mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixture;
 mod runtime_store;
+pub mod storage;
 mod subscription_hold;
 
-pub use encrypted_store::EncryptedStore;
-pub use engine::Engine;
+pub use encrypted_store::{EncryptedStore, RecordChange};
+pub use engine::{Change, Engine};
 pub use error::PersistError;
 pub use runtime_store::RuntimeStore;
 pub use subscription_hold::{HeldMessage, SubscriptionHold};

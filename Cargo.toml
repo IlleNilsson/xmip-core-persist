@@ -38,6 +38,15 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # A runtime record as bytes, and its key: JSON, the shape the records were
 # proved in before any engine existed.
 serde_json = "1"
+# Xmip Storage's records and its wire, read and written over the estate's
+# one byte cursor and writer.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The estate's one TCP connect, bounded, Nagle off, and the most a
+# connection is read for: how a node reaches a Storage node.
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+# Xmip's own TLS, mutual, between a node and a Storage node (ADR-0063,
+# amendment 2026-10-01).
+tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
 
 [features]
 # The engine in memory and the checks every engine runs against itself, from
@@ -50,6 +59,9 @@ test-support = ["secret/test-support"]
 # machine's own key store; the feature is enabled here so it is never part
 # of a production build.
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
+# A certificate authority and the certificates it issues, for the tests of
+# a node and a Storage node over mutual TLS. Test-only.
+rcgen = "0.13"
 
 [profile.dev.package."*"]
 opt-level = 3

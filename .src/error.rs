@@ -23,6 +23,10 @@ pub enum PersistError {
     },
     /// A record would not encode or decode.
     Record { reason: String },
+    /// A Storage node answered that the operation failed, in its words.
+    Failed { reason: String },
+    /// No Storage node answered: every one listed was asked in turn.
+    Unreachable { reason: String },
 }
 
 impl PersistError {
@@ -48,6 +52,8 @@ impl fmt::Display for PersistError {
             Self::Key(error) => write!(f, "the store's data key: {error}"),
             Self::Engine { engine, reason } => write!(f, "{engine}: {reason}"),
             Self::Record { reason } => write!(f, "record: {reason}"),
+            Self::Failed { reason } => write!(f, "a Storage node: {reason}"),
+            Self::Unreachable { reason } => write!(f, "Xmip Storage: {reason}"),
         }
     }
 }

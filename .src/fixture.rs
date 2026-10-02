@@ -6,7 +6,7 @@
 //! `test-support` feature, which an engine enables from its dev-dependencies
 //! alone.
 
-use crate::{EncryptedStore, Engine, PersistError};
+use crate::{Change, EncryptedStore, Engine, PersistError};
 use secret::{DataKey, Held, KekName, KeyStore, SecretError};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -61,6 +61,17 @@ impl Engine for Memory {
         self.records().remove(key);
         Ok(())
     }
+
+    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+        let mut records = self.records();
+        for (key, value) in batch {
+            match value {
+                Some(value) => records.insert(key.clone(), value.clone()),
+                None => records.remove(key),
+            };
+        }
+        Ok(())
+    }
 }
 
 /// The record every check writes: a name and a value a scan can look for.
@@ -102,7 +113,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// engine keeps, its files end to end ([`everything_in`]).
 ///
 /// Proves: a record comes back through the encryption after the engine is
-/// closed and reopened; neither the record's key, its kind nor its value is
+/// closed and reopened, and so does a batch, whole; neither the record's key, its kind nor its value is
 /// anywhere in the files; a tampered record is refused with its scope; the
 /// store does not open under another key of the same name.
 ///
@@ -134,6 +145,29 @@ pub fn conformance<E: Engine>(open: impl Fn() -> E, everything: impl Fn() -> Vec
             "'{}' is in the engine's files",
             String::from_utf8_lossy(needle)
         );
+    }
+
+    {
+        let store = EncryptedStore::open(open(), &keys, &kek()).expect("reopen");
+        store
+            .apply(&[
+                (KIND, b"batch-1".to_vec(), Some(VALUE.to_vec())),
+                (KIND, b"batch-2".to_vec(), Some(VALUE.to_vec())),
+                ("lease", KEY.to_vec(), None),
+            ])
+            .expect("a batch");
+    }
+    {
+        let store = EncryptedStore::open(open(), &keys, &kek()).expect("reopen");
+        assert_eq!(
+            store.get(KIND, b"batch-1").expect("get"),
+            Some(VALUE.to_vec())
+        );
+        assert_eq!(
+            store.get(KIND, b"batch-2").expect("get"),
+            Some(VALUE.to_vec())
+        );
+        assert_eq!(store.get("lease", KEY).expect("get"), None);
     }
 
     refuses_a_tampered_record(&open, &keys);
