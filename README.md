@@ -37,6 +37,47 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   nor value anywhere in the engine's files, a tampered record refused with
   its scope, the store refused under another key of the same name.
 
+## Xmip Storage
+
+`storage` is Xmip Storage: the doorway to all storage, served by the nodes
+declaring the Storage role and called by every other node, never a database
+directly (`runtime-model.md` section 3, `deployment-model.md` sections 3, 7
+and 9).
+
+- **`XmipStorage`** — the operations, once: write and read a Stream chunk, a
+  Message, a Journey; claim a Journey (set the holder where there is none or
+  the last claim lapsed, time-limited, on the Storage node's clock), renew
+  it, release it; hand a step on — its result, the Messages it made, the
+  Journeys that follow and the claim released, as one atomic write; write an
+  audit record to the runtime database; `keep_audit`, the audit keeper,
+  moving each to the administration database exactly once, by its
+  identifier; and the administration records — registration, membership,
+  Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
+  write returns once it is durable. A request asked again after a lost
+  answer does nothing twice.
+- **`Embedded`** — the embedded Storage node: the runtime database and the
+  administration database, each an `EncryptedStore` over the engine the
+  program gives it — RocksDB and SQLite for a node, RocksDB on disk and
+  SQLite in memory for a Storage node under test. Every runtime write goes
+  through one writer, which takes every write waiting into one batch under
+  one sync: group commit, and the one place a claim's condition is decided.
+- **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
+  mutual TLS (`xmip-core-library-tls`, `Identity`), the protocol agreed as
+  `xmip-storage/1` by ALPN: a length and a request, a length and an answer,
+  each record in its one binary form; a thread per connection, synchronous.
+- **`StorageClient`** — a node reaching the Storage nodes its `[storage]
+  nodes` lists, round robin, moving to the next when one does not answer and
+  passing over one that did not for five seconds. A node that is itself the
+  Storage node calls its `Embedded` in process instead: both are
+  `XmipStorage`, so nothing above knows which it has.
+- **`database`** and **`schema`** — a database server Xmip Storage is in
+  front of (option A): the one reading of a connection,
+  `<postgresql|sqlserver>://<login>@<host>[:<port>]/<database>`, and every
+  table both databases keep there, with the scripts IT runs for each server
+  (`scripts`), which `deploy/database/<server>/` holds and the estate root's
+  `cargo test --test database` holds to it. The backends themselves follow
+  as technologies of this crate, `xmip-core-persist-postgresql` first.
+
 ## A record that fails its tag
 
 `EncryptedStore::get` answers `PersistError::Refused { scope, reason }` — a
@@ -52,8 +93,11 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 
 | engine | store | crate |
 | --- | --- | --- |
-| `rocksdb` | the runtime store: Messages, Journeys, checkpoints | `xmip-core-persist-rocksdb` |
-| `sqlite` | the management store | `xmip-core-persist-sqlite` |
+| `rocksdb` | the runtime database: Messages, Journeys, claims, checkpoints | `xmip-core-persist-rocksdb` |
+| `sqlite` | the administration database; in memory for a Storage node under test | `xmip-core-persist-sqlite` |
+
+`Engine::apply` writes a batch whole or not at all, durable on return: a
+`WriteBatch` under one sync in RocksDB, a transaction in SQLite.
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves

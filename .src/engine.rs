@@ -43,7 +43,24 @@ pub trait Engine: Send + Sync {
     ///
     /// [`PersistError::Engine`] when the engine cannot write.
     fn remove(&self, key: &[u8]) -> Result<(), PersistError>;
+
+    /// Every change of `batch` as one write: all of them or none, durable
+    /// on return. A change is a key and its new value, `None` removing it.
+    ///
+    /// It is what makes a hand-on one atomic write — the step's result,
+    /// the next Journey and the claim released together (`runtime-model.md`
+    /// section 3, *The Ledger*) — and what lets many writes share one sync,
+    /// which is group commit (`deployment-model.md` section 7).
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot write; nothing of
+    /// the batch is written then.
+    fn apply(&self, batch: &[Change]) -> Result<(), PersistError>;
 }
+
+/// One change of a batch: a key and its new value, `None` removing it.
+pub type Change = (Vec<u8>, Option<Vec<u8>>);
 
 /// An engine boxed is an engine: a program that links several opens the one
 /// its configuration names, whichever it is (ADR-0018, amendment
@@ -68,6 +85,10 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
     fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
         (**self).remove(key)
     }
+
+    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+        (**self).apply(batch)
+    }
 }
 
 /// An engine lent is an engine: a test opens the layer again over the same
@@ -91,5 +112,9 @@ impl<E: Engine + ?Sized> Engine for &E {
 
     fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
         (**self).remove(key)
+    }
+
+    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+        (**self).apply(batch)
     }
 }

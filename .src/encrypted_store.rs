@@ -1,7 +1,7 @@
 //! The one layer that encrypts what Xmip stores of its own (ADR-0063
 //! clause 2), whatever engine holds the bytes.
 
-use crate::{Engine, PersistError};
+use crate::{Change, Engine, PersistError};
 use secret::{DataKey, KekName, KeyStore, SecretError};
 
 /// Where the store's own data key is kept, wrapped, in the engine: the one
@@ -126,6 +126,28 @@ impl<E: Engine> EncryptedStore<E> {
             .remove(&self.lookup.keyed_hash(&place(kind, key)))
     }
 
+    /// Every change of `changes` as one write through the engine's
+    /// [`Engine::apply`]: all or none, durable on return. A change is a
+    /// record's kind, its key and its new value, `None` removing it.
+    ///
+    /// # Errors
+    ///
+    /// As [`EncryptedStore::put`]; nothing is written then.
+    pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
+        let batch = changes
+            .iter()
+            .map(|(kind, key, value)| {
+                let place = place(kind, key);
+                let sealed = value
+                    .as_ref()
+                    .map(|value| self.seal(&place, value))
+                    .transpose()?;
+                Ok((self.lookup.keyed_hash(&place).to_vec(), sealed))
+            })
+            .collect::<Result<Vec<Change>, PersistError>>()?;
+        self.engine.apply(&batch)
+    }
+
     /// The engine beneath, as it is: what it holds is ciphertext.
     pub fn engine(&self) -> &E {
         &self.engine
@@ -144,6 +166,10 @@ impl<E: Engine> EncryptedStore<E> {
         Ok([&[LAYOUT], sealed.as_slice()].concat())
     }
 }
+
+/// One change of a batch at the layer: a record's kind, its key and its new
+/// value, `None` removing it.
+pub type RecordChange<'a> = (&'a str, Vec<u8>, Option<Vec<u8>>);
 
 /// A record's place: its kind, a zero byte, its key. What it is sealed for
 /// and what its lookup key is hashed from.
@@ -174,6 +200,29 @@ mod tests {
         assert_eq!(store.get("lease", b"7").expect("get"), None);
         store.remove("journey", b"7").expect("removed");
         assert_eq!(store.get("journey", b"7").expect("get"), None);
+    }
+
+    #[test]
+    fn a_batch_is_written_whole() {
+        let keys = Held::new(secret::fixture::Memory::default());
+        let store = EncryptedStore::open(Memory::default(), &keys, &kek()).expect("open");
+        store.put("claim", b"7", b"held").expect("put");
+        store
+            .apply(&[
+                ("journey", b"7".to_vec(), Some(b"done".to_vec())),
+                ("journey", b"8".to_vec(), Some(b"next".to_vec())),
+                ("claim", b"7".to_vec(), None),
+            ])
+            .expect("applied");
+        assert_eq!(
+            store.get("journey", b"7").expect("get"),
+            Some(b"done".to_vec())
+        );
+        assert_eq!(
+            store.get("journey", b"8").expect("get"),
+            Some(b"next".to_vec())
+        );
+        assert_eq!(store.get("claim", b"7").expect("get"), None);
     }
 
     #[test]
