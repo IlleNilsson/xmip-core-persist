@@ -385,9 +385,9 @@ mod tests {
         assert!(wrote_first != wrote_second, "one node took every write");
 
         if wrote_first {
-            first.stop()
+            first.stop();
         } else {
-            second.stop()
+            second.stop();
         }
         let gone = statement.read_journey(journey(b"").journey);
         assert!(
