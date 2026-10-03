@@ -229,9 +229,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::ReadDead(queue, from, most) => {
             storage.read_dead(queue, from, most).map(Answer::DeadQueue)
         }
-        Request::ReadDeadMessage(queue, message) => storage
-            .read_dead_message(queue, message)
-            .map(Answer::Dead),
+        Request::ReadDeadMessage(queue, message) => {
+            storage.read_dead_message(queue, message).map(Answer::Dead)
+        }
         Request::Replay(replay) => storage.replay(&replay).map(Answer::Replayed),
     };
     answered.unwrap_or_else(|error| match error {

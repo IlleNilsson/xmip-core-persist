@@ -272,7 +272,11 @@ mod tests {
             },
         };
         assert_eq!(Dead::from_bytes(&dead.bytes()).expect("read"), dead);
-        for entry in [DeadEntry::Kept(Box::new(dead.clone())), DeadEntry::Replayed, DeadEntry::Never] {
+        for entry in [
+            DeadEntry::Kept(Box::new(dead.clone())),
+            DeadEntry::Replayed,
+            DeadEntry::Never,
+        ] {
             assert_eq!(DeadEntry::from_bytes(&entry.bytes()).expect("read"), entry);
         }
         let queue = DeadQueue {
@@ -283,7 +287,10 @@ mod tests {
         };
         assert_eq!(DeadQueue::from_bytes(&queue.bytes()).expect("read"), queue);
         for replayed in [Replayed::Now, Replayed::Before, Replayed::Absent] {
-            assert_eq!(Replayed::from_bytes(&replayed.bytes()).expect("read"), replayed);
+            assert_eq!(
+                Replayed::from_bytes(&replayed.bytes()).expect("read"),
+                replayed
+            );
         }
         assert!(Replayed::from_bytes(&[3]).is_err());
         assert!(DeadMessage::from_bytes(&[2]).is_err(), "another form");

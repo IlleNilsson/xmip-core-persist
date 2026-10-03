@@ -8,8 +8,8 @@ use xcore::{MessageId, StreamId};
 use super::{Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed};
 use crate::PersistError;
 use crate::storage::record::{
-    AuditEntry, Form, malformed, read_byte, read_bytes, read_i128, read_text, read_u64,
-    read_u128, write_byte, write_bytes, write_i128, write_text, write_u64, write_u128,
+    AuditEntry, Form, malformed, read_byte, read_bytes, read_i128, read_text, read_u64, read_u128,
+    write_byte, write_bytes, write_i128, write_text, write_u64, write_u128,
 };
 
 impl Form for Named {

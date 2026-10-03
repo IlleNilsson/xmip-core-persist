@@ -332,7 +332,6 @@ impl Form for Answer {
     }
 }
 
-
 /// Write `record` as one frame.
 ///
 /// # Errors
