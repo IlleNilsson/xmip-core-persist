@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::XmipStorage;
-use super::wire::{self, Request};
+use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
 /// The application protocol a node and a Storage node agree in the TLS
@@ -177,11 +177,67 @@ fn serve(
     };
     let mut watched = Watched { guarded, stopping };
     while let Ok(Some(request)) = wire::receive::<Request>(&mut watched) {
-        let answer = wire::answer(storage, request);
+        let answer = answer(storage, request);
         if wire::send(&mut watched.guarded, &answer).is_err() {
             return;
         }
     }
+}
+
+/// What `storage` answers `request`: the one place an operation on the
+/// wire becomes a call of the operations.
+pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
+    let answered = match request {
+        Request::WriteChunk(chunk) => storage.write_chunk(&chunk).map(|()| Answer::Done),
+        Request::ReadChunk(stream, index) => storage.read_chunk(stream, index).map(Answer::Chunk),
+        Request::WriteMessage(message) => storage.write_message(&message).map(|()| Answer::Done),
+        Request::ReadMessage(id) => storage.read_message(id).map(Answer::Message),
+        Request::WriteJourney(journey) => storage.write_journey(&journey).map(|()| Answer::Done),
+        Request::ReadJourney(id) => storage.read_journey(id).map(Answer::Journey),
+        Request::Claim(claim, lease) => storage
+            .claim(
+                claim.journey,
+                &claim.holder,
+                claim.token,
+                Duration::from_nanos(lease),
+            )
+            .map(Answer::Claim),
+        Request::Renew(claim, lease) => storage
+            .renew(&claim, Duration::from_nanos(lease))
+            .map(Answer::Claim),
+        Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
+        Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
+        Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
+        Request::KeepAudit(most) => storage.keep_audit(most).map(Answer::Count),
+        Request::ReadKeptAudit(id) => storage.read_kept_audit(id).map(Answer::Audit),
+        Request::WriteAdministration(record) => {
+            storage.write_administration(&record).map(|()| Answer::Done)
+        }
+        Request::ReadAdministration(kind, id) => storage
+            .read_administration(kind, id)
+            .map(Answer::Administration),
+        Request::RemoveAdministration(kind, id) => storage
+            .remove_administration(kind, id)
+            .map(|()| Answer::Done),
+        Request::Publish(publication) => storage.publish(&publication).map(|()| Answer::Done),
+        Request::ReadHeld(queue, from, most) => {
+            storage.read_held(queue, from, most).map(Answer::Held)
+        }
+        Request::ReleaseHeld(queue, sequence, journey) => storage
+            .release_held(queue, sequence, &journey)
+            .map(|()| Answer::Done),
+        Request::ReadDead(queue, from, most) => {
+            storage.read_dead(queue, from, most).map(Answer::DeadQueue)
+        }
+        Request::ReadDeadMessage(queue, message) => storage
+            .read_dead_message(queue, message)
+            .map(Answer::Dead),
+        Request::Replay(replay) => storage.replay(&replay).map(Answer::Replayed),
+    };
+    answered.unwrap_or_else(|error| match error {
+        PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),
+        other => Answer::Failed(other.to_string()),
+    })
 }
 
 /// A connection read until the server stops: a read that waited [`WATCH`]

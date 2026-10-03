@@ -25,21 +25,16 @@ unwrap_used = "warn"
 expect_used = "allow"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-# The identifiers a record is keyed by and the Journey state it records are
-# the estate's, not this crate's: a raw UUID and a copy of the state enum were
-# retired on 2026-09-14 (ADR-0044).
+# The identifiers a record is keyed by are the estate's, not this crate's
+# (ADR-0044).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
-journey = { package = "xmip-core-journey", git = "https://github.com/IlleNilsson/xmip-core-journey", branch = "main" }
 # The key home: the data key a store's records are sealed under, wrapped by a
 # key-encryption key of the platform's key store, and the sealing itself
 # (ADR-0063). Persist says what is sealed and where; secret seals it.
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main" }
-# A runtime record as bytes, and its key: JSON, the shape the records were
-# proved in before any engine existed.
-serde_json = "1"
 # Xmip Storage's records and its wire, read and written over the estate's
-# one byte cursor and writer.
+# one byte cursor and writer; and SHA-1, which RFC 9562 names for a
+# name-based UUID, the identifier a held Journey's queue is found by.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # The estate's one TCP connect, bounded, Nagle off, and the most a
 # connection is read for: how a node reaches a Storage node.
@@ -55,6 +50,9 @@ tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson
 test-support = ["secret/test-support"]
 
 [dev-dependencies]
+# The test cluster's names, from its `xmip.toml` (`configure::fixture`;
+# ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.
+configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", features = ["test-support"] }
 # The tests seal under a key-encryption key held in memory, never the
 # machine's own key store; the feature is enabled here so it is never part
 # of a production build.

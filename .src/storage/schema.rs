@@ -21,6 +21,10 @@ use std::fmt::Write as _;
 
 use super::database::Server;
 
+mod tables;
+
+pub use tables::TABLES;
+
 /// Which of the two databases a table is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Database {
@@ -87,10 +91,8 @@ pub struct Table {
     pub columns: &'static [Column],
     /// The columns its primary key is, in order.
     pub key: &'static [&'static str],
-}
-
-const fn column(name: &'static str, kind: Kind) -> Column {
-    Column { name, kind }
+    /// The columns no two rows share besides the key, where any.
+    pub unique: &'static [&'static str],
 }
 
 /// The schema both databases keep their tables in.
@@ -99,84 +101,6 @@ pub const SCHEMA: &str = "xmip";
 pub const OWNER: &str = "xmip_owner";
 /// The login a Storage node connects as.
 pub const LOGIN: &str = "xmip_storage";
-
-/// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 7] = [
-    Table {
-        database: Database::Runtime,
-        name: "stream_chunk",
-        keeps: "every Stream, in chunks",
-        columns: &[
-            column("stream", Kind::Identifier),
-            column("chunk", Kind::Count),
-            column("last", Kind::Flag),
-            column("bytes", Kind::Bytes),
-        ],
-        key: &["stream", "chunk"],
-    },
-    Table {
-        database: Database::Runtime,
-        name: "message",
-        keeps: "every Message, as a step wrote it",
-        columns: &[
-            column("message", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
-        key: &["message"],
-    },
-    Table {
-        database: Database::Runtime,
-        name: "journey",
-        keeps: "every Journey, as a step wrote it",
-        columns: &[
-            column("journey", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
-        key: &["journey"],
-    },
-    Table {
-        database: Database::Runtime,
-        name: "claim",
-        keeps: "the claim on each Journey: its holder, its token, when it lapses",
-        columns: &[
-            column("journey", Kind::Identifier),
-            column("holder", Kind::Text),
-            column("token", Kind::Identifier),
-            column("until_unix_nanos", Kind::Number),
-            column("released", Kind::Flag),
-        ],
-        key: &["journey"],
-    },
-    Table {
-        database: Database::Runtime,
-        name: "audit",
-        keeps: "audit records as first written, until the audit keeper moves them",
-        columns: &[
-            column("sequence", Kind::Sequence),
-            column("id", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
-        key: &["sequence"],
-    },
-    Table {
-        database: Database::Administration,
-        name: "audit",
-        keeps: "audit records kept over time, each once",
-        columns: &[column("id", Kind::Identifier), column("body", Kind::Bytes)],
-        key: &["id"],
-    },
-    Table {
-        database: Database::Administration,
-        name: "administration",
-        keeps: "registration, membership, Modules, Handlers, deployment and operator state",
-        columns: &[
-            column("kind", Kind::Text),
-            column("id", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
-        key: &["kind", "id"],
-    },
-];
 
 /// Every script an operator runs for `server`, in the order they are run:
 /// its file name and its text.
@@ -309,19 +233,29 @@ fn tables(server: Server, database: Database) -> String {
         }
     }
     for table in TABLES.iter().filter(|table| table.database == database) {
-        let columns: Vec<String> = table
+        let lines: Vec<String> = table
             .columns
             .iter()
             .map(|column| format!("    {} {} NOT NULL", column.name, kind(server, column.kind)))
+            .chain(std::iter::once(format!(
+                "    CONSTRAINT {}_key PRIMARY KEY ({})",
+                table.name,
+                table.key.join(", ")
+            )))
+            .chain((!table.unique.is_empty()).then(|| {
+                format!(
+                    "    CONSTRAINT {}_unique UNIQUE ({})",
+                    table.name,
+                    table.unique.join(", ")
+                )
+            }))
             .collect();
         let _ = write!(
             text,
-            "-- {}.\nCREATE TABLE {SCHEMA}.{} (\n{},\n    CONSTRAINT {}_key PRIMARY KEY ({})\n);\n{}\n",
+            "-- {}.\nCREATE TABLE {SCHEMA}.{} (\n{}\n);\n{}\n",
             table.keeps,
             table.name,
-            columns.join(",\n"),
-            table.name,
-            table.key.join(", "),
+            lines.join(",\n"),
             if server == Server::SqlServer {
                 "GO\n"
             } else {
@@ -374,7 +308,7 @@ mod tests {
     #[test]
     fn every_key_is_a_column_of_its_table_and_every_table_is_in_one_script() {
         for table in TABLES {
-            for key in table.key {
+            for key in table.key.iter().chain(table.unique) {
                 assert!(
                     table.columns.iter().any(|column| column.name == *key),
                     "{}: {key}",

@@ -45,7 +45,20 @@ directly (`runtime-model.md` section 3, `deployment-model.md` sections 3, 7
 and 9).
 
 - **`XmipStorage`** — the operations, once: write and read a Stream chunk, a
-  Message, a Journey; claim a Journey (set the holder where there is none or
+  Message, a Journey; `publish` a receive's Publication — its Message, the
+  Journeys it opened, the ones a paused Subscription holds, its entry in the
+  node's Dead Message Queue where nothing matched (`DeadMessage`: receive
+  context, gate verdicts, promoted properties, every Subscription's decline)
+  and its audit record — as one atomic write; read what a Subscription
+  holds, oldest first, and release a held Journey once its step is done;
+  read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
+  time; `read_dead_message`, one entry) and `replay` an entry — the
+  Journeys a routing against the Subscriptions of now opened, the ones held,
+  its audit record and the entry taken out, as one write, done once: asked
+  again after a lost answer it is `Replayed::Before` and writes nothing. Both
+  kinds of queue are numbered as written and kept by one set of mechanics
+  (`queue.rs`); claim a
+  Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
   Journeys that follow and the claim released, as one atomic write; write an
@@ -53,21 +66,32 @@ and 9).
   moving each to the administration database exactly once, by its
   identifier; and the administration records — registration, membership,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
-  write returns once it is durable. A request asked again after a lost
-  answer does nothing twice.
+  write returns once it is durable. Every operation is all or nothing: one
+  that fails half-way writes nothing of itself. A request asked again after
+  a lost answer does nothing twice: a Publication holds each Journey once,
+  by its identifier, and a hand-on asked again is `true` while one after a
+  mere release is `false` — the claim keeps which of the two ended it.
 - **`Embedded`** — the embedded Storage node: the runtime database and the
   administration database, each an `EncryptedStore` over the engine the
   program gives it — RocksDB and SQLite for a node, RocksDB on disk and
   SQLite in memory for a Storage node under test. Every runtime write goes
   through one writer, which takes every write waiting into one batch under
   one sync: group commit, and the one place a claim's condition is decided.
+  Each operation is decided on a stage of its own over the batch, and the
+  batch takes the stage only once the whole operation has been decided.
 - **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
   mutual TLS (`xmip-core-library-tls`, `Identity`), the protocol agreed as
   `xmip-storage/1` by ALPN: a length and a request, a length and an answer,
   each record in its one binary form; a thread per connection, synchronous.
 - **`StorageClient`** — a node reaching the Storage nodes its `[storage]
   nodes` lists, round robin, moving to the next when one does not answer and
-  passing over one that did not for five seconds. A node that is itself the
+  passing over one that did not for its pass-over; each connect and read is
+  bounded by its timeout, both given to `StorageClient::new` from the node's
+  `[tuning]` (`storage_timeout`, `storage_pass_over`; five seconds each by
+  default, `storage::client::TIMEOUT` and `PASS_OVER`). `storage::statement` binds
+  it to one Storage node for a whole statement — a receive cycle's chunks,
+  Publication and Journeys — which fails with that node rather than moving
+  on (the owner, 2026-10-03). A node that is itself the
   Storage node calls its `Embedded` in process instead: both are
   `XmipStorage`, so nothing above knows which it has.
 - **`database`** and **`schema`** — a database server Xmip Storage is in
@@ -98,6 +122,10 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 
 `Engine::apply` writes a batch whole or not at all, durable on return: a
 `WriteBatch` under one sync in RocksDB, a transaction in SQLite.
+`Engine::apply_deferred` writes one whole and unsynced, durable with the next
+synced write: RocksDB's write-ahead log without a sync, and any other engine
+as `apply`. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
+a receive cycle costs one sync, its Publication's.
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves

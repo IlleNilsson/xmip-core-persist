@@ -15,34 +15,45 @@
 //! fails is opened once afresh on the same node before the next is tried,
 //! since a Storage node that restarted ends every connection it had.
 //!
+//! **One statement, one Storage node** (the owner, 2026-10-03). A
+//! statement — a receive cycle's chunks 1 to n, its Publication and its
+//! Journeys — is asked of one Storage node throughout, chosen round robin
+//! as it begins ([`XmipStorage::pinned`]). Its operations do not move on to
+//! another node: the chunks are durable with the Publication's sync on the
+//! node that took them, so a node that stops answering mid-statement fails
+//! the statement, and the sender, never acknowledged, sends again.
+//!
 //! **Asking again is safe.** A request whose answer was lost may have been
 //! done by the node that lost it; every operation is written to bear that.
 //! A record is written under its own identifier, so writing it twice leaves
-//! one; a claim asked again under the token it holds by is that claim; a
-//! hand-on asked again after it was done is `true` and writes nothing; an
-//! audit record written twice is kept once, by its identifier, by the audit
-//! keeper.
+//! one; a Publication asked again holds each Journey once, by its
+//! identifier; a claim asked again under the token it holds by is that
+//! claim; a hand-on asked again after it was done is `true` and writes
+//! nothing, and is told from a claim only given back; an audit record
+//! written twice is kept once, by its identifier, by the audit keeper. And
+//! an operation that failed wrote nothing of itself, so asking it again
+//! starts clean.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use xcore::{AuditId, JourneyId, MessageId, StreamId};
-
-use super::XmipStorage;
-use super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, HandOn, JourneyRecord,
-    MessageRecord, StreamChunk,
-};
 use super::server::ALPN;
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
+mod operations;
+
 type Connection = tls::Guarded;
 
 /// How long a Storage node that did not answer is passed over, asked only
-/// when every other has failed too, before it is tried in its turn again.
-const PASSED_OVER: Duration = Duration::from_secs(5);
+/// when every other has failed too, before it is tried in its turn again,
+/// where the node's `[tuning] storage_pass_over` does not say.
+pub const PASS_OVER: Duration = Duration::from_secs(5);
+
+/// What bounds each connect and each read, where the node's `[tuning]
+/// storage_timeout` does not say.
+pub const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One Storage node, the connections to it no request is using, and until
 /// when it is passed over.
@@ -62,29 +73,34 @@ impl Node {
         until.is_some_and(|until| until > now)
     }
 
-    fn answered(&self, answered: bool) {
+    fn answered(&self, answered: bool, pass_over: Duration) {
         *self
             .passed_over
             .lock()
             .unwrap_or_else(PoisonError::into_inner) =
-            (!answered).then(|| Instant::now() + PASSED_OVER);
+            (!answered).then(|| Instant::now() + pass_over);
     }
 }
 
 /// Xmip Storage as a node reaches it: [`XmipStorage`] over the Storage
-/// nodes, round robin.
+/// nodes, round robin, or over one of them for one statement.
 pub struct StorageClient {
-    nodes: Vec<Node>,
-    next: AtomicUsize,
+    nodes: Arc<[Node]>,
+    next: Arc<AtomicUsize>,
     config: Arc<tls::ClientConfig>,
     timeout: Duration,
+    pass_over: Duration,
+    /// The Storage node every operation goes to, for one statement.
+    pinned: Option<usize>,
 }
 
 impl StorageClient {
     /// A client of the Storage nodes at `nodes` — `host:port` each, as a
     /// node's `[storage] nodes` lists them — presenting `identity` and
     /// trusting its anchors, each connect and each read bounded by
-    /// `timeout`.
+    /// `timeout`, and one that did not answer passed over for `pass_over`
+    /// (the node's `[tuning]`; [`TIMEOUT`] and [`PASS_OVER`] where it does
+    /// not say).
     ///
     /// # Errors
     ///
@@ -94,6 +110,7 @@ impl StorageClient {
         nodes: &[String],
         identity: &tls::Identity,
         timeout: Duration,
+        pass_over: Duration,
     ) -> Result<Self, PersistError> {
         if nodes.is_empty() {
             return Err(unreachable("no Storage node is listed"));
@@ -114,31 +131,52 @@ impl StorageClient {
                     passed_over: Mutex::new(None),
                 })
             })
-            .collect::<Result<Vec<_>, PersistError>>()?;
+            .collect::<Result<Arc<[Node]>, PersistError>>()?;
         let config = identity
             .client()
             .map_err(|error| unreachable(error.message))?;
         Ok(Self {
             nodes,
-            next: AtomicUsize::new(0),
+            next: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(tls::alpn::offering(config, &[ALPN])),
             timeout,
+            pass_over,
+            pinned: None,
         })
+    }
+
+    /// The Storage nodes in the order a request asks them: from the next
+    /// round robin, one that did not answer lately last.
+    fn turn(&self) -> impl Iterator<Item = usize> {
+        let first = self.next.fetch_add(1, Ordering::Relaxed);
+        let now = Instant::now();
+        let count = self.nodes.len();
+        let (answering, passed): (Vec<usize>, Vec<usize>) = (0..count)
+            .map(|step| (first + step) % count)
+            .partition(|&index| !self.nodes[index].passed_over(now));
+        answering.into_iter().chain(passed)
     }
 
     /// `request` asked of the next Storage node, and of each after it in
     /// turn while none answers; one that did not answer lately is asked
     /// last.
+    /// For one statement, `request` is asked of its Storage node alone.
     fn ask(&self, request: &Request) -> Result<Answer, PersistError> {
-        let first = self.next.fetch_add(1, Ordering::Relaxed);
-        let now = Instant::now();
-        let (answering, passed): (Vec<&Node>, Vec<&Node>) = (0..self.nodes.len())
-            .map(|step| &self.nodes[(first + step) % self.nodes.len()])
-            .partition(|node| !node.passed_over(now));
-        let mut failures = Vec::new();
-        for node in answering.into_iter().chain(passed) {
+        if let Some(index) = self.pinned {
+            let node = &self.nodes[index];
             let asked = self.ask_node(node, request);
-            node.answered(asked.is_ok());
+            node.answered(asked.is_ok(), self.pass_over);
+            return asked.map_err(|failure| {
+                unreachable(format!(
+                    "the statement's Storage node {} did not answer: {failure}",
+                    node.address
+                ))
+            });
+        }
+        let mut failures = Vec::new();
+        for node in self.turn().map(|index| &self.nodes[index]) {
+            let asked = self.ask_node(node, request);
+            node.answered(asked.is_ok(), self.pass_over);
             match asked {
                 Ok(answer) => return Ok(answer),
                 Err(failure) => failures.push(format!("{}: {failure}", node.address)),
@@ -190,167 +228,19 @@ fn unreachable(reason: impl Into<String>) -> PersistError {
     }
 }
 
-/// The answer an operation expected, or why there was none.
-fn expected<T>(
-    answer: Answer,
-    take: impl FnOnce(Answer) -> Result<T, Answer>,
-) -> Result<T, PersistError> {
-    match answer {
-        Answer::Refused(scope, reason) => Err(PersistError::Refused { scope, reason }),
-        Answer::Failed(reason) => Err(PersistError::Failed { reason }),
-        other => take(other).map_err(|other| PersistError::Record {
-            reason: format!("a Storage node answered {other:?}"),
-        }),
-    }
-}
-
-fn done(answer: Answer) -> Result<(), Answer> {
-    match answer {
-        Answer::Done => Ok(()),
-        other => Err(other),
-    }
-}
-
-fn claimed(answer: Answer) -> Result<Option<Claim>, Answer> {
-    match answer {
-        Answer::Claim(claim) => Ok(claim),
-        other => Err(other),
-    }
-}
-
-fn yes(answer: Answer) -> Result<bool, Answer> {
-    match answer {
-        Answer::Yes(yes) => Ok(yes),
-        other => Err(other),
-    }
-}
-
-impl XmipStorage for StorageClient {
-    fn write_chunk(&self, chunk: &StreamChunk) -> Result<(), PersistError> {
-        expected(self.ask(&Request::WriteChunk(chunk.clone()))?, done)
-    }
-
-    fn read_chunk(
-        &self,
-        stream: StreamId,
-        index: u32,
-    ) -> Result<Option<StreamChunk>, PersistError> {
-        expected(
-            self.ask(&Request::ReadChunk(stream, index))?,
-            |answer| match answer {
-                Answer::Chunk(chunk) => Ok(chunk),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn write_message(&self, message: &MessageRecord) -> Result<(), PersistError> {
-        expected(self.ask(&Request::WriteMessage(message.clone()))?, done)
-    }
-
-    fn read_message(&self, message: MessageId) -> Result<Option<MessageRecord>, PersistError> {
-        expected(
-            self.ask(&Request::ReadMessage(message))?,
-            |answer| match answer {
-                Answer::Message(record) => Ok(record),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn write_journey(&self, journey: &JourneyRecord) -> Result<(), PersistError> {
-        expected(self.ask(&Request::WriteJourney(journey.clone()))?, done)
-    }
-
-    fn read_journey(&self, journey: JourneyId) -> Result<Option<JourneyRecord>, PersistError> {
-        expected(
-            self.ask(&Request::ReadJourney(journey))?,
-            |answer| match answer {
-                Answer::Journey(record) => Ok(record),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn claim(
-        &self,
-        journey: JourneyId,
-        holder: &str,
-        token: u128,
-        lease: Duration,
-    ) -> Result<Option<Claim>, PersistError> {
-        let claim = Claim {
-            journey,
-            holder: holder.to_string(),
-            token,
-            until_unix_nanos: 0,
-        };
-        expected(self.ask(&Request::claim(claim, lease))?, claimed)
-    }
-
-    fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
-        expected(self.ask(&Request::renew(claim.clone(), lease))?, claimed)
-    }
-
-    fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
-        expected(self.ask(&Request::Release(claim.clone()))?, yes)
-    }
-
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
-        expected(self.ask(&Request::HandOn(hand_on.clone()))?, yes)
-    }
-
-    fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
-        expected(self.ask(&Request::WriteAudit(entry.clone()))?, done)
-    }
-
-    fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-        expected(
-            self.ask(&Request::KeepAudit(most))?,
-            |answer| match answer {
-                Answer::Count(count) => Ok(count),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
-        expected(
-            self.ask(&Request::ReadKeptAudit(id))?,
-            |answer| match answer {
-                Answer::Audit(entry) => Ok(entry),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
-        expected(
-            self.ask(&Request::WriteAdministration(record.clone()))?,
-            done,
-        )
-    }
-
-    fn read_administration(
-        &self,
-        kind: AdministrationKind,
-        id: u128,
-    ) -> Result<Option<AdministrationRecord>, PersistError> {
-        expected(
-            self.ask(&Request::ReadAdministration(kind, id))?,
-            |answer| match answer {
-                Answer::Administration(record) => Ok(record),
-                other => Err(other),
-            },
-        )
-    }
-
-    fn remove_administration(
-        &self,
-        kind: AdministrationKind,
-        id: u128,
-    ) -> Result<(), PersistError> {
-        expected(self.ask(&Request::RemoveAdministration(kind, id))?, done)
+impl StorageClient {
+    /// This client over one Storage node, for one statement: the one it is
+    /// over already, or the next round robin ([`super::XmipStorage::pinned`]).
+    fn pinned_client(&self) -> Option<Self> {
+        let index = self.pinned.or_else(|| self.turn().next())?;
+        Some(Self {
+            nodes: Arc::clone(&self.nodes),
+            next: Arc::clone(&self.next),
+            config: Arc::clone(&self.config),
+            timeout: self.timeout,
+            pass_over: self.pass_over,
+            pinned: Some(index),
+        })
     }
 }
 
@@ -360,9 +250,11 @@ mod tests {
 
     use secret::{Held, KekName};
 
+    use xcore::JourneyId;
+
     use super::*;
     use crate::fixture::Memory;
-    use crate::storage::{Embedded, StorageServer};
+    use crate::storage::{Embedded, JourneyRecord, StorageServer, XmipStorage};
 
     /// A cluster's certificate authority, and identities it issues.
     struct Authority(rcgen::CertifiedKey);
@@ -422,8 +314,8 @@ mod tests {
         let first = serve(&behind, &authority.issue(&authority));
         let second = serve(&behind, &authority.issue(&authority));
         let nodes = [first.address().to_string(), second.address().to_string()];
-        let client =
-            StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT).expect("client");
+        let client = StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+            .expect("client");
 
         client.write_journey(&journey(b"written")).expect("written");
         assert_eq!(
@@ -431,7 +323,12 @@ mod tests {
             Some(journey(b"written"))
         );
         let claim = client
-            .claim(journey(b"").journey, "xmip:///C1/node/alpha", 7, TIMEOUT)
+            .claim(
+                journey(b"").journey,
+                &configure::fixture::test_cluster().node_scope(0),
+                7,
+                TIMEOUT,
+            )
             .expect("claimed")
             .expect("taken");
 
@@ -454,13 +351,63 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_is_asked_of_one_storage_node_throughout_and_fails_with_it() {
+        let authority = Authority::new();
+        // Two Storage nodes, each with a database of its own: only asking
+        // one of them throughout finds what the statement wrote.
+        let (one, other) = (storage(), storage());
+        let first = serve(&one, &authority.issue(&authority));
+        let second = serve(&other, &authority.issue(&authority));
+        let nodes = [first.address().to_string(), second.address().to_string()];
+        let client: Arc<dyn XmipStorage> = Arc::new(
+            StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+                .expect("client"),
+        );
+
+        let statement = super::super::statement(&client);
+        for round in 0..4u8 {
+            statement
+                .write_journey(&journey(&[b'r', round]))
+                .expect("written");
+            assert_eq!(
+                statement.read_journey(journey(b"").journey).expect("read"),
+                Some(journey(&[b'r', round]))
+            );
+        }
+        let wrote_first = one
+            .read_journey(journey(b"").journey)
+            .expect("read")
+            .is_some();
+        let wrote_second = other
+            .read_journey(journey(b"").journey)
+            .expect("read")
+            .is_some();
+        assert!(wrote_first != wrote_second, "one node took every write");
+
+        if wrote_first {
+            first.stop()
+        } else {
+            second.stop()
+        }
+        let gone = statement.read_journey(journey(b"").journey);
+        assert!(
+            matches!(gone, Err(PersistError::Unreachable { .. })),
+            "{gone:?}"
+        );
+        client
+            .write_journey(&journey(b"carried on"))
+            .expect("the next statement asks the node left");
+    }
+
+    #[test]
     fn a_node_whose_certificate_another_authority_issued_is_refused() {
         let ours = Authority::new();
         let theirs = Authority::new();
         let behind = storage();
         let server = serve(&behind, &ours.issue(&ours));
         let nodes = [server.address().to_string()];
-        let stranger = StorageClient::new(&nodes, &theirs.issue(&ours), TIMEOUT).expect("client");
+        let stranger =
+            StorageClient::new(&nodes, &theirs.issue(&ours), TIMEOUT, PASS_OVER).expect("client");
         let refused = stranger.write_journey(&journey(b"from a stranger"));
         assert!(
             matches!(refused, Err(PersistError::Unreachable { .. })),
@@ -477,8 +424,8 @@ mod tests {
     fn no_storage_node_or_one_without_a_port_is_refused_before_anything_is_asked() {
         let authority = Authority::new();
         let identity = authority.issue(&authority);
-        assert!(StorageClient::new(&[], &identity, TIMEOUT).is_err());
+        assert!(StorageClient::new(&[], &identity, TIMEOUT, PASS_OVER).is_err());
         let portless = ["storage-1.example".to_string()];
-        assert!(StorageClient::new(&portless, &identity, TIMEOUT).is_err());
+        assert!(StorageClient::new(&portless, &identity, TIMEOUT, PASS_OVER).is_err());
     }
 }

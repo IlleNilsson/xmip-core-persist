@@ -17,7 +17,9 @@ use std::time::Duration;
 use codec::cursor::Cursor;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
-use super::XmipStorage;
+use super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::hold::HeldQueue;
+use super::publication::Publication;
 use super::record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, HandOn, JourneyRecord,
     MessageRecord, StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
@@ -48,6 +50,12 @@ pub(crate) enum Request {
     WriteAdministration(AdministrationRecord),
     ReadAdministration(AdministrationKind, u128),
     RemoveAdministration(AdministrationKind, u128),
+    Publish(Publication),
+    ReadHeld(u128, u64, u32),
+    ReleaseHeld(u128, u64, JourneyRecord),
+    ReadDead(u128, u64, u32),
+    ReadDeadMessage(u128, MessageId),
+    Replay(Replay),
 }
 
 /// What an operation answered.
@@ -62,6 +70,10 @@ pub(crate) enum Answer {
     Count(u32),
     Audit(Option<AuditEntry>),
     Administration(Option<AdministrationRecord>),
+    Held(HeldQueue),
+    DeadQueue(DeadQueue),
+    Dead(DeadEntry),
+    Replayed(Replayed),
     /// A record failed its authentication tag: the scope and the reason,
     /// for the caller to audit (ADR-0063, Consequences).
     Refused(String, String),
@@ -167,6 +179,37 @@ impl Form for Request {
                 kind.write(out);
                 write_u128(out, *id);
             }
+            Self::Publish(publication) => {
+                write_byte(out, 17);
+                publication.write(out);
+            }
+            Self::ReadHeld(queue, from, most) => {
+                write_byte(out, 18);
+                write_u128(out, *queue);
+                write_u64(out, *from);
+                write_u32(out, *most);
+            }
+            Self::ReleaseHeld(queue, sequence, journey) => {
+                write_byte(out, 19);
+                write_u128(out, *queue);
+                write_u64(out, *sequence);
+                journey.write(out);
+            }
+            Self::ReadDead(queue, from, most) => {
+                write_byte(out, 20);
+                write_u128(out, *queue);
+                write_u64(out, *from);
+                write_u32(out, *most);
+            }
+            Self::ReadDeadMessage(queue, message) => {
+                write_byte(out, 21);
+                write_u128(out, *queue);
+                write_u128(out, message.value());
+            }
+            Self::Replay(replay) => {
+                write_byte(out, 22);
+                replay.write(out);
+            }
         }
     }
 
@@ -188,6 +231,16 @@ impl Form for Request {
             14 => Self::WriteAdministration(AdministrationRecord::read(cursor)?),
             15 => Self::ReadAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
             16 => Self::RemoveAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
+            17 => Self::Publish(Publication::read(cursor)?),
+            18 => Self::ReadHeld(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
+            19 => Self::ReleaseHeld(
+                read_u128(cursor)?,
+                read_u64(cursor)?,
+                JourneyRecord::read(cursor)?,
+            ),
+            20 => Self::ReadDead(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
+            21 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
+            22 => Self::Replay(Replay::read(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -238,6 +291,22 @@ impl Form for Answer {
                 write_byte(out, 10);
                 write_text(out, reason);
             }
+            Self::Held(queue) => {
+                write_byte(out, 11);
+                queue.write(out);
+            }
+            Self::DeadQueue(queue) => {
+                write_byte(out, 12);
+                queue.write(out);
+            }
+            Self::Dead(entry) => {
+                write_byte(out, 13);
+                entry.write(out);
+            }
+            Self::Replayed(replayed) => {
+                write_byte(out, 14);
+                replayed.write(out);
+            }
         }
     }
 
@@ -254,52 +323,15 @@ impl Form for Answer {
             8 => Self::Administration(read_optional(cursor)?),
             9 => Self::Refused(read_text(cursor)?, read_text(cursor)?),
             10 => Self::Failed(read_text(cursor)?),
+            11 => Self::Held(HeldQueue::read(cursor)?),
+            12 => Self::DeadQueue(DeadQueue::read(cursor)?),
+            13 => Self::Dead(DeadEntry::read(cursor)?),
+            14 => Self::Replayed(Replayed::read(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }
 }
 
-/// What `storage` answers `request`: the one place an operation on the
-/// wire becomes a call of the operations.
-pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
-    let answered = match request {
-        Request::WriteChunk(chunk) => storage.write_chunk(&chunk).map(|()| Answer::Done),
-        Request::ReadChunk(stream, index) => storage.read_chunk(stream, index).map(Answer::Chunk),
-        Request::WriteMessage(message) => storage.write_message(&message).map(|()| Answer::Done),
-        Request::ReadMessage(id) => storage.read_message(id).map(Answer::Message),
-        Request::WriteJourney(journey) => storage.write_journey(&journey).map(|()| Answer::Done),
-        Request::ReadJourney(id) => storage.read_journey(id).map(Answer::Journey),
-        Request::Claim(claim, lease) => storage
-            .claim(
-                claim.journey,
-                &claim.holder,
-                claim.token,
-                Duration::from_nanos(lease),
-            )
-            .map(Answer::Claim),
-        Request::Renew(claim, lease) => storage
-            .renew(&claim, Duration::from_nanos(lease))
-            .map(Answer::Claim),
-        Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
-        Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
-        Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
-        Request::KeepAudit(most) => storage.keep_audit(most).map(Answer::Count),
-        Request::ReadKeptAudit(id) => storage.read_kept_audit(id).map(Answer::Audit),
-        Request::WriteAdministration(record) => {
-            storage.write_administration(&record).map(|()| Answer::Done)
-        }
-        Request::ReadAdministration(kind, id) => storage
-            .read_administration(kind, id)
-            .map(Answer::Administration),
-        Request::RemoveAdministration(kind, id) => storage
-            .remove_administration(kind, id)
-            .map(|()| Answer::Done),
-    };
-    answered.unwrap_or_else(|error| match error {
-        PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),
-        other => Answer::Failed(other.to_string()),
-    })
-}
 
 /// Write `record` as one frame.
 ///
@@ -352,7 +384,7 @@ mod tests {
     fn a_request_and_an_answer_cross_a_frame_as_they_were() {
         let claim = Claim {
             journey: JourneyId::new(5),
-            holder: "xmip:///C1/node/alpha".to_string(),
+            holder: configure::fixture::test_cluster().node_scope(0),
             token: 9,
             until_unix_nanos: 0,
         };
@@ -361,7 +393,41 @@ mod tests {
             Request::Release(claim.clone()),
             Request::ReadChunk(StreamId::new(1), 2),
             Request::KeepAudit(64),
+            Request::ReadHeld(7, 2, 64),
+            Request::ReleaseHeld(
+                7,
+                2,
+                JourneyRecord {
+                    journey: JourneyId::new(5),
+                    body: b"delivered".to_vec(),
+                },
+            ),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
+            Request::Publish(Publication {
+                message: MessageRecord {
+                    message: MessageId::new(1),
+                    body: b"order".to_vec(),
+                },
+                journeys: Vec::new(),
+                held: Vec::new(),
+                dead: None,
+                audit: AuditEntry {
+                    id: AuditId::new(2),
+                    body: b"published".to_vec(),
+                },
+            }),
+            Request::ReadDead(7, 2, 64),
+            Request::ReadDeadMessage(7, MessageId::new(1)),
+            Request::Replay(Replay {
+                queue: 7,
+                message: MessageId::new(1),
+                journeys: Vec::new(),
+                held: Vec::new(),
+                audit: AuditEntry {
+                    id: AuditId::new(3),
+                    body: b"replayed".to_vec(),
+                },
+            }),
         ];
         let mut wire = Vec::new();
         for request in &requests {
@@ -377,6 +443,15 @@ mod tests {
             Answer::Claim(Some(claim)),
             Answer::Refused("rocksdb record".to_string(), "its tag".to_string()),
             Answer::Count(3),
+            Answer::Held(HeldQueue {
+                first: 1,
+                next: 2,
+                count: 1,
+                held: Vec::new(),
+            }),
+            Answer::DeadQueue(DeadQueue::default()),
+            Answer::Dead(DeadEntry::Replayed),
+            Answer::Replayed(Replayed::Before),
         ];
         for answer in answers {
             assert_eq!(Answer::from_bytes(&answer.bytes()).expect("answer"), answer);
