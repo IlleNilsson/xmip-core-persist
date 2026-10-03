@@ -58,7 +58,11 @@ pub(crate) fn places_key(queue: u128) -> Vec<u8> {
 
 /// Where the index keeps an entry's place: its queue and what it is about.
 pub(crate) fn by_key(queue: u128, about: u128) -> Vec<u8> {
-    [queue.to_be_bytes().as_slice(), about.to_be_bytes().as_slice()].concat()
+    [
+        queue.to_be_bytes().as_slice(),
+        about.to_be_bytes().as_slice(),
+    ]
+    .concat()
 }
 
 /// A queue's places in `store`, as `batch` has left them.
@@ -90,7 +94,11 @@ pub(crate) fn place<R: Engine>(
     }
     let mut places = places(store, batch, kinds, queue)?;
     let sequence = places.next;
-    batch.put(kinds.entry, entry_key(queue, sequence), Some(entry(sequence)));
+    batch.put(
+        kinds.entry,
+        entry_key(queue, sequence),
+        Some(entry(sequence)),
+    );
     batch.put(kinds.by, by, Some(sequence.to_be_bytes().to_vec()));
     places.next += 1;
     places.count += 1;

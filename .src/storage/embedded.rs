@@ -207,7 +207,10 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
-        match self.committer.submit(Op::Replay(Box::new(replay.clone())))? {
+        match self
+            .committer
+            .submit(Op::Replay(Box::new(replay.clone())))?
+        {
             Done::Replayed(replayed) => Ok(replayed),
             _ => Err(super::record::malformed("the writer answered no Replay")),
         }
@@ -447,7 +450,9 @@ mod tests {
         assert_eq!(node.read_journey(JOURNEY_ID).expect("read"), None);
         assert!(!node.release(&old).expect("release"));
         assert!(node.release(&new).expect("release"));
-        let freed = node.claim(JOURNEY_ID, &holder(2), 3, LEASE).expect("claimed");
+        let freed = node
+            .claim(JOURNEY_ID, &holder(2), 3, LEASE)
+            .expect("claimed");
         assert!(freed.is_some(), "a release frees it at once");
     }
 
@@ -458,7 +463,7 @@ mod tests {
             .claim(JOURNEY_ID, &holder(0), 1, LEASE)
             .expect("claimed")
             .expect("taken");
-        let next =JourneyId::new(0x0199_0000_0000_7000_8000_0000_0000_0002);
+        let next = JourneyId::new(0x0199_0000_0000_7000_8000_0000_0000_0002);
         let hand_on = HandOn {
             claim,
             result: journey(JOURNEY_ID, b"routed"),
@@ -486,7 +491,9 @@ mod tests {
             node.hand_on(&hand_on).expect("asked again"),
             "a lost answer"
         );
-        let taken = node.claim(JOURNEY_ID, &holder(1), 2, LEASE).expect("claimed");
+        let taken = node
+            .claim(JOURNEY_ID, &holder(1), 2, LEASE)
+            .expect("claimed");
         assert!(taken.is_some(), "the claim went with the hand-on");
     }
 
@@ -617,8 +624,10 @@ mod tests {
         for id in 1..=5u128 {
             node.publish(&unmatched(7, id)).expect("published");
         }
-        node.publish(&unmatched(7, 3)).expect("asked again: kept once");
-        node.publish(&unmatched(8, 9)).expect("another node's queue");
+        node.publish(&unmatched(7, 3))
+            .expect("asked again: kept once");
+        node.publish(&unmatched(8, 9))
+            .expect("another node's queue");
         let first = node.read_dead(7, 0, 2).expect("read");
         let places: Vec<u64> = first.dead.iter().map(|dead| dead.sequence).collect();
         assert_eq!((first.first, first.next, first.count), (0, 5, 5));
@@ -675,8 +684,13 @@ mod tests {
         assert_eq!(node.read_journey(JourneyId::new(77)).expect("read"), None);
         assert_eq!(node.read_held(5, 0, 10).expect("read").count, 1);
         assert_eq!(node.keep_audit(10).expect("kept"), 0, "not audited twice");
-        node.publish(&unmatched(7, 1)).expect("its Publication asked again");
-        assert_eq!(node.read_dead(7, 0, 10).expect("read").count, 1, "not kept again");
+        node.publish(&unmatched(7, 1))
+            .expect("its Publication asked again");
+        assert_eq!(
+            node.read_dead(7, 0, 10).expect("read").count,
+            1,
+            "not kept again"
+        );
         let never = replaying(7, 42, 5);
         assert_eq!(node.replay(&never).expect("asked"), Replayed::Absent);
     }
@@ -771,7 +785,8 @@ mod tests {
     fn a_publication_asked_again_holds_its_journey_once() {
         let (node, _) = node();
         node.publish(&holding(7, 1)).expect("published");
-        node.publish(&holding(7, 1)).expect("asked again after a lost answer");
+        node.publish(&holding(7, 1))
+            .expect("asked again after a lost answer");
         node.publish(&holding(7, 2)).expect("the next");
         let read = node.read_held(7, 0, 10).expect("read");
         let held: Vec<JourneyId> = read.held.iter().map(|held| held.hold.journey).collect();
