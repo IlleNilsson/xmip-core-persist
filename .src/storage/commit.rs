@@ -20,7 +20,11 @@ use std::thread::JoinHandle;
 
 use xcore::Clock;
 
-use super::record::{AuditEntry, Claim, Form, HandOn, malformed, read_byte};
+use super::claim::{self, Standing, Stored, end, hold};
+use super::dead::{self, Replay, Replayed};
+use super::hold;
+use super::publication::Publication;
+use super::record::{AuditEntry, Claim, Form, HandOn, JourneyRecord, malformed};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The record kinds of the runtime database.
@@ -29,6 +33,15 @@ pub(crate) const MESSAGE: &str = "message";
 pub(crate) const JOURNEY: &str = "journey";
 pub(crate) const CLAIM: &str = "claim";
 pub(crate) const AUDIT: &str = "audit";
+pub(crate) const HELD: &str = "held";
+/// A held Journey's place, found by its queue and its Journey.
+pub(crate) const HELD_JOURNEY: &str = "held-journey";
+pub(crate) const PLACES: &str = "held-places";
+/// A node's Dead Message Queue: its entries, each one's place by its
+/// Message, and its places.
+pub(crate) const DEAD: &str = "dead-message";
+pub(crate) const DEAD_MESSAGE: &str = "dead-message-by-message";
+pub(crate) const DEAD_PLACES: &str = "dead-message-places";
 pub(crate) const SEQUENCE: &str = "audit-sequence";
 /// The sequence's two places: the next audit record's number, and the
 /// first the keeper has not moved.
@@ -52,6 +65,17 @@ pub(crate) enum Op {
     },
     Release(Claim),
     HandOn(Box<HandOn>),
+    /// A Message, its Journeys, the ones held, its Dead Message Queue entry
+    /// and its audit record, in one batch.
+    Publish(Box<Publication>),
+    /// An entry's Journeys written and the entry taken out, audited.
+    Replay(Box<Replay>),
+    /// A held Journey written as its step left it, and its place let go.
+    ReleaseHeld {
+        queue: u128,
+        sequence: u64,
+        journey: JourneyRecord,
+    },
     Audit(AuditEntry),
     /// The keeper moved audit record `sequence`: forget it here, where the
     /// keeper has not moved past it already.
@@ -63,6 +87,7 @@ pub(crate) enum Done {
     Written,
     Claim(Option<Claim>),
     Yes(bool),
+    Replayed(Replayed),
 }
 
 type Reply = SyncSender<Result<Done, PersistError>>;
@@ -138,49 +163,56 @@ pub(crate) fn sequence<R: Engine>(
     Ok(u64::from_be_bytes(array))
 }
 
-/// A claim as stored: the last claim on its Journey, and whether it was
-/// given back. A released claim keeps its token, so a hand-on repeated
-/// after a lost answer is known for what it is.
-struct Stored {
-    claim: Claim,
-    released: bool,
-}
-
-impl Stored {
-    fn bytes(&self) -> Vec<u8> {
-        let mut out = vec![u8::from(self.released)];
-        self.claim.write(&mut out);
-        out
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Result<Self, PersistError> {
-        let mut cursor = codec::cursor::Cursor::new(bytes);
-        let released = read_byte(&mut cursor)? != 0;
-        let claim = Claim::read(&mut cursor)?;
-        Ok(Self { claim, released })
-    }
-
-    fn held_by(&self, claim: &Claim) -> bool {
-        !self.released && self.claim.token == claim.token
-    }
-}
-
 struct Writer<R> {
     store: Arc<EncryptedStore<R>>,
     clock: Arc<dyn Clock>,
     next: u64,
 }
 
-/// One batch being decided: what it has written so far, by place.
-struct Batch {
+/// One batch being decided: what it has written so far, by place — or one
+/// operation's part of it, staged over the batch below, which takes it only
+/// once the whole operation has been decided. An operation that fails
+/// half-way is dropped with its stage, so nothing of it is written, while
+/// the others in its batch are.
+pub(crate) struct Batch<'a> {
+    below: Option<&'a Batch<'a>>,
     written: HashMap<(&'static str, Vec<u8>), Option<Vec<u8>>>,
     changes: Vec<RecordChange<'static>>,
 }
 
-impl Batch {
-    fn put(&mut self, kind: &'static str, key: Vec<u8>, value: Option<Vec<u8>>) {
+impl Batch<'_> {
+    /// One operation's stage over this batch.
+    fn staged(&self) -> Batch<'_> {
+        Batch {
+            below: Some(self),
+            written: HashMap::new(),
+            changes: Vec::new(),
+        }
+    }
+
+    /// The value `kind` `key` holds in `store`, as this batch, and every
+    /// batch below it, has left it.
+    pub(crate) fn read<R: Engine>(
+        &self,
+        store: &EncryptedStore<R>,
+        kind: &'static str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, PersistError> {
+        match (self.written.get(&(kind, key.to_vec())), self.below) {
+            (Some(value), _) => Ok(value.clone()),
+            (None, Some(below)) => below.read(store, kind, key),
+            (None, None) => store.get(kind, key),
+        }
+    }
+
+    pub(crate) fn put(&mut self, kind: &'static str, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.written.insert((kind, key.clone()), value.clone());
         self.changes.push((kind, key, value));
+    }
+
+    /// `record` under its identifier `id`, replacing the last.
+    pub(crate) fn record(&mut self, kind: &'static str, id: u128, record: &impl Form) {
+        self.put(kind, id.to_be_bytes().to_vec(), Some(record.bytes()));
     }
 }
 
@@ -202,13 +234,28 @@ impl<R: Engine> Writer<R> {
         let now = self.clock.unix_timestamp_nanos();
         let before = self.next;
         let mut batch = Batch {
+            below: None,
             written: HashMap::new(),
             changes: Vec::new(),
         };
-        let decided: Vec<(Reply, Result<Done, PersistError>)> = group
-            .into_iter()
-            .map(|(op, reply)| (reply, self.decide(op, now, &mut batch)))
-            .collect();
+        let mut decided = Vec::with_capacity(group.len());
+        for (op, reply) in group {
+            // Each operation decided on a stage of its own: all of it
+            // taken into the batch, or none of it.
+            let next = self.next;
+            let mut staged = batch.staged();
+            let done = self.decide(op, now, &mut staged);
+            let Batch {
+                written, changes, ..
+            } = staged;
+            if done.is_ok() {
+                batch.written.extend(written);
+                batch.changes.extend(changes);
+            } else {
+                self.next = next;
+            }
+            decided.push((reply, done));
+        }
         if self.next != before {
             batch.put(
                 SEQUENCE,
@@ -233,26 +280,11 @@ impl<R: Engine> Writer<R> {
         }
     }
 
-    /// The value `kind` `key` holds, as this batch has left it.
-    fn read(
-        &self,
-        batch: &Batch,
-        kind: &'static str,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>, PersistError> {
-        match batch.written.get(&(kind, key.to_vec())) {
-            Some(value) => Ok(value.clone()),
-            None => self.store.get(kind, key),
-        }
+    fn stored(&self, batch: &Batch<'_>, claim: &Claim) -> Result<Option<Stored>, PersistError> {
+        claim::stored(&self.store, batch, claim)
     }
 
-    fn stored(&self, batch: &Batch, claim: &Claim) -> Result<Option<Stored>, PersistError> {
-        self.read(batch, CLAIM, &key(claim))?
-            .map(|bytes| Stored::from_bytes(&bytes))
-            .transpose()
-    }
-
-    fn decide(&mut self, op: Op, now: i128, batch: &mut Batch) -> Result<Done, PersistError> {
+    fn decide(&mut self, op: Op, now: i128, batch: &mut Batch<'_>) -> Result<Done, PersistError> {
         match op {
             Op::Put(kind, key, value) => {
                 batch.put(kind, key, Some(value));
@@ -261,7 +293,7 @@ impl<R: Engine> Writer<R> {
             Op::Claim { claim, lease_nanos } => {
                 let stored = self.stored(batch, &claim)?;
                 if let Some(stored) = &stored
-                    && !stored.released
+                    && stored.standing == Standing::Held
                     && stored.claim.until_unix_nanos >= now
                 {
                     let ours = stored.claim.token == claim.token;
@@ -279,12 +311,41 @@ impl<R: Engine> Writer<R> {
             },
             Op::Release(claim) => match self.stored(batch, &claim)? {
                 Some(stored) if stored.held_by(&claim) => {
-                    give_back(batch, stored.claim);
+                    end(batch, stored.claim, Standing::Released);
                     Ok(Done::Yes(true))
                 }
                 _ => Ok(Done::Yes(false)),
             },
-            Op::HandOn(hand_on) => self.hand_on(&hand_on, batch),
+            Op::HandOn(hand_on) => claim::hand_on(&self.store, batch, &hand_on).map(Done::Yes),
+            Op::Publish(publication) => {
+                let message = &publication.message;
+                batch.record(MESSAGE, message.message.value(), message);
+                for journey in &publication.journeys {
+                    batch.record(JOURNEY, journey.journey.value(), journey);
+                }
+                for held in &publication.held {
+                    hold::keep(&self.store, batch, held)?;
+                }
+                if let Some(dead) = &publication.dead {
+                    dead::keep(&self.store, batch, dead)?;
+                }
+                self.decide(Op::Audit(publication.audit), now, batch)
+            }
+            Op::Replay(replay) => match dead::replay(&self.store, batch, &replay)? {
+                Replayed::Now => self
+                    .decide(Op::Audit(replay.audit), now, batch)
+                    .map(|_| Done::Replayed(Replayed::Now)),
+                other => Ok(Done::Replayed(other)),
+            },
+            Op::ReleaseHeld {
+                queue,
+                sequence,
+                journey,
+            } => {
+                batch.record(JOURNEY, journey.journey.value(), &journey);
+                hold::let_go(&self.store, batch, queue, sequence)?;
+                Ok(Done::Written)
+            }
             Op::Audit(entry) => {
                 let number = self.next;
                 self.next += 1;
@@ -292,7 +353,7 @@ impl<R: Engine> Writer<R> {
                 Ok(Done::Written)
             }
             Op::Kept(number) => {
-                let kept = match self.read(batch, SEQUENCE, KEPT)? {
+                let kept = match batch.read(&self.store, SEQUENCE, KEPT)? {
                     Some(bytes) => u64::from_be_bytes(
                         bytes
                             .try_into()
@@ -313,64 +374,6 @@ impl<R: Engine> Writer<R> {
             }
         }
     }
-
-    fn hand_on(&self, hand_on: &HandOn, batch: &mut Batch) -> Result<Done, PersistError> {
-        let Some(stored) = self.stored(batch, &hand_on.claim)? else {
-            return Ok(Done::Yes(false));
-        };
-        if stored.released {
-            // Handed on already under this token: an answer that was lost.
-            return Ok(Done::Yes(stored.claim.token == hand_on.claim.token));
-        }
-        if stored.claim.token != hand_on.claim.token {
-            return Ok(Done::Yes(false));
-        }
-        let result = &hand_on.result;
-        batch.put(
-            JOURNEY,
-            result.journey.value().to_be_bytes().to_vec(),
-            Some(result.bytes()),
-        );
-        for message in &hand_on.messages {
-            let key = message.message.value().to_be_bytes().to_vec();
-            batch.put(MESSAGE, key, Some(message.bytes()));
-        }
-        for next in &hand_on.next {
-            batch.put(
-                JOURNEY,
-                next.journey.value().to_be_bytes().to_vec(),
-                Some(next.bytes()),
-            );
-        }
-        give_back(batch, stored.claim);
-        Ok(Done::Yes(true))
-    }
-}
-
-/// `claim` held until `until`, written in `batch`.
-fn hold(batch: &mut Batch, mut claim: Claim, until: i128) -> Claim {
-    claim.until_unix_nanos = until;
-    let stored = Stored {
-        claim: claim.clone(),
-        released: false,
-    };
-    batch.put(CLAIM, key(&claim), Some(stored.bytes()));
-    claim
-}
-
-/// `claim` given back, its token kept, written in `batch`.
-fn give_back(batch: &mut Batch, claim: Claim) {
-    let key = key(&claim);
-    let stored = Stored {
-        claim,
-        released: true,
-    };
-    batch.put(CLAIM, key, Some(stored.bytes()));
-}
-
-/// Where a Journey's claim is kept: under the Journey's identifier.
-fn key(claim: &Claim) -> Vec<u8> {
-    claim.journey.value().to_be_bytes().to_vec()
 }
 
 /// The failure of a batch, said again to each write that was in it.

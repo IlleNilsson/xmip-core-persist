@@ -134,7 +134,24 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// As [`EncryptedStore::put`]; nothing is written then.
     pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
-        let batch = changes
+        self.engine.apply(&self.sealed(changes)?)
+    }
+
+    /// Every change of `changes` as one write through the engine's
+    /// [`Engine::apply_deferred`]: all or none, durable with the next write
+    /// that is durable on return, not on its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`EncryptedStore::apply`].
+    pub fn apply_deferred(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
+        self.engine.apply_deferred(&self.sealed(changes)?)
+    }
+
+    /// `changes` as the engine keeps them: each place a keyed hash, each
+    /// value sealed.
+    fn sealed(&self, changes: &[RecordChange<'_>]) -> Result<Vec<Change>, PersistError> {
+        changes
             .iter()
             .map(|(kind, key, value)| {
                 let place = place(kind, key);
@@ -144,8 +161,7 @@ impl<E: Engine> EncryptedStore<E> {
                     .transpose()?;
                 Ok((self.lookup.keyed_hash(&place).to_vec(), sealed))
             })
-            .collect::<Result<Vec<Change>, PersistError>>()?;
-        self.engine.apply(&batch)
+            .collect()
     }
 
     /// The engine beneath, as it is: what it holds is ciphertext.

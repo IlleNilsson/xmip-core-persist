@@ -11,6 +11,7 @@
 //! it is given, byte for byte.
 
 use codec::cursor::Cursor;
+use codec::field;
 use codec::writer::ByteWriter;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -196,22 +197,19 @@ fn read<T>(result: codec::Result<T>) -> Result<T, PersistError> {
 }
 
 pub(crate) fn write_u128(out: &mut Vec<u8>, value: u128) {
-    out.bytes(&value.to_be_bytes());
+    out.u128_be(value);
 }
 
 pub(crate) fn read_u128(cursor: &mut Cursor<'_>) -> Result<u128, PersistError> {
-    let bytes = read(cursor.take(16))?;
-    let mut array = [0u8; 16];
-    array.copy_from_slice(bytes);
-    Ok(u128::from_be_bytes(array))
+    read(cursor.u128_be())
 }
 
 pub(crate) fn write_i128(out: &mut Vec<u8>, value: i128) {
-    out.bytes(&value.to_be_bytes());
+    out.i128_be(value);
 }
 
 pub(crate) fn read_i128(cursor: &mut Cursor<'_>) -> Result<i128, PersistError> {
-    read_u128(cursor).map(u128::cast_signed)
+    read(cursor.i128_be())
 }
 
 pub(crate) fn write_u32(out: &mut Vec<u8>, value: u32) {
@@ -238,23 +236,21 @@ pub(crate) fn read_byte(cursor: &mut Cursor<'_>) -> Result<u8, PersistError> {
     read(cursor.byte())
 }
 
-/// Bytes, counted.
+/// Bytes, counted ([`codec::field::counted`]).
 pub(crate) fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    out.u32_be(length).bytes(&bytes[..length as usize]);
+    field::counted(out, bytes);
 }
 
 pub(crate) fn read_bytes(cursor: &mut Cursor<'_>) -> Result<Vec<u8>, PersistError> {
-    let length = read_u32(cursor)?;
-    Ok(read(cursor.take(length as usize))?.to_vec())
+    Ok(read(field::read_counted(cursor))?.to_vec())
 }
 
 pub(crate) fn write_text(out: &mut Vec<u8>, text: &str) {
-    write_bytes(out, text.as_bytes());
+    field::text(out, text);
 }
 
 pub(crate) fn read_text(cursor: &mut Cursor<'_>) -> Result<String, PersistError> {
-    String::from_utf8(read_bytes(cursor)?).map_err(|_| malformed("text that is not UTF-8"))
+    read(field::read_text(cursor))
 }
 
 impl Form for StreamChunk {
@@ -400,7 +396,7 @@ mod tests {
     fn claim() -> Claim {
         Claim {
             journey: JourneyId::new(0x0199_0000_0000_7000_8000_0000_0000_0007),
-            holder: "xmip:///C1/node/alpha".to_string(),
+            holder: configure::fixture::test_cluster().node_scope(0),
             token: 42,
             until_unix_nanos: -5,
         }

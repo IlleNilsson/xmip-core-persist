@@ -57,6 +57,28 @@ pub trait Engine: Send + Sync {
     /// [`PersistError::Engine`] when the engine cannot write; nothing of
     /// the batch is written then.
     fn apply(&self, batch: &[Change]) -> Result<(), PersistError>;
+
+    /// Every change of `batch` as one write, all or none, in order with
+    /// every other write and **not synced on return**: it is durable once
+    /// a later [`Engine::apply`] — or any write durable on return — has
+    /// returned, since that sync covers everything written before it. What
+    /// a write is worth before then is what an operating system keeps of a
+    /// process that died. An engine without a cheaper write syncs it as
+    /// [`Engine::apply`] does, which is what this does unless an engine
+    /// says otherwise.
+    ///
+    /// It is how a Stream's chunks are written: nothing is acknowledged
+    /// before the Publication that refers to them commits, and that
+    /// commit's sync makes them durable with it, so a receive cycle costs
+    /// one sync (`runtime-model.md` section 3, *The Ledger*).
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot write; nothing of
+    /// the batch is written then.
+    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+        self.apply(batch)
+    }
 }
 
 /// One change of a batch: a key and its new value, `None` removing it.
@@ -89,6 +111,10 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
     fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
         (**self).apply(batch)
     }
+
+    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+        (**self).apply_deferred(batch)
+    }
 }
 
 /// An engine lent is an engine: a test opens the layer again over the same
@@ -116,5 +142,9 @@ impl<E: Engine + ?Sized> Engine for &E {
 
     fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
         (**self).apply(batch)
+    }
+
+    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+        (**self).apply_deferred(batch)
     }
 }
