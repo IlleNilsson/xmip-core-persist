@@ -22,9 +22,10 @@ use xcore::Clock;
 
 use super::claim::{self, Standing, Stored, end, hold};
 use super::dead::{self, Replay, Replayed};
+use super::hand_on::HandOn;
 use super::hold;
 use super::publication::Publication;
-use super::record::{AuditEntry, Claim, Form, HandOn, JourneyRecord, malformed};
+use super::record::{AuditEntry, Claim, Form, malformed};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The record kinds of the runtime database.
@@ -70,12 +71,6 @@ pub(crate) enum Op {
     Publish(Box<Publication>),
     /// An entry's Journeys written and the entry taken out, audited.
     Replay(Box<Replay>),
-    /// A held Journey written as its step left it, and its place let go.
-    ReleaseHeld {
-        queue: u128,
-        sequence: u64,
-        journey: JourneyRecord,
-    },
     Audit(AuditEntry),
     /// The keeper moved audit record `sequence`: forget it here, where the
     /// keeper has not moved past it already.
@@ -291,15 +286,8 @@ impl<R: Engine> Writer<R> {
                 Ok(Done::Written)
             }
             Op::Claim { claim, lease_nanos } => {
-                let stored = self.stored(batch, &claim)?;
-                if let Some(stored) = &stored
-                    && stored.standing == Standing::Held
-                    && stored.claim.until_unix_nanos >= now
-                {
-                    let ours = stored.claim.token == claim.token;
-                    return Ok(Done::Claim(ours.then(|| stored.claim.clone())));
-                }
-                Ok(Done::Claim(Some(hold(batch, claim, now + lease_nanos))))
+                let until = now.saturating_add(lease_nanos);
+                claim::take(&self.store, batch, claim, (now, until)).map(Done::Claim)
             }
             Op::Renew { claim, lease_nanos } => match self.stored(batch, &claim)? {
                 Some(stored) if stored.held_by(&claim) => Ok(Done::Claim(Some(hold(
@@ -316,7 +304,7 @@ impl<R: Engine> Writer<R> {
                 }
                 _ => Ok(Done::Yes(false)),
             },
-            Op::HandOn(hand_on) => claim::hand_on(&self.store, batch, &hand_on).map(Done::Yes),
+            Op::HandOn(hand_on) => claim::hand_on(&self.store, batch, &hand_on, now).map(Done::Yes),
             Op::Publish(publication) => {
                 let message = &publication.message;
                 batch.record(MESSAGE, message.message.value(), message);
@@ -329,6 +317,11 @@ impl<R: Engine> Writer<R> {
                 if let Some(dead) = &publication.dead {
                     dead::keep(&self.store, batch, dead)?;
                 }
+                let lease = i128::from(publication.lease_nanos);
+                for taken in &publication.claims {
+                    let until = now.saturating_add(lease);
+                    claim::take(&self.store, batch, taken.clone(), (now, until))?;
+                }
                 self.decide(Op::Audit(publication.audit), now, batch)
             }
             Op::Replay(replay) => match dead::replay(&self.store, batch, &replay)? {
@@ -337,15 +330,6 @@ impl<R: Engine> Writer<R> {
                     .map(|_| Done::Replayed(Replayed::Now)),
                 other => Ok(Done::Replayed(other)),
             },
-            Op::ReleaseHeld {
-                queue,
-                sequence,
-                journey,
-            } => {
-                batch.record(JOURNEY, journey.journey.value(), &journey);
-                hold::let_go(&self.store, batch, queue, sequence)?;
-                Ok(Done::Written)
-            }
             Op::Audit(entry) => {
                 let number = self.next;
                 self.next += 1;

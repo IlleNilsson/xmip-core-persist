@@ -15,11 +15,15 @@
 //! lost answer finds it held already and takes no second place: one
 //! Journey, one delivery (the dedup key is the Journey's identifier).
 //!
-//! **Released only once its Journey is.** [`super::XmipStorage::release_held`]
-//! writes the Journey as the step left it and lets go of its place in one
-//! write: a Journey that was delivered, or stopped for good. One whose send
-//! failed is written Failed and keeps its place — the Message stays with
-//! its Journey (`runtime-model.md` section 12).
+//! **Let go of only by a hand-on.** [`super::XmipStorage::hand_on`] writes
+//! the Journey as its step left it and lets go of its place in one write
+//! (`HandOn::leaves`): a held Journey moved on to where it is sent once its
+//! Subscription is resumed, or a send that is done.
+//!
+//! **A queue is any line Journeys wait in.** A paused Subscription's is
+//! one; a Send Port's is another — every Journey bound for it, in the order
+//! its Publications were written, until its send is handed on
+//! (`runtime-model.md` section 10). Both are kept here, the same way.
 //!
 //! A queue is found by its identifier: [`named`], the name-based `UUID` of
 //! the URI naming the Subscription, so the operator state that pauses it in
@@ -132,6 +136,21 @@ pub(crate) fn let_go<R: Engine>(
     let held = Held::from_bytes(&bytes)?;
     queue::forget(batch, KINDS, (queue, held.hold.journey.value()));
     Ok(())
+}
+
+/// The place `journey` holds in `queue` let go of, in `batch` — found by
+/// the queue's index — as [`let_go`] lets go of it; nothing where it holds
+/// none, so a hand-on asked again does nothing twice.
+pub(crate) fn let_go_of<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    queue: u128,
+    journey: JourneyId,
+) -> Result<(), PersistError> {
+    match queue::placed(store, batch, KINDS, (queue, journey.value()))? {
+        queue::Placed::At(sequence) => let_go(store, batch, queue, sequence),
+        queue::Placed::Never | queue::Placed::TakenOut => Ok(()),
+    }
 }
 
 /// `queue` as `store` holds it: its places, and up to `most` it holds from

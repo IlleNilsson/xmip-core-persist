@@ -17,7 +17,10 @@ use codec::cursor::Cursor;
 
 use super::dead::DeadMessage;
 use super::hold::Hold;
-use super::record::{AuditEntry, Form, JourneyRecord, MessageRecord, read_byte, write_byte};
+use super::record::{
+    AuditEntry, Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u64, write_byte,
+    write_u64,
+};
 use crate::PersistError;
 
 /// A Message, the Journeys it opened, the ones held, its Dead Message Queue
@@ -33,6 +36,13 @@ pub struct Publication {
     /// Where nothing matched: the entry its node's Dead Message Queue keeps.
     pub dead: Option<DeadMessage>,
     pub audit: AuditEntry,
+    /// Those of `journeys` the publishing node claims in the same write, to
+    /// carry on itself on its own Send pool, each for `lease_nanos` from
+    /// the Storage node's now: the send costs no sync of its own before it
+    /// starts (`runtime-model.md` section 10). A claim another holds, and
+    /// has not let lapse, is not taken.
+    pub claims: Vec<Claim>,
+    pub lease_nanos: u64,
 }
 
 impl Form for Publication {
@@ -45,6 +55,8 @@ impl Form for Publication {
             dead.write(out);
         }
         self.audit.write(out);
+        self.claims.write(out);
+        write_u64(out, self.lease_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -57,6 +69,8 @@ impl Form for Publication {
                 _ => Some(DeadMessage::read(cursor)?),
             },
             audit: AuditEntry::read(cursor)?,
+            claims: Vec::read(cursor)?,
+            lease_nanos: read_u64(cursor)?,
         })
     }
 }
@@ -98,6 +112,13 @@ mod tests {
                 id: AuditId::new(4),
                 body: b"published".to_vec(),
             },
+            claims: vec![Claim {
+                journey: JourneyId::new(2),
+                holder: configure::fixture::test_cluster().node_scope(0),
+                token: 11,
+                until_unix_nanos: 0,
+            }],
+            lease_nanos: 30_000_000_000,
         };
         assert_eq!(
             Publication::from_bytes(&publication.bytes()).expect("read"),

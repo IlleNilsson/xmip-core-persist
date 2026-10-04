@@ -18,10 +18,11 @@ use codec::cursor::Cursor;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::hand_on::HandOn;
 use super::hold::HeldQueue;
 use super::publication::Publication;
 use super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, HandOn, JourneyRecord,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
     write_byte, write_text, write_u32, write_u64, write_u128,
 };
@@ -52,7 +53,6 @@ pub(crate) enum Request {
     RemoveAdministration(AdministrationKind, u128),
     Publish(Publication),
     ReadHeld(u128, u64, u32),
-    ReleaseHeld(u128, u64, JourneyRecord),
     ReadDead(u128, u64, u32),
     ReadDeadMessage(u128, MessageId),
     Replay(Replay),
@@ -189,25 +189,19 @@ impl Form for Request {
                 write_u64(out, *from);
                 write_u32(out, *most);
             }
-            Self::ReleaseHeld(queue, sequence, journey) => {
-                write_byte(out, 19);
-                write_u128(out, *queue);
-                write_u64(out, *sequence);
-                journey.write(out);
-            }
             Self::ReadDead(queue, from, most) => {
-                write_byte(out, 20);
+                write_byte(out, 19);
                 write_u128(out, *queue);
                 write_u64(out, *from);
                 write_u32(out, *most);
             }
             Self::ReadDeadMessage(queue, message) => {
-                write_byte(out, 21);
+                write_byte(out, 20);
                 write_u128(out, *queue);
                 write_u128(out, message.value());
             }
             Self::Replay(replay) => {
-                write_byte(out, 22);
+                write_byte(out, 21);
                 replay.write(out);
             }
         }
@@ -233,14 +227,9 @@ impl Form for Request {
             16 => Self::RemoveAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
             17 => Self::Publish(Publication::read(cursor)?),
             18 => Self::ReadHeld(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
-            19 => Self::ReleaseHeld(
-                read_u128(cursor)?,
-                read_u64(cursor)?,
-                JourneyRecord::read(cursor)?,
-            ),
-            20 => Self::ReadDead(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
-            21 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
-            22 => Self::Replay(Replay::read(cursor)?),
+            19 => Self::ReadDead(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
+            20 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
+            21 => Self::Replay(Replay::read(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -393,14 +382,18 @@ mod tests {
             Request::ReadChunk(StreamId::new(1), 2),
             Request::KeepAudit(64),
             Request::ReadHeld(7, 2, 64),
-            Request::ReleaseHeld(
-                7,
-                2,
-                JourneyRecord {
+            Request::HandOn(HandOn {
+                claim: claim.clone(),
+                result: JourneyRecord {
                     journey: JourneyId::new(5),
                     body: b"delivered".to_vec(),
                 },
-            ),
+                messages: Vec::new(),
+                next: Vec::new(),
+                leaves: vec![7],
+                queued: Vec::new(),
+                kept_for_nanos: None,
+            }),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
             Request::Publish(Publication {
                 message: MessageRecord {
@@ -414,6 +407,8 @@ mod tests {
                     id: AuditId::new(2),
                     body: b"published".to_vec(),
                 },
+                claims: vec![claim.clone()],
+                lease_nanos: 30_000_000_000,
             }),
             Request::ReadDead(7, 2, 64),
             Request::ReadDeadMessage(7, MessageId::new(1)),

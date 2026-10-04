@@ -20,10 +20,11 @@ use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 use super::XmipStorage;
 use super::commit::{AUDIT, CHUNK, Committer, Done, JOURNEY, KEPT, MESSAGE, NEXT, Op, sequence};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
+use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
 use super::publication::Publication;
 use super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, HandOn, JourneyRecord,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk,
 };
 use crate::{EncryptedStore, Engine, PersistError};
@@ -179,19 +180,6 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         hold::read(&self.runtime, queue, from, most)
-    }
-
-    fn release_held(
-        &self,
-        queue: u128,
-        sequence: u64,
-        journey: &JourneyRecord,
-    ) -> Result<(), PersistError> {
-        self.written(Op::ReleaseHeld {
-            queue,
-            sequence,
-            journey: journey.clone(),
-        })
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
@@ -445,6 +433,9 @@ mod tests {
             result: journey(JOURNEY_ID, b"by the old holder"),
             messages: Vec::new(),
             next: Vec::new(),
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            kept_for_nanos: None,
         };
         assert!(!node.hand_on(&late).expect("hand-on"));
         assert_eq!(node.read_journey(JOURNEY_ID).expect("read"), None);
@@ -472,6 +463,9 @@ mod tests {
                 body: b"generation 2".to_vec(),
             }],
             next: vec![journey(next, b"to send")],
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            kept_for_nanos: None,
         };
         assert!(node.hand_on(&hand_on).expect("handed on"));
         assert_eq!(
@@ -535,6 +529,8 @@ mod tests {
                 id: AuditId::new(9),
                 body: b"published".to_vec(),
             },
+            claims: Vec::new(),
+            lease_nanos: 0,
         };
         node.publish(&publication).expect("published");
         assert_eq!(
@@ -568,6 +564,8 @@ mod tests {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
             },
+            claims: Vec::new(),
+            lease_nanos: 0,
         }
     }
 
@@ -595,6 +593,8 @@ mod tests {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
             },
+            claims: Vec::new(),
+            lease_nanos: 0,
         }
     }
 
@@ -731,17 +731,19 @@ mod tests {
         assert_eq!(places, [0, 1, 2, 3]);
         assert_eq!(read.held[2].hold.journey, JourneyId::new(3));
 
-        let delivered = journey(JourneyId::new(2), b"delivered");
-        node.release_held(7, 1, &delivered).expect("released");
-        node.release_held(7, 1, &delivered).expect("asked again");
+        let delivered = leaving(&node, 7, 2, b"delivered");
+        assert!(node.hand_on(&delivered).expect("let go of"));
+        assert!(node.hand_on(&delivered).expect("asked again"));
         assert_eq!(
             node.read_journey(JourneyId::new(2)).expect("read"),
-            Some(delivered)
+            Some(delivered.result)
         );
         let read = node.read_held(7, 0, 10).expect("read");
         assert_eq!((read.first, read.count), (0, 3), "the first stays");
-        node.release_held(7, 0, &journey(JourneyId::new(1), b"done"))
-            .expect("released");
+        assert!(
+            node.hand_on(&leaving(&node, 7, 1, b"done"))
+                .expect("let go of")
+        );
         let read = node.read_held(7, 0, 2).expect("read");
         let places: Vec<u64> = read.held.iter().map(|held| held.sequence).collect();
         assert_eq!((read.first, read.count, places), (2, 2, vec![2, 3]));
@@ -769,16 +771,90 @@ mod tests {
         assert_eq!(none_held, None);
         assert_eq!(node.keep_audit(10).expect("kept"), 0, "no audit record");
 
-        // A release whose queue cannot be read, after its Journey was
+        // A hand-on whose queue cannot be read, after its Journey was
         // written and its place let go of.
         node.publish(&holding(8, 2)).expect("published");
+        let delivered = leaving(&node, 8, 2, b"delivered");
         torn(8);
-        let delivered = journey(JourneyId::new(2), b"delivered");
-        assert!(node.release_held(8, 0, &delivered).is_err());
+        assert!(node.hand_on(&delivered).is_err());
         let left = node.read_journey(JourneyId::new(2)).expect("read");
         assert_eq!(left, Some(journey(JourneyId::new(2), b"held")));
         let still = node.runtime().get(HELD, &held_key(8, 0)).expect("read");
         assert!(still.is_some(), "its place kept");
+        let taken = node.claim(JourneyId::new(2), &holder(1), 9, LEASE);
+        assert_eq!(taken.expect("claimed"), None, "and its claim");
+    }
+
+    /// The Journey `id` claimed and handed on as `body`, leaving `queue`.
+    fn leaving(node: &Node, queue: u128, id: u128, body: &[u8]) -> HandOn {
+        let claim = node
+            .claim(JourneyId::new(id), &holder(0), id, LEASE)
+            .expect("claimed")
+            .expect("taken");
+        HandOn {
+            claim,
+            result: journey(JourneyId::new(id), body),
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: vec![queue],
+            queued: Vec::new(),
+            kept_for_nanos: None,
+        }
+    }
+
+    #[test]
+    fn a_hand_on_that_waits_keeps_its_claim_until_its_due_time_and_moves_a_journey_on() {
+        let (node, clock) = node();
+        node.publish(&holding(7, 1)).expect("published");
+        let mut moved = leaving(&node, 7, 1, b"moved on");
+        moved.queued = vec![super::super::Hold {
+            queue: 9,
+            journey: JourneyId::new(1),
+            body: b"facts".to_vec(),
+        }];
+        moved.kept_for_nanos = Some(5_000_000_000);
+        assert!(node.hand_on(&moved).expect("handed on"));
+        assert_eq!(node.read_held(7, 0, 10).expect("read").count, 0, "left");
+        let waiting = node.read_held(9, 0, 10).expect("read");
+        assert_eq!(waiting.held[0].hold.journey, JourneyId::new(1), "joined");
+        let other = node.claim(JourneyId::new(1), &holder(1), 2, LEASE);
+        assert_eq!(other.expect("claimed"), None, "kept until it is due");
+        clock.pass(5_000_000_001);
+        let lapsed = node.claim(JourneyId::new(1), &holder(1), 2, LEASE);
+        assert!(lapsed.expect("claimed").is_some(), "due: another takes it");
+    }
+
+    #[test]
+    fn a_publication_claims_what_its_node_carries_on_and_not_what_another_holds() {
+        let (node, clock) = node();
+        let other = node
+            .claim(JourneyId::new(2), &holder(1), 7, LEASE)
+            .expect("claimed")
+            .expect("taken");
+        let claim = |id: u128| Claim {
+            journey: JourneyId::new(id),
+            holder: holder(0),
+            token: id,
+            until_unix_nanos: 0,
+        };
+        let publication = Publication {
+            claims: vec![claim(1), claim(2)],
+            lease_nanos: 1_000,
+            ..holding(7, 1)
+        };
+        node.publish(&publication).expect("published");
+        assert_eq!(
+            node.claim(JourneyId::new(1), &holder(1), 8, LEASE)
+                .expect("c"),
+            None
+        );
+        assert_eq!(
+            node.renew(&other, LEASE).expect("renewed").map(|c| c.token),
+            Some(7)
+        );
+        clock.pass(1_001);
+        let lapsed = node.claim(JourneyId::new(1), &holder(1), 8, LEASE);
+        assert!(lapsed.expect("claimed").is_some(), "its lease ran out");
     }
 
     #[test]
@@ -807,6 +883,9 @@ mod tests {
             result: journey(JOURNEY_ID, b"routed"),
             messages: Vec::new(),
             next: Vec::new(),
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            kept_for_nanos: None,
         };
         assert!(!node.hand_on(&hand_on).expect("hand-on"), "only released");
         assert_eq!(node.read_journey(JOURNEY_ID).expect("read"), None);

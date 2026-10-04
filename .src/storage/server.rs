@@ -223,9 +223,6 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)
         }
-        Request::ReleaseHeld(queue, sequence, journey) => storage
-            .release_held(queue, sequence, &journey)
-            .map(|()| Answer::Done),
         Request::ReadDead(queue, from, most) => {
             storage.read_dead(queue, from, most).map(Answer::DeadQueue)
         }
