@@ -4,7 +4,9 @@
 //! ([`super::commit`]); what a claim is written as is here.
 
 use super::commit::{Batch, CLAIM, JOURNEY, MESSAGE};
-use super::record::{Claim, Form, HandOn, malformed, read_byte};
+use super::hand_on::HandOn;
+use super::hold;
+use super::record::{Claim, Form, malformed, read_byte};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where a claim stands: held, or ended one of two ways, each kept as it
@@ -56,6 +58,27 @@ impl Stored {
     }
 }
 
+/// `claim` taken in `batch` until `until`, where its Journey has no claim
+/// held at `now` — none, ended, or lapsed — or one held under its own token,
+/// a request asked again: the claim held, or `None` where another holds it
+/// (`runtime-model.md` section 3: *set the owner where the owner is empty or
+/// lapsed*).
+pub(crate) fn take<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    claim: Claim,
+    (now, until): (i128, i128),
+) -> Result<Option<Claim>, PersistError> {
+    if let Some(stored) = stored(store, batch, &claim)?
+        && stored.standing == Standing::Held
+        && stored.claim.until_unix_nanos >= now
+    {
+        let ours = stored.claim.token == claim.token;
+        return Ok(ours.then_some(stored.claim));
+    }
+    Ok(Some(hold(batch, claim, until)))
+}
+
 /// `claim` held until `until`, written in `batch`.
 pub(crate) fn hold(batch: &mut Batch<'_>, mut claim: Claim, until: i128) -> Claim {
     claim.until_unix_nanos = until;
@@ -91,14 +114,17 @@ pub(crate) fn stored<R: Engine>(
         .transpose()
 }
 
-/// `hand_on` decided in `batch`: its result, what it made and what follows
-/// written and its claim ended handed on — `true` — where the claim is its
-/// holder's; `true` and nothing written where it was handed on already
-/// under its token, an answer that was lost; `false` otherwise.
+/// `hand_on` decided in `batch` at `now`: its result, what it made and what
+/// follows written, the places it leaves let go of and the ones it takes
+/// kept, and its claim ended handed on — or kept, where the step waits —
+/// `true`, where the claim is its holder's; `true` and nothing written
+/// where it was handed on already under its token, an answer that was
+/// lost; `false` otherwise.
 pub(crate) fn hand_on<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
     hand_on: &HandOn,
+    now: i128,
 ) -> Result<bool, PersistError> {
     let Some(stored) = stored(store, batch, &hand_on.claim)? else {
         return Ok(false);
@@ -120,6 +146,17 @@ pub(crate) fn hand_on<R: Engine>(
     for next in &hand_on.next {
         batch.record(JOURNEY, next.journey.value(), next);
     }
-    end(batch, stored.claim, Standing::HandedOn);
+    for queue in &hand_on.leaves {
+        hold::let_go_of(store, batch, *queue, hand_on.claim.journey)?;
+    }
+    for kept in &hand_on.queued {
+        hold::keep(store, batch, kept)?;
+    }
+    match hand_on.kept_for_nanos {
+        Some(nanos) => {
+            hold(batch, stored.claim, now.saturating_add(i128::from(nanos)));
+        }
+        None => end(batch, stored.claim, Standing::HandedOn),
+    }
     Ok(true)
 }

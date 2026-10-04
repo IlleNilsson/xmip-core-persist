@@ -58,21 +58,6 @@ pub struct Claim {
     pub until_unix_nanos: i128,
 }
 
-/// One step handed on: its result, what it made and the Journeys that go
-/// on from it, written with the claim released, as one write
-/// (`runtime-model.md` section 3: *Every hand-on is one atomic write — the
-/// step's result, the next Journey and the claim released together*).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HandOn {
-    pub claim: Claim,
-    /// The claimed Journey as the step left it.
-    pub result: JourneyRecord,
-    /// The Messages the step made.
-    pub messages: Vec<MessageRecord>,
-    /// The Journeys that go on from it.
-    pub next: Vec<JourneyRecord>,
-}
-
 /// An audit record as its writer said it: written to the runtime database
 /// first and moved to the administration database by the audit keeper
 /// (ADR-0062, amendment 2026-10-01). The body is the audit capability's.
@@ -331,24 +316,6 @@ impl<T: Form> Form for Vec<T> {
     }
 }
 
-impl Form for HandOn {
-    fn write(&self, out: &mut Vec<u8>) {
-        self.claim.write(out);
-        self.result.write(out);
-        self.messages.write(out);
-        self.next.write(out);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(Self {
-            claim: Claim::read(cursor)?,
-            result: JourneyRecord::read(cursor)?,
-            messages: Vec::read(cursor)?,
-            next: Vec::read(cursor)?,
-        })
-    }
-}
-
 impl Form for AuditEntry {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.id.value());
@@ -413,22 +380,6 @@ mod tests {
         assert_eq!(
             StreamChunk::from_bytes(&chunk.bytes()).expect("chunk"),
             chunk
-        );
-        let hand_on = HandOn {
-            claim: claim(),
-            result: JourneyRecord {
-                journey: claim().journey,
-                body: b"done".to_vec(),
-            },
-            messages: vec![MessageRecord {
-                message: MessageId::new(8),
-                body: vec![0, 1, 2],
-            }],
-            next: Vec::new(),
-        };
-        assert_eq!(
-            HandOn::from_bytes(&hand_on.bytes()).expect("hand-on"),
-            hand_on
         );
         for kind in AdministrationKind::ALL {
             let record = AdministrationRecord {

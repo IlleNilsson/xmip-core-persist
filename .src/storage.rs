@@ -7,12 +7,13 @@
 //!
 //! - **the runtime database**, the Ledger: write and read a Stream chunk, a
 //!   Message and a Journey; write a Publication — a Message, its Journeys,
-//!   the ones a paused Subscription holds, its Dead Message Queue entry
-//!   where nothing matched, and its audit record — as one; read what a
-//!   Subscription holds, oldest first, and release a held Journey once its
-//!   step is done; read a node's Dead Message Queue, oldest first, and
-//!   replay an entry; claim a Journey, renew the claim and release it;
-//!   hand a step on; write an audit record as it is first written;
+//!   the ones a paused Subscription holds and the ones that wait in their
+//!   Send Port's queue, the claims its node takes on them, its Dead Message
+//!   Queue entry where nothing matched, and its audit record — as one; read
+//!   a queue, oldest first; read a node's Dead Message Queue, oldest first,
+//!   and replay an entry; claim a Journey, renew the claim and release it;
+//!   hand a step on, leaving a queue or waiting in one; write an audit
+//!   record as it is first written;
 //! - **the audit keeper**, moving audit records from the runtime database to
 //!   the administration database (ADR-0062, amendment 2026-10-01);
 //! - **the administration database**: what must be shared and kept over
@@ -46,6 +47,7 @@ mod commit;
 pub mod database;
 mod dead;
 mod embedded;
+mod hand_on;
 mod hold;
 mod publication;
 mod queue;
@@ -59,10 +61,11 @@ pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
 pub use embedded::Embedded;
+pub use hand_on::HandOn;
 pub use hold::{Held, HeldQueue, Hold, named};
 pub use publication::Publication;
 pub use record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, HandOn, JourneyRecord,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk,
 };
 pub use server::{ALPN, StorageServer};
@@ -133,7 +136,8 @@ pub trait XmipStorage: Send + Sync {
     fn read_journey(&self, journey: JourneyId) -> Result<Option<JourneyRecord>, PersistError>;
 
     /// Write a Publication as one atomic write: its Message, its Journeys,
-    /// the ones held and its audit record, together, or nothing. Written
+    /// the ones held, the claims its node takes on them and its audit
+    /// record, together, or nothing. Written
     /// again after a lost answer, its records are written again under their
     /// identifiers, each held Journey keeps the one place it has, by its
     /// identifier, and its audit record is kept once, by its identifier, by
@@ -153,22 +157,6 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag: the caller tries again,
     /// and takes nothing past what it could not read.
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError>;
-
-    /// Release the Journey held at `sequence` in `queue`, writing `journey`
-    /// as its step left it, as one write: once it was delivered, or
-    /// stopped for good. A Journey whose step failed is written with
-    /// [`XmipStorage::write_journey`] and keeps its place. Released again
-    /// after a lost answer, nothing is let go twice.
-    ///
-    /// # Errors
-    ///
-    /// When it cannot be written; nothing of it is written then.
-    fn release_held(
-        &self,
-        queue: u128,
-        sequence: u64,
-        journey: &JourneyRecord,
-    ) -> Result<(), PersistError>;
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place
@@ -237,10 +225,12 @@ pub trait XmipStorage: Send + Sync {
     fn release(&self, claim: &Claim) -> Result<bool, PersistError>;
 
     /// Hand a step on as one atomic write: its result, the Messages it made,
-    /// the Journeys that go on, and the claim released, together — or
-    /// nothing, and `false`, where the claim is no longer its holder's. A
-    /// hand-on repeated after a lost answer is `true` and writes nothing
-    /// again; one after its claim was only given back is `false`.
+    /// the Journeys that go on, the queues it leaves and the places it
+    /// takes, and the claim released — or kept until a due time, where the
+    /// step waits — together; or nothing, and `false`, where the claim is no
+    /// longer its holder's. A hand-on repeated after a lost answer is `true`
+    /// and writes nothing again; one after its claim was only given back is
+    /// `false`.
     ///
     /// # Errors
     ///

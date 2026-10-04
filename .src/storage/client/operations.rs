@@ -8,11 +8,12 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::super::XmipStorage;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
 use super::super::publication::Publication;
 use super::super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, HandOn, JourneyRecord,
-    MessageRecord, StreamChunk,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, JourneyRecord, MessageRecord,
+    StreamChunk,
 };
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
@@ -107,16 +108,6 @@ impl XmipStorage for StorageClient {
                 other => Err(other),
             },
         )
-    }
-
-    fn release_held(
-        &self,
-        queue: u128,
-        sequence: u64,
-        journey: &JourneyRecord,
-    ) -> Result<(), PersistError> {
-        let request = Request::ReleaseHeld(queue, sequence, journey.clone());
-        expected(self.ask(&request)?, done)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {

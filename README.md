@@ -46,11 +46,13 @@ and 9).
 
 - **`XmipStorage`** — the operations, once: write and read a Stream chunk, a
   Message, a Journey; `publish` a receive's Publication — its Message, the
-  Journeys it opened, the ones a paused Subscription holds, its entry in the
-  node's Dead Message Queue where nothing matched (`DeadMessage`: receive
-  context, gate verdicts, promoted properties, every Subscription's decline)
-  and its audit record — as one atomic write; read what a Subscription
-  holds, oldest first, and release a held Journey once its step is done;
+  Journeys it opened, the ones a paused Subscription holds and the rest in
+  the queue of the Send Port each leads to, the claims its node takes on
+  those it sends itself (`Publication::claims`, for `lease_nanos`), its
+  entry in the node's Dead Message Queue where nothing matched
+  (`DeadMessage`: receive context, gate verdicts, promoted properties, every
+  Subscription's decline) and its audit record — as one atomic write; read
+  a queue — a Subscription's, a Send Port's — oldest first (`read_held`);
   read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
   time; `read_dead_message`, one entry) and `replay` an entry — the
   Journeys a routing against the Subscriptions of now opened, the ones held,
@@ -61,7 +63,10 @@ and 9).
   Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
-  Journeys that follow and the claim released, as one atomic write; write an
+  Journeys that follow, the queues the Journey leaves (`HandOn::leaves`)
+  and the places it takes (`HandOn::queued`), and the claim released, or
+  kept to a due time where the step waits (`HandOn::kept_for_nanos`, a
+  retry's backoff, holding no thread), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,
   moving each to the administration database exactly once, by its
   identifier; and the administration records — registration, membership,
