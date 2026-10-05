@@ -152,6 +152,9 @@ pub(crate) fn hand_on<R: Engine>(
     for kept in &hand_on.queued {
         hold::keep(store, batch, kept)?;
     }
+    for queue in &hand_on.requeued {
+        hold::to_the_end(store, batch, *queue, hand_on.claim.journey)?;
+    }
     match hand_on.kept_for_nanos {
         Some(nanos) => {
             hold(batch, stored.claim, now.saturating_add(i128::from(nanos)));

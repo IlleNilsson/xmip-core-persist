@@ -30,6 +30,11 @@ pub struct HandOn {
     /// The places Journeys take, each at the end of its queue: where the
     /// claimed Journey, or one that goes on from it, waits next.
     pub queued: Vec<Hold>,
+    /// The queues the claimed Journey moves to the end of, keeping what its
+    /// place kept beside it: an operator's Retry of a Journey that failed,
+    /// taken up again after everything that waits there now. A queue it
+    /// holds no place in is passed over.
+    pub requeued: Vec<u128>,
     /// Where the step waits rather than ends — a retry's backoff — the
     /// claim kept for this many nanoseconds from now instead of released:
     /// the due time is in the Ledger, and no thread holds it
@@ -49,6 +54,10 @@ impl Form for HandOn {
             write_u128(out, *queue);
         }
         self.queued.write(out);
+        write_u32(out, u32::try_from(self.requeued.len()).unwrap_or(u32::MAX));
+        for queue in &self.requeued {
+            write_u128(out, *queue);
+        }
         write_byte(out, u8::from(self.kept_for_nanos.is_some()));
         if let Some(nanos) = self.kept_for_nanos {
             write_u64(out, nanos);
@@ -65,6 +74,9 @@ impl Form for HandOn {
                 .map(|_| read_u128(cursor))
                 .collect::<Result<_, _>>()?,
             queued: Vec::read(cursor)?,
+            requeued: (0..read_u32(cursor)?)
+                .map(|_| read_u128(cursor))
+                .collect::<Result<_, _>>()?,
             kept_for_nanos: match read_byte(cursor)? {
                 0 => None,
                 _ => Some(read_u64(cursor)?),
@@ -103,6 +115,7 @@ mod tests {
                 journey: claim.journey,
                 body: b"facts".to_vec(),
             }],
+            requeued: vec![10],
             kept_for_nanos: Some(5_000_000_000),
         };
         assert_eq!(

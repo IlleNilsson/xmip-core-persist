@@ -64,7 +64,9 @@ and 9).
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
   Journeys that follow, the queues the Journey leaves (`HandOn::leaves`)
-  and the places it takes (`HandOn::queued`), and the claim released, or
+  and the places it takes (`HandOn::queued`), the queues it moves to the
+  end of keeping what its place kept (`HandOn::requeued`, an Operator's
+  Retry, built 2026-10-04), and the claim released, or
   kept to a due time where the step waits (`HandOn::kept_for_nanos`, a
   retry's backoff, holding no thread), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,

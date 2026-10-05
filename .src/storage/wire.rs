@@ -392,6 +392,7 @@ mod tests {
                 next: Vec::new(),
                 leaves: vec![7],
                 queued: Vec::new(),
+                requeued: Vec::new(),
                 kept_for_nanos: None,
             }),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
