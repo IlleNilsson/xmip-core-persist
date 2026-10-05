@@ -153,6 +153,28 @@ pub(crate) fn let_go_of<R: Engine>(
     }
 }
 
+/// The place `journey` holds in `queue` let go of and a new one taken at
+/// its end, in `batch`, keeping what was kept beside it: an operator's
+/// Retry, taken up after what waits there now. Nothing where it holds
+/// none.
+pub(crate) fn to_the_end<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    queue: u128,
+    journey: JourneyId,
+) -> Result<(), PersistError> {
+    let queue::Placed::At(sequence) = queue::placed(store, batch, KINDS, (queue, journey.value()))?
+    else {
+        return Ok(());
+    };
+    let Some(bytes) = queue::take_out(store, batch, KINDS, queue, sequence)? else {
+        return Ok(());
+    };
+    let held = Held::from_bytes(&bytes)?;
+    queue::forget(batch, KINDS, (queue, journey.value()));
+    keep(store, batch, &held.hold)
+}
+
 /// `queue` as `store` holds it: its places, and up to `most` it holds from
 /// the place `from` on, oldest first. A place let go of out of turn is
 /// passed over.
@@ -240,6 +262,70 @@ mod tests {
         assert_ne!(one, named(&format!("{node}/subscription/billing")));
         assert_eq!((one >> 76) & 0xf, 5, "version 5");
         assert_eq!((one >> 62) & 0x3, 0b10, "the RFC's variant");
+    }
+
+    #[test]
+    fn a_retry_moves_its_journey_to_the_end_of_its_queue_keeping_what_was_kept() {
+        use crate::fixture::Memory;
+        use crate::storage::{
+            AuditEntry, Embedded, HandOn, JourneyRecord, MessageRecord, Publication, XmipStorage,
+        };
+        use xcore::{AuditId, MessageId};
+
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        let kek = secret::KekName::new("storage").expect("a name");
+        let node = Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("open");
+        let queue = 7;
+        for id in 1..=3u128 {
+            let journey = JourneyId::new(id);
+            node.publish(&Publication {
+                message: MessageRecord {
+                    message: MessageId::new(id),
+                    body: Vec::new(),
+                },
+                journeys: vec![JourneyRecord {
+                    journey,
+                    body: b"waiting".to_vec(),
+                }],
+                held: vec![Hold {
+                    queue,
+                    journey,
+                    body: id.to_be_bytes().to_vec(),
+                }],
+                dead: None,
+                audit: AuditEntry {
+                    id: AuditId::new(id),
+                    body: Vec::new(),
+                },
+                claims: Vec::new(),
+                lease_nanos: 0,
+            })
+            .expect("published");
+        }
+        let holder = configure::fixture::test_cluster().node_scope(0);
+        let lease = std::time::Duration::from_secs(30);
+        let first = JourneyId::new(1);
+        let claim = node.claim(first, &holder, 9, lease).expect("asked");
+        let retried = HandOn {
+            claim: claim.expect("claimed"),
+            result: JourneyRecord {
+                journey: first,
+                body: b"retried".to_vec(),
+            },
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            requeued: vec![queue, 99],
+            kept_for_nanos: None,
+        };
+        assert!(node.hand_on(&retried).expect("handed on"));
+        let read = node.read_held(queue, 0, 10).expect("read");
+        let order: Vec<u128> = read.held.iter().map(|h| h.hold.journey.value()).collect();
+        assert_eq!(order, [2, 3, 1], "taken up after what waits now");
+        assert_eq!(read.count, 3, "moved, not added");
+        assert_eq!(read.held[2].hold.body, 1u128.to_be_bytes(), "what was kept");
+        assert_eq!(node.read_held(99, 0, 10).expect("read").count, 0, "none");
     }
 
     #[test]

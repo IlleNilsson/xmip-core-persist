@@ -435,6 +435,7 @@ mod tests {
             next: Vec::new(),
             leaves: Vec::new(),
             queued: Vec::new(),
+            requeued: Vec::new(),
             kept_for_nanos: None,
         };
         assert!(!node.hand_on(&late).expect("hand-on"));
@@ -465,6 +466,7 @@ mod tests {
             next: vec![journey(next, b"to send")],
             leaves: Vec::new(),
             queued: Vec::new(),
+            requeued: Vec::new(),
             kept_for_nanos: None,
         };
         assert!(node.hand_on(&hand_on).expect("handed on"));
@@ -798,6 +800,7 @@ mod tests {
             next: Vec::new(),
             leaves: vec![queue],
             queued: Vec::new(),
+            requeued: Vec::new(),
             kept_for_nanos: None,
         }
     }
@@ -885,6 +888,7 @@ mod tests {
             next: Vec::new(),
             leaves: Vec::new(),
             queued: Vec::new(),
+            requeued: Vec::new(),
             kept_for_nanos: None,
         };
         assert!(!node.hand_on(&hand_on).expect("hand-on"), "only released");
