@@ -11,9 +11,12 @@
 //! it is written, from zero, as it numbers every queue ([`super::queue`]).
 //!
 //! **Held once, by its Journey.** A held Journey is kept under its Journey's
-//! identifier as well as its place, so a Publication asked again after a
-//! lost answer finds it held already and takes no second place: one
-//! Journey, one delivery (the dedup key is the Journey's identifier).
+//! identifier as well as its place, so one write that holds it twice takes
+//! one place. A Journey let go of is forgotten here, so that a Retry can
+//! place it anew; what keeps a Publication asked again after a lost answer
+//! from queuing a Journey a second time is the Publication's own record,
+//! by its Message (`super::publication`): one Journey, one delivery (the
+//! dedup key is the Journey's identifier).
 //!
 //! **Let go of only by a hand-on.** [`super::XmipStorage::hand_on`] writes
 //! the Journey as its step left it and lets go of its place in one write

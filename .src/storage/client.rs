@@ -26,13 +26,13 @@
 //! **Asking again is safe.** A request whose answer was lost may have been
 //! done by the node that lost it; every operation is written to bear that.
 //! A record is written under its own identifier, so writing it twice leaves
-//! one; a Publication asked again holds each Journey once, by its
-//! identifier; a claim asked again under the token it holds by is that
-//! claim; a hand-on asked again after it was done is `true` and writes
-//! nothing, and is told from a claim only given back; an audit record
-//! written twice is kept once, by its identifier, by the audit keeper. And
-//! an operation that failed wrote nothing of itself, so asking it again
-//! starts clean.
+//! one; a Publication asked again writes nothing and answers as it stands,
+//! by its Message, so a Journey moved on since is not reset; a claim asked
+//! again under the token it holds by is that claim; a hand-on asked again
+//! after it was done is `true` and writes nothing, and is told from a claim
+//! only given back; an audit record written twice is kept once, by its
+//! identifier, by the audit keeper. And an operation that failed wrote
+//! nothing of itself, so asking it again starts clean.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -250,11 +250,15 @@ mod tests {
 
     use secret::{Held, KekName};
 
-    use xcore::JourneyId;
+    use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
     use super::*;
     use crate::fixture::Memory;
-    use crate::storage::{Embedded, JourneyRecord, StorageServer, XmipStorage};
+    use crate::storage::{
+        AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue,
+        Embedded, HandOn, HeldQueue, Hold, JourneyRecord, MessageRecord, Publication, Replay,
+        Replayed, StorageServer, StreamChunk, XmipStorage,
+    };
 
     /// A cluster's certificate authority, and identities it issues.
     struct Authority(rcgen::CertifiedKey);
@@ -397,6 +401,192 @@ mod tests {
         client
             .write_journey(&journey(b"carried on"))
             .expect("the next statement asks the node left");
+    }
+
+    /// What another node does while an answer is lost.
+    type Meanwhile = Box<dyn FnOnce(&dyn XmipStorage) + Send>;
+
+    /// Xmip Storage whose first Publication is written and never answered:
+    /// `meanwhile` runs after the write, and the connection it came on is
+    /// dropped, as a Storage node's whose answer was lost on the way back.
+    struct LosesAnswer {
+        beneath: Arc<dyn XmipStorage>,
+        meanwhile: Mutex<Option<Meanwhile>>,
+    }
+
+    impl XmipStorage for LosesAnswer {
+        fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+            let held = self.beneath.publish(publication)?;
+            let meanwhile = self.meanwhile.lock().expect("meanwhile").take();
+            let Some(meanwhile) = meanwhile else {
+                return Ok(held);
+            };
+            meanwhile(self.beneath.as_ref());
+            // The answer lost: the connection ends with it unsent.
+            std::panic::resume_unwind(Box::new("the answer was lost"));
+        }
+
+        fn write_chunk(&self, chunk: &StreamChunk) -> Result<(), PersistError> {
+            self.beneath.write_chunk(chunk)
+        }
+
+        fn read_chunk(&self, s: StreamId, i: u32) -> Result<Option<StreamChunk>, PersistError> {
+            self.beneath.read_chunk(s, i)
+        }
+
+        fn write_message(&self, message: &MessageRecord) -> Result<(), PersistError> {
+            self.beneath.write_message(message)
+        }
+
+        fn read_message(&self, id: MessageId) -> Result<Option<MessageRecord>, PersistError> {
+            self.beneath.read_message(id)
+        }
+
+        fn write_journey(&self, journey: &JourneyRecord) -> Result<(), PersistError> {
+            self.beneath.write_journey(journey)
+        }
+
+        fn read_journey(&self, id: JourneyId) -> Result<Option<JourneyRecord>, PersistError> {
+            self.beneath.read_journey(id)
+        }
+
+        fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
+            self.beneath.read_held(queue, from, most)
+        }
+
+        fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
+            self.beneath.read_dead(queue, from, most)
+        }
+
+        fn read_dead_message(&self, q: u128, m: MessageId) -> Result<DeadEntry, PersistError> {
+            self.beneath.read_dead_message(q, m)
+        }
+
+        fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
+            self.beneath.replay(replay)
+        }
+
+        fn claim(
+            &self,
+            journey: JourneyId,
+            holder: &str,
+            token: u128,
+            lease: Duration,
+        ) -> Result<Option<Claim>, PersistError> {
+            self.beneath.claim(journey, holder, token, lease)
+        }
+
+        fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
+            self.beneath.renew(claim, lease)
+        }
+
+        fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
+            self.beneath.release(claim)
+        }
+
+        fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+            self.beneath.hand_on(hand_on)
+        }
+
+        fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
+            self.beneath.write_audit(entry)
+        }
+
+        fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
+            self.beneath.keep_audit(most)
+        }
+
+        fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+            self.beneath.read_kept_audit(id)
+        }
+
+        fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
+            self.beneath.write_administration(record)
+        }
+
+        fn read_administration(
+            &self,
+            kind: AdministrationKind,
+            id: u128,
+        ) -> Result<Option<AdministrationRecord>, PersistError> {
+            self.beneath.read_administration(kind, id)
+        }
+
+        fn remove_administration(
+            &self,
+            kind: AdministrationKind,
+            id: u128,
+        ) -> Result<(), PersistError> {
+            self.beneath.remove_administration(kind, id)
+        }
+    }
+
+    #[test]
+    fn a_publication_whose_answer_was_lost_is_asked_again_and_resets_nothing_done_meanwhile() {
+        let authority = Authority::new();
+        let behind = storage();
+        let id = journey(b"").journey;
+        let queue = 7;
+        // Between the write and its lost answer, another node sends the
+        // Journey and takes it out of its queue.
+        let meanwhile: Meanwhile = Box::new(move |storage| {
+            let other = configure::fixture::test_cluster().node_scope(1);
+            let claim = storage.claim(id, &other, 2, TIMEOUT).expect("asked");
+            let hand_on = HandOn {
+                claim: claim.expect("free: the Publication claimed nothing"),
+                result: journey(b"completed"),
+                messages: Vec::new(),
+                next: Vec::new(),
+                leaves: vec![queue],
+                queued: Vec::new(),
+                requeued: Vec::new(),
+                kept_for_nanos: None,
+            };
+            assert!(storage.hand_on(&hand_on).expect("sent"));
+        });
+        let losing: Arc<dyn XmipStorage> = Arc::new(LosesAnswer {
+            beneath: Arc::clone(&behind),
+            meanwhile: Mutex::new(Some(meanwhile)),
+        });
+        // Two Storage nodes in front of one database, both losing the first
+        // answer, so whichever is asked first loses it.
+        let first = serve(&losing, &authority.issue(&authority));
+        let second = serve(&losing, &authority.issue(&authority));
+        let nodes = [first.address().to_string(), second.address().to_string()];
+        let client = StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+            .expect("client");
+        let publication = Publication {
+            message: MessageRecord {
+                message: MessageId::new(1),
+                body: b"order".to_vec(),
+            },
+            journeys: vec![journey(b"waiting")],
+            held: vec![Hold {
+                queue,
+                journey: id,
+                body: Vec::new(),
+            }],
+            dead: None,
+            audit: AuditEntry {
+                id: AuditId::new(3),
+                body: b"published".to_vec(),
+            },
+            claims: Vec::new(),
+            lease_nanos: 0,
+        };
+
+        let answered = client.publish(&publication).expect("asked again, answered");
+
+        assert_eq!(answered, Vec::new());
+        assert_eq!(
+            behind.read_journey(id).expect("read"),
+            Some(journey(b"completed")),
+            "what the other node did stands"
+        );
+        assert_eq!(behind.read_held(queue, 0, 10).expect("read").count, 0);
+        assert_eq!(behind.keep_audit(10).expect("kept"), 1, "published once");
+        first.stop();
+        second.stop();
     }
 
     #[test]

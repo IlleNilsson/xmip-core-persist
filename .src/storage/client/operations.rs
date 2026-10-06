@@ -96,8 +96,14 @@ impl XmipStorage for StorageClient {
         expected(self.ask(&Request::WriteJourney(journey.clone()))?, done)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(), PersistError> {
-        expected(self.ask(&Request::Publish(publication.clone()))?, done)
+    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+        expected(
+            self.ask(&Request::Publish(publication.clone()))?,
+            |answer| match answer {
+                Answer::Claims(held) => Ok(held),
+                other => Err(other),
+            },
+        )
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {

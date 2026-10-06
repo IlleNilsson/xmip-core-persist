@@ -66,6 +66,8 @@ pub(crate) enum Answer {
     Message(Option<MessageRecord>),
     Journey(Option<JourneyRecord>),
     Claim(Option<Claim>),
+    /// The claims a Publication's node holds.
+    Claims(Vec<Claim>),
     Yes(bool),
     Count(u32),
     Audit(Option<AuditEntry>),
@@ -296,6 +298,10 @@ impl Form for Answer {
                 write_byte(out, 14);
                 replayed.write(out);
             }
+            Self::Claims(held) => {
+                write_byte(out, 15);
+                held.write(out);
+            }
         }
     }
 
@@ -316,6 +322,7 @@ impl Form for Answer {
             12 => Self::DeadQueue(DeadQueue::read(cursor)?),
             13 => Self::Dead(DeadEntry::read(cursor)?),
             14 => Self::Replayed(Replayed::read(cursor)?),
+            15 => Self::Claims(Vec::read(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }
@@ -435,7 +442,8 @@ mod tests {
         }
         assert_eq!(receive::<Request>(&mut reading).expect("clean"), None);
         let answers = [
-            Answer::Claim(Some(claim)),
+            Answer::Claim(Some(claim.clone())),
+            Answer::Claims(vec![claim]),
             Answer::Refused("rocksdb record".to_string(), "its tag".to_string()),
             Answer::Count(3),
             Answer::Held(HeldQueue {

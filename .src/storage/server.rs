@@ -219,7 +219,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::RemoveAdministration(kind, id) => storage
             .remove_administration(kind, id)
             .map(|()| Answer::Done),
-        Request::Publish(publication) => storage.publish(&publication).map(|()| Answer::Done),
+        Request::Publish(publication) => storage.publish(&publication).map(Answer::Claims),
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)
         }

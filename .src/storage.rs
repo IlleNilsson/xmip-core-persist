@@ -137,16 +137,17 @@ pub trait XmipStorage: Send + Sync {
 
     /// Write a Publication as one atomic write: its Message, its Journeys,
     /// the ones held, the claims its node takes on them and its audit
-    /// record, together, or nothing. Written
-    /// again after a lost answer, its records are written again under their
-    /// identifiers, each held Journey keeps the one place it has, by its
-    /// identifier, and its audit record is kept once, by its identifier, by
-    /// the audit keeper.
+    /// record, together, or nothing — once, by its Message. The claims its
+    /// node holds of those it asked for. Asked again after a lost answer,
+    /// it writes nothing — no Journey another node has moved on since is
+    /// written back or queued again — and answers the claims of it its node
+    /// still holds under their tokens.
     ///
     /// # Errors
     ///
-    /// When it cannot be written; nothing of it is written then.
-    fn publish(&self, publication: &Publication) -> Result<(), PersistError>;
+    /// When it cannot be written, or its Message was published before as
+    /// another Publication; nothing of it is written then.
+    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError>;
 
     /// What `queue` holds: its places, how many it holds, and up to `most`
     /// of them from the place `from` on, oldest first. `most` zero reads

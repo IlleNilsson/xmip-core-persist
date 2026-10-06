@@ -8,7 +8,7 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 12] = [
+pub const TABLES: [Table; 13] = [
     Table {
         database: Database::Runtime,
         name: "stream_chunk",
@@ -109,6 +109,18 @@ pub const TABLES: [Table; 12] = [
             column("message", Kind::Identifier),
         ],
         key: &["queue", "message"],
+        unique: &[],
+    },
+    Table {
+        database: Database::Runtime,
+        name: "publication",
+        keeps: "each Message published, with the digest of its Publication, so a Publication \
+                asked again writes nothing and resets no Journey moved on since",
+        columns: &[
+            column("message", Kind::Identifier),
+            column("digest", Kind::Bytes),
+        ],
+        key: &["message"],
         unique: &[],
     },
     Table {

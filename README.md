@@ -51,7 +51,9 @@ and 9).
   those it sends itself (`Publication::claims`, for `lease_nanos`), its
   entry in the node's Dead Message Queue where nothing matched
   (`DeadMessage`: receive context, gate verdicts, promoted properties, every
-  Subscription's decline) and its audit record — as one atomic write; read
+  Subscription's decline) and its audit record — as one atomic write, once
+  by its Message, answering the claims its node holds of those it asked
+  for; read
   a queue — a Subscription's, a Send Port's — oldest first (`read_held`);
   read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
   time; `read_dead_message`, one entry) and `replay` an entry — the
@@ -75,9 +77,14 @@ and 9).
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
   write returns once it is durable. Every operation is all or nothing: one
   that fails half-way writes nothing of itself. A request asked again after
-  a lost answer does nothing twice: a Publication holds each Journey once,
-  by its identifier, and a hand-on asked again is `true` while one after a
-  mere release is `false` — the claim keeps which of the two ended it.
+  a lost answer does nothing twice: a Publication is kept as written by its
+  Message, with the digest of what was asked, so asked again it writes
+  nothing — no Journey another node moved on since is written back or
+  queued again — and answers the claims of it still held under their
+  tokens, while another Publication of that Message is refused (review of
+  2026-10-06; the `publication` table on a database server); and a hand-on
+  asked again is `true` while one after a mere release is `false` — the
+  claim keeps which of the two ended it.
 - **`Embedded`** — the embedded Storage node: the runtime database and the
   administration database, each an `EncryptedStore` over the engine the
   program gives it — RocksDB and SQLite for a node, RocksDB on disk and
