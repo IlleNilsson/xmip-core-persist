@@ -174,8 +174,14 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.read(JOURNEY, &journey.value().to_be_bytes())
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(), PersistError> {
-        self.written(Op::Publish(Box::new(publication.clone())))
+    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+        match self
+            .committer
+            .submit(Op::Publish(Box::new(publication.clone())))?
+        {
+            Done::Claims(held) => Ok(held),
+            _ => Err(super::record::malformed("the writer answered no claims")),
+        }
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
@@ -871,6 +877,81 @@ mod tests {
         let held: Vec<JourneyId> = read.held.iter().map(|held| held.hold.journey).collect();
         assert_eq!((read.next, read.count), (2, 2));
         assert_eq!(held, [JourneyId::new(1), JourneyId::new(2)]);
+    }
+
+    /// The Publication holding the Journey `id` in `queue`, claimed by the
+    /// first node under `token` for a microsecond.
+    fn claiming(queue: u128, id: u128, token: u128) -> Publication {
+        Publication {
+            claims: vec![Claim {
+                journey: JourneyId::new(id),
+                holder: holder(0),
+                token,
+                until_unix_nanos: 0,
+            }],
+            lease_nanos: 1_000,
+            ..holding(queue, id)
+        }
+    }
+
+    #[test]
+    fn a_publication_asked_again_after_its_journey_was_completed_writes_nothing() {
+        let (node, clock) = node();
+        let publication = claiming(7, 1, 11);
+        let first = node.publish(&publication).expect("published");
+        assert_eq!(first.len(), 1, "its node holds what it claimed");
+        // Its answer lost, its claim lapses; another node sends the Journey
+        // and takes it out of its queue.
+        clock.pass(1_001);
+        assert!(
+            node.hand_on(&leaving(&node, 7, 1, b"completed"))
+                .expect("sent")
+        );
+
+        let again = node.publish(&publication).expect("asked again");
+
+        assert_eq!(again, Vec::new(), "no claim taken again");
+        let read = node.read_journey(JourneyId::new(1)).expect("read");
+        assert_eq!(read, Some(journey(JourneyId::new(1), b"completed")));
+        assert_eq!(
+            node.read_held(7, 0, 10).expect("read").count,
+            0,
+            "not queued"
+        );
+        assert_eq!(node.renew(&first[0], LEASE).expect("asked"), None);
+        assert_eq!(node.keep_audit(10).expect("kept"), 1, "audited once");
+    }
+
+    #[test]
+    fn a_publication_asked_again_while_its_claims_hold_answers_them_as_they_are() {
+        let (node, _) = node();
+        let publication = Publication {
+            lease_nanos: u64::try_from(LEASE.as_nanos()).expect("a lease"),
+            ..claiming(7, 1, 11)
+        };
+        let first = node.publish(&publication).expect("published");
+        let again = node.publish(&publication).expect("asked again");
+        assert_eq!(again, first, "the outcome it had");
+        assert_eq!(node.read_held(7, 0, 10).expect("read").count, 1);
+    }
+
+    #[test]
+    fn another_publication_of_a_message_published_before_is_refused_and_writes_nothing() {
+        let (node, _) = node();
+        node.publish(&holding(7, 1)).expect("published");
+        let mut other = holding(7, 1);
+        other.message.body = b"another order".to_vec();
+        other.held[0].queue = 8;
+        let refused = node.publish(&other);
+        assert!(
+            matches!(&refused, Err(PersistError::Failed { reason }) if reason.contains("before")),
+            "{refused:?}"
+        );
+        let message = node.read_message(MessageId::new(1)).expect("read");
+        assert_eq!(message.map(|m| m.body), Some(b"order".to_vec()));
+        assert_eq!(node.read_held(8, 0, 10).expect("read").count, 0);
+        node.publish(&holding(7, 2))
+            .expect("another Message is published");
     }
 
     #[test]
