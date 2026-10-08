@@ -206,14 +206,18 @@ pub trait XmipStorage: Send + Sync {
         lease: Duration,
     ) -> Result<Option<Claim>, PersistError>;
 
-    /// Renew `claim` for `lease` from now, while the work runs: the claim
-    /// renewed, or `None` where it is no longer its holder's — released, or
-    /// lapsed and taken by another.
+    /// Renew every one of `claims` for `lease` from now, while the work
+    /// runs, in one request: those still their holder's, renewed — a claim
+    /// held to a later deadline, a retry's due time and a lease past it,
+    /// keeps that deadline, never shortened — and none of those no longer
+    /// their holder's, released, or lapsed and taken by another. A node
+    /// renews all its claims at once, so one slow answer costs one wait,
+    /// never one per claim.
     ///
     /// # Errors
     ///
     /// When it cannot be read or written.
-    fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError>;
+    fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError>;
 
     /// Give `claim` back, as a draining stop does rather than letting it
     /// lapse (ADR-0018 clause 12): `true` where it was its holder's to give.

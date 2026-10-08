@@ -63,7 +63,7 @@ pub(crate) enum Op {
         lease_nanos: i128,
     },
     Renew {
-        claim: Claim,
+        claims: Vec<Claim>,
         lease_nanos: i128,
     },
     Release(Claim),
@@ -293,14 +293,23 @@ impl<R: Engine> Writer<R> {
                 let until = now.saturating_add(lease_nanos);
                 claim::take(&self.store, batch, claim, (now, until)).map(Done::Claim)
             }
-            Op::Renew { claim, lease_nanos } => match self.stored(batch, &claim)? {
-                Some(stored) if stored.held_by(&claim) => Ok(Done::Claim(Some(hold(
-                    batch,
-                    stored.claim,
-                    now + lease_nanos,
-                )))),
-                _ => Ok(Done::Claim(None)),
-            },
+            Op::Renew {
+                claims,
+                lease_nanos,
+            } => {
+                let mut held = Vec::new();
+                for claim in claims {
+                    if let Some(stored) = self.stored(batch, &claim)?
+                        && stored.held_by(&claim)
+                    {
+                        // A later deadline — a retry's backoff — is kept.
+                        let until = now.saturating_add(lease_nanos);
+                        let until = until.max(stored.claim.until_unix_nanos);
+                        held.push(hold(batch, stored.claim, until));
+                    }
+                }
+                Ok(Done::Claims(held))
+            }
             Op::Release(claim) => match self.stored(batch, &claim)? {
                 Some(stored) if stored.held_by(&claim) => {
                     end(batch, stored.claim, Standing::Released);
