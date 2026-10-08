@@ -202,9 +202,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
                 Duration::from_nanos(lease),
             )
             .map(Answer::Claim),
-        Request::Renew(claim, lease) => storage
-            .renew(&claim, Duration::from_nanos(lease))
-            .map(Answer::Claim),
+        Request::Renew(claims, lease) => storage
+            .renew(&claims, Duration::from_nanos(lease))
+            .map(Answer::Claims),
         Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
         Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
         Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),

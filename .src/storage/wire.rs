@@ -42,7 +42,7 @@ pub(crate) enum Request {
     WriteJourney(JourneyRecord),
     ReadJourney(JourneyId),
     Claim(Claim, u64),
-    Renew(Claim, u64),
+    Renew(Vec<Claim>, u64),
     Release(Claim),
     HandOn(HandOn),
     WriteAudit(AuditEntry),
@@ -106,8 +106,8 @@ impl Request {
         Self::Claim(claim, nanos(lease))
     }
 
-    pub(crate) fn renew(claim: Claim, lease: Duration) -> Self {
-        Self::Renew(claim, nanos(lease))
+    pub(crate) fn renew(claims: Vec<Claim>, lease: Duration) -> Self {
+        Self::Renew(claims, nanos(lease))
     }
 }
 
@@ -139,16 +139,14 @@ impl Form for Request {
                 write_byte(out, 6);
                 write_u128(out, id.value());
             }
-            Self::Claim(claim, lease) | Self::Renew(claim, lease) => {
-                write_byte(
-                    out,
-                    if matches!(self, Self::Claim(..)) {
-                        7
-                    } else {
-                        8
-                    },
-                );
+            Self::Claim(claim, lease) => {
+                write_byte(out, 7);
                 claim.write(out);
+                write_u64(out, *lease);
+            }
+            Self::Renew(claims, lease) => {
+                write_byte(out, 8);
+                claims.write(out);
                 write_u64(out, *lease);
             }
             Self::Release(claim) => {
@@ -218,7 +216,7 @@ impl Form for Request {
             5 => Self::WriteJourney(JourneyRecord::read(cursor)?),
             6 => Self::ReadJourney(JourneyId::new(read_u128(cursor)?)),
             7 => Self::Claim(Claim::read(cursor)?, read_u64(cursor)?),
-            8 => Self::Renew(Claim::read(cursor)?, read_u64(cursor)?),
+            8 => Self::Renew(Vec::read(cursor)?, read_u64(cursor)?),
             9 => Self::Release(Claim::read(cursor)?),
             10 => Self::HandOn(HandOn::read(cursor)?),
             11 => Self::WriteAudit(AuditEntry::read(cursor)?),
@@ -385,6 +383,7 @@ mod tests {
         };
         let requests = [
             Request::claim(claim.clone(), Duration::from_secs(30)),
+            Request::renew(vec![claim.clone(), claim.clone()], Duration::from_secs(30)),
             Request::Release(claim.clone()),
             Request::ReadChunk(StreamId::new(1), 2),
             Request::KeepAudit(64),

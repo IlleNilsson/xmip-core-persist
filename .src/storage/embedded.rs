@@ -108,6 +108,13 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         }
     }
 
+    fn held(&self, op: Op) -> Result<Vec<Claim>, PersistError> {
+        match self.committer.submit(op)? {
+            Done::Claims(held) => Ok(held),
+            _ => Err(super::record::malformed("the writer answered no claims")),
+        }
+    }
+
     fn yes(&self, op: Op) -> Result<bool, PersistError> {
         match self.committer.submit(op)? {
             Done::Yes(yes) => Ok(yes),
@@ -175,13 +182,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
-        match self
-            .committer
-            .submit(Op::Publish(Box::new(publication.clone())))?
-        {
-            Done::Claims(held) => Ok(held),
-            _ => Err(super::record::malformed("the writer answered no claims")),
-        }
+        self.held(Op::Publish(Box::new(publication.clone())))
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
@@ -229,9 +230,9 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         })
     }
 
-    fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
-        self.claimed(Op::Renew {
-            claim: claim.clone(),
+    fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
+        self.held(Op::Renew {
+            claims: claims.to_vec(),
             lease_nanos: lease_nanos(lease),
         })
     }
@@ -423,8 +424,9 @@ mod tests {
             .expect("taken");
         clock.pass(10_000_000_000);
         let renewed = node
-            .renew(&old, LEASE)
+            .renew(std::slice::from_ref(&old), LEASE)
             .expect("renewed")
+            .pop()
             .expect("still held");
         assert_eq!(renewed.until_unix_nanos, 40_000_000_000);
         clock.pass(41_000_000_000);
@@ -433,7 +435,11 @@ mod tests {
             .expect("claimed")
             .expect("lapsed");
         assert_eq!(new.holder, holder(1));
-        assert_eq!(node.renew(&old, LEASE).expect("renew"), None);
+        assert_eq!(
+            node.renew(std::slice::from_ref(&old), LEASE)
+                .expect("renew"),
+            []
+        );
         let late = HandOn {
             claim: old.clone(),
             result: journey(JOURNEY_ID, b"by the old holder"),
@@ -452,6 +458,44 @@ mod tests {
             .claim(JOURNEY_ID, &holder(2), 3, LEASE)
             .expect("claimed");
         assert!(freed.is_some(), "a release frees it at once");
+    }
+
+    #[test]
+    fn a_renewal_answered_after_a_retry_was_kept_never_shortens_its_backoff() {
+        let (node, clock) = node();
+        let other = JourneyId::new(2);
+        let claims = [
+            node.claim(JOURNEY_ID, &holder(0), 1, LEASE)
+                .expect("claimed")
+                .expect("taken"),
+            node.claim(other, &holder(0), 2, LEASE)
+                .expect("claimed")
+                .expect("taken"),
+        ];
+        let kept = HandOn {
+            claim: claims[0].clone(),
+            result: journey(JOURNEY_ID, b"recovering"),
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            requeued: Vec::new(),
+            kept_for_nanos: Some(300_000_000_000),
+        };
+        assert!(node.hand_on(&kept).expect("kept to its due time"));
+        assert!(node.release(&claims[1]).expect("given back"));
+
+        // The renewal asked before the hand-on, answered after it.
+        let renewed = node.renew(&claims, LEASE).expect("renewed");
+
+        assert_eq!(renewed.len(), 1, "the one given back is not renewed");
+        assert_eq!(renewed[0].until_unix_nanos, 300_000_000_000);
+        clock.pass(31_000_000_000);
+        let early = node.claim(JOURNEY_ID, &holder(1), 9, LEASE).expect("asked");
+        assert_eq!(
+            early, None,
+            "no other node takes it before its backoff ends"
+        );
     }
 
     #[test]
@@ -858,8 +902,12 @@ mod tests {
             None
         );
         assert_eq!(
-            node.renew(&other, LEASE).expect("renewed").map(|c| c.token),
-            Some(7)
+            node.renew(&[other], LEASE)
+                .expect("renewed")
+                .iter()
+                .map(|c| c.token)
+                .collect::<Vec<_>>(),
+            [7]
         );
         clock.pass(1_001);
         let lapsed = node.claim(JourneyId::new(1), &holder(1), 8, LEASE);
@@ -918,7 +966,7 @@ mod tests {
             0,
             "not queued"
         );
-        assert_eq!(node.renew(&first[0], LEASE).expect("asked"), None);
+        assert_eq!(node.renew(&first, LEASE).expect("asked"), []);
         assert_eq!(node.keep_audit(10).expect("kept"), 1, "audited once");
     }
 

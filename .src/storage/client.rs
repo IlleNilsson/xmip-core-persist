@@ -476,8 +476,8 @@ mod tests {
             self.beneath.claim(journey, holder, token, lease)
         }
 
-        fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
-            self.beneath.renew(claim, lease)
+        fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
+            self.beneath.renew(claims, lease)
         }
 
         fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
