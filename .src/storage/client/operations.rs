@@ -235,6 +235,20 @@ impl XmipStorage for StorageClient {
         )
     }
 
+    fn read_kept_audit_chunk(
+        &self,
+        id: AuditId,
+        index: u32,
+    ) -> Result<Option<StreamChunk>, PersistError> {
+        expected(
+            self.ask(&Request::ReadKeptAuditChunk(id, index))?,
+            |answer| match answer {
+                Answer::Chunk(chunk) => Ok(chunk),
+                other => Err(other),
+            },
+        )
+    }
+
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
         expected(
             self.ask(&Request::WriteAdministration(record.clone()))?,

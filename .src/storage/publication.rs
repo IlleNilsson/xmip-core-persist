@@ -196,6 +196,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(4),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: vec![Claim {

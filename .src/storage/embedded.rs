@@ -18,10 +18,8 @@ use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::XmipStorage;
-use super::columns::{ADMINISTRATION, Columns, KEPT_AUDIT};
-use super::commit::{
-    AUDIT, CHUNK, Committer, Done, JOURNEY, KEPT, MESSAGE, NEXT, Op, STREAM, sequence,
-};
+use super::columns::{ADMINISTRATION, Columns};
+use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
@@ -35,6 +33,8 @@ use super::row;
 use super::schema::Database;
 use super::stream::StreamRecord;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
+
+mod keeper;
 
 /// The embedded Storage node's two databases, and the one writer to the
 /// first.
@@ -299,37 +299,19 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-        let _keeping = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let kept = sequence(&self.runtime, KEPT)?;
-        let next = sequence(&self.runtime, NEXT)?;
-        let mut moved = 0;
-        for number in kept..next.min(kept.saturating_add(u64::from(most))) {
-            let entry: AuditEntry = self.read(AUDIT, &number.to_be_bytes())?.ok_or_else(|| {
-                super::record::malformed(format!("audit record {number} is gone"))
-            })?;
-            // Kept by its identifier, once, with its index entries: a
-            // record already there — this move cut short before, or the
-            // same record written twice — is not kept again.
-            let id = entry.id.value().to_be_bytes();
-            if self.administration.get(KEPT_AUDIT, &id)?.is_none() {
-                self.administered(vec![(KEPT_AUDIT, id.to_vec(), Some(entry.bytes()))])?;
-            }
-            if !self.yes(Op::Kept(number))? {
-                break;
-            }
-            moved += 1;
-        }
-        Ok(moved)
+        self.keep(most)
     }
 
     fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
-        self.administration
-            .get(KEPT_AUDIT, &id.value().to_be_bytes())?
-            .map(|bytes| AuditEntry::from_bytes(&bytes))
-            .transpose()
+        self.kept(id)
+    }
+
+    fn read_kept_audit_chunk(
+        &self,
+        id: AuditId,
+        index: u32,
+    ) -> Result<Option<StreamChunk>, PersistError> {
+        self.kept_chunk(id, index)
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
@@ -393,6 +375,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
 mod tests {
     use super::*;
     use crate::fixture::Memory;
+    use crate::storage::columns::KEPT_AUDIT;
+    use crate::storage::commit::{AUDIT, KEPT, sequence};
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use secret::Held;
 
@@ -461,6 +445,7 @@ mod tests {
             stream: StreamId::new(4),
             length: 9,
             chunks: 2,
+            digest: [1; super::super::DIGEST],
             written_unix_nanos: 0,
         };
         let last = StreamChunk {
@@ -684,6 +669,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(9),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: Vec::new(),
@@ -721,6 +707,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: Vec::new(),
@@ -752,6 +739,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: Vec::new(),
@@ -775,6 +763,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id + 1000),
                 body: b"replayed".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
         }
@@ -1141,6 +1130,7 @@ mod tests {
             .map(|id| AuditEntry {
                 id: AuditId::new(id),
                 body: format!("record {id}").into_bytes(),
+                audited: None,
                 facts: AuditFacts::default(),
             })
             .collect();

@@ -18,7 +18,9 @@
 //!   the columns each record's table lays out beside its sealed body,
 //!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records from the runtime database to
-//!   the administration database (ADR-0062, amendment 2026-10-01);
+//!   the administration database (ADR-0062, amendment 2026-10-01), a
+//!   record of an act on a Message with its Stream's bytes beside it
+//!   (ADR-0070);
 //! - **the administration database**: what must be shared and kept over
 //!   time — registration, membership, Modules, Handlers, deployment state,
 //!   operator state — and the audit kept there; never configuration
@@ -44,6 +46,7 @@
 //! so no TLS — and every other node calls a [`StorageClient`]; both are the
 //! same trait, so nothing above them knows which it has.
 
+mod audited;
 mod claim;
 pub mod client;
 mod columns;
@@ -64,6 +67,7 @@ mod server;
 mod stream;
 mod wire;
 
+pub use audited::Audited;
 pub use client::StorageClient;
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
@@ -79,7 +83,7 @@ pub use record::{
     MessageRecord, StreamChunk,
 };
 pub use server::{ALPN, StorageServer};
-pub use stream::StreamRecord;
+pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -285,7 +289,10 @@ pub trait XmipStorage: Send + Sync {
     /// The audit keeper: move up to `most` audit records, oldest first,
     /// from the runtime database to the administration database. Each is
     /// kept exactly once — a move cut short is finished by the next, and a
-    /// record written twice is kept once, by its identifier. How many moved.
+    /// record written twice is kept once, by its identifier — and a record
+    /// that carries a Message keeps its Stream's bytes beside it, in chunks
+    /// of its own, with their digest and length from the Stream's record
+    /// (ADR-0070, `audited`). How many moved.
     ///
     /// # Errors
     ///
@@ -298,6 +305,20 @@ pub trait XmipStorage: Send + Sync {
     ///
     /// When it cannot be read, or fails its tag.
     fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError>;
+
+    /// A chunk of the Stream a kept audit record carries, by its number,
+    /// or `None` past its last: what the keeper kept beside the record
+    /// (ADR-0070). Read them through [`ChunkReader::audited`], which holds
+    /// them to the record's length and digest.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn read_kept_audit_chunk(
+        &self,
+        id: AuditId,
+        index: u32,
+    ) -> Result<Option<StreamChunk>, PersistError>;
 
     /// Write an administration record, replacing the last of its kind and
     /// identifier.

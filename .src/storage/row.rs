@@ -7,7 +7,8 @@ use super::dead::Dead;
 use super::hold::Held;
 use super::record::{AdministrationRecord, AuditEntry, Form, JourneyRecord, MessageRecord};
 
-/// A value of a column: a time, a count, a flag, words or an identifier, each as it is.
+/// A value of a column: a time, a count, a flag, words, an identifier or
+/// bytes, each as it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Value {
     Time(u64),
@@ -15,6 +16,7 @@ pub(crate) enum Value {
     Flag(bool),
     Text(String),
     Id(u128),
+    Bytes(Vec<u8>),
 }
 
 /// A record's columns, by name: `None` where it holds nothing there.
@@ -189,6 +191,13 @@ impl Columned for AuditEntry {
             ),
             ("node", text_maybe(facts.node.as_ref())),
             ("cluster", text_maybe(facts.cluster.as_ref())),
+            (
+                "stream_digest",
+                facts
+                    .stream_digest
+                    .map(|digest| Value::Bytes(digest.to_vec())),
+            ),
+            ("stream_length", facts.stream_length.map(Value::Count)),
         ]
     }
 }
