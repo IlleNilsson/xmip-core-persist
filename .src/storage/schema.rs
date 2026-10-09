@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 
 use super::database::Server;
 
+mod searchable;
 mod tables;
 
 pub use tables::TABLES;
@@ -72,6 +73,14 @@ pub enum Kind {
     Flag,
     /// The server's own ascending number, given as a row is written.
     Sequence,
+    /// Sixteen bytes of a keyed hash: `bytea`, and `binary(16)` on SQL
+    /// Server, where `varbinary(max)` cannot be a key.
+    Digest,
+    /// A moment, as near the nanosecond as the server keeps it:
+    /// `timestamptz`, and `datetime2(7)` on SQL Server, in UTC.
+    Time,
+    /// A small whole number: a state, a kind.
+    Small,
 }
 
 /// One column.
@@ -79,6 +88,8 @@ pub enum Kind {
 pub struct Column {
     pub name: &'static str,
     pub kind: Kind,
+    /// Whether a row may hold nothing there: a fact its record may lack.
+    pub null: bool,
 }
 
 /// One table.
@@ -93,6 +104,22 @@ pub struct Table {
     pub key: &'static [&'static str],
     /// The columns no two rows share besides the key, where any.
     pub unique: &'static [&'static str],
+    /// What it is searched by, beside its key.
+    pub indexes: &'static [Index],
+}
+
+/// One index of a table: its columns in order, equality on the first and
+/// a range on the last; and, where it has one, the flag a row must have
+/// for the index to hold it — a partial index, filtered on SQL Server.
+#[derive(Clone, Copy, Debug)]
+pub struct Index {
+    /// Its number, one to each index of both databases and never reused:
+    /// what the embedded engines file its entries under
+    /// (`super::columns`).
+    pub number: u8,
+    pub name: &'static str,
+    pub columns: &'static [&'static str],
+    pub only: Option<&'static str>,
 }
 
 /// The schema both databases keep their tables in.
@@ -236,7 +263,10 @@ fn tables(server: Server, database: Database) -> String {
         let lines: Vec<String> = table
             .columns
             .iter()
-            .map(|column| format!("    {} {} NOT NULL", column.name, kind(server, column.kind)))
+            .map(|column| {
+                let null = if column.null { "NULL" } else { "NOT NULL" };
+                format!("    {} {} {null}", column.name, kind(server, column.kind))
+            })
             .chain(std::iter::once(format!(
                 "    CONSTRAINT {}_key PRIMARY KEY ({})",
                 table.name,
@@ -262,6 +292,7 @@ fn tables(server: Server, database: Database) -> String {
                 ""
             }
         );
+        text.push_str(&indexes(server, table));
     }
     match server {
         Server::PostgreSql => {
@@ -283,21 +314,53 @@ fn tables(server: Server, database: Database) -> String {
     text
 }
 
+/// The `CREATE INDEX` of each index of `table`, each followed by a blank
+/// line.
+fn indexes(server: Server, table: &Table) -> String {
+    let mut text = String::new();
+    for index in table.indexes {
+        let only = match (server, index.only) {
+            (_, None) => String::new(),
+            (Server::PostgreSql, Some(flag)) => format!(" WHERE {flag}"),
+            (Server::SqlServer, Some(flag)) => format!(" WHERE {flag} = 1"),
+        };
+        let _ = write!(
+            text,
+            "CREATE INDEX {} ON {SCHEMA}.{} ({}){only};
+{}
+",
+            index.name,
+            table.name,
+            index.columns.join(", "),
+            if server == Server::SqlServer {
+                "GO
+"
+            } else {
+                ""
+            }
+        );
+    }
+    text
+}
+
 const fn kind(server: Server, kind: Kind) -> &'static str {
     match (server, kind) {
         (Server::PostgreSql, Kind::Identifier) => "uuid",
-        (Server::PostgreSql, Kind::Bytes) => "bytea",
+        (Server::PostgreSql, Kind::Bytes | Kind::Digest) => "bytea",
         (Server::PostgreSql, Kind::Text) => "text",
         (Server::PostgreSql | Server::SqlServer, Kind::Number) => "bigint",
         (Server::PostgreSql, Kind::Count) => "integer",
         (Server::PostgreSql, Kind::Flag) => "boolean",
         (Server::PostgreSql, Kind::Sequence) => "bigint GENERATED ALWAYS AS IDENTITY",
-        (Server::SqlServer, Kind::Identifier) => "binary(16)",
+        (Server::SqlServer, Kind::Identifier | Kind::Digest) => "binary(16)",
         (Server::SqlServer, Kind::Bytes) => "varbinary(max)",
         (Server::SqlServer, Kind::Text) => "nvarchar(400)",
         (Server::SqlServer, Kind::Count) => "int",
         (Server::SqlServer, Kind::Flag) => "bit",
         (Server::SqlServer, Kind::Sequence) => "bigint IDENTITY(1, 1)",
+        (Server::PostgreSql, Kind::Time) => "timestamptz",
+        (Server::SqlServer, Kind::Time) => "datetime2(7)",
+        (Server::PostgreSql | Server::SqlServer, Kind::Small) => "smallint",
     }
 }
 

@@ -250,6 +250,8 @@ mod tests {
 
     use secret::{Held, KekName};
 
+    use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
+
     use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
     use super::*;
@@ -305,6 +307,7 @@ mod tests {
         JourneyRecord {
             journey: JourneyId::new(0x0199_0000_0000_7000_8000_0000_0000_0011),
             body: body.to_vec(),
+            facts: JourneyFacts::default(),
         }
     }
 
@@ -323,8 +326,11 @@ mod tests {
 
         client.write_journey(&journey(b"written")).expect("written");
         assert_eq!(
-            client.read_journey(journey(b"").journey).expect("read"),
-            Some(journey(b"written"))
+            client
+                .read_journey(journey(b"").journey)
+                .expect("read")
+                .map(|r| r.body),
+            Some(b"written".to_vec())
         );
         let claim = client
             .claim(
@@ -341,8 +347,11 @@ mod tests {
             let body = [b'r', round];
             client.write_journey(&journey(&body)).expect("carried on");
             assert_eq!(
-                client.read_journey(journey(b"").journey).expect("read"),
-                Some(journey(&body))
+                client
+                    .read_journey(journey(b"").journey)
+                    .expect("read")
+                    .map(|r| r.body),
+                Some(body.to_vec())
             );
         }
         assert!(client.release(&claim).expect("released"));
@@ -374,8 +383,11 @@ mod tests {
                 .write_journey(&journey(&[b'r', round]))
                 .expect("written");
             assert_eq!(
-                statement.read_journey(journey(b"").journey).expect("read"),
-                Some(journey(&[b'r', round]))
+                statement
+                    .read_journey(journey(b"").journey)
+                    .expect("read")
+                    .map(|r| r.body),
+                Some(vec![b'r', round])
             );
         }
         let wrote_first = one
@@ -519,6 +531,10 @@ mod tests {
         ) -> Result<(), PersistError> {
             self.beneath.remove_administration(kind, id)
         }
+
+        fn query(&self, query: &super::super::Query) -> Result<Vec<u128>, PersistError> {
+            self.beneath.query(query)
+        }
     }
 
     #[test]
@@ -559,6 +575,7 @@ mod tests {
             message: MessageRecord {
                 message: MessageId::new(1),
                 body: b"order".to_vec(),
+                facts: MessageFacts::default(),
             },
             journeys: vec![journey(b"waiting")],
             held: vec![Hold {
@@ -570,6 +587,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(3),
                 body: b"published".to_vec(),
+                facts: AuditFacts::default(),
             },
             claims: Vec::new(),
             lease_nanos: 0,
@@ -579,8 +597,8 @@ mod tests {
 
         assert_eq!(answered, Vec::new());
         assert_eq!(
-            behind.read_journey(id).expect("read"),
-            Some(journey(b"completed")),
+            behind.read_journey(id).expect("read").map(|r| r.body),
+            Some(b"completed".to_vec()),
             "what the other node did stands"
         );
         assert_eq!(behind.read_held(queue, 0, 10).expect("read").count, 0);

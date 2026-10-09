@@ -14,6 +14,9 @@
 //!   and replay an entry; claim a Journey, renew the claim and release it;
 //!   hand a step on, leaving a queue or waiting in one; write an audit
 //!   record as it is first written;
+//! - **a search** of either: the records one index of one table finds, by
+//!   the searchable columns each record's table keeps beside its sealed
+//!   body (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records from the runtime database to
 //!   the administration database (ADR-0062, amendment 2026-10-01);
 //! - **the administration database**: what must be shared and kept over
@@ -43,15 +46,19 @@
 
 mod claim;
 pub mod client;
+mod columns;
 mod commit;
 pub mod database;
 mod dead;
 mod embedded;
+mod facts;
 mod hand_on;
 mod hold;
 mod publication;
+mod query;
 mod queue;
 mod record;
+mod row;
 pub mod schema;
 mod server;
 mod wire;
@@ -61,9 +68,11 @@ pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
 pub use embedded::Embedded;
+pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use hand_on::HandOn;
 pub use hold::{Held, HeldQueue, Hold, named};
 pub use publication::Publication;
+pub use query::{Ask, Query, Span};
 pub use record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk,
@@ -295,6 +304,17 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be written.
     fn remove_administration(&self, kind: AdministrationKind, id: u128)
     -> Result<(), PersistError>;
+
+    /// The identifiers of the records `query` finds, up to its most, in
+    /// its index's order or the reverse: one index of one table read, a
+    /// name or an identifier asked hashed under its column's key
+    /// (`schema` names the columns and the indexes). The caller reads each
+    /// record as it reads any.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or an entry fails its tag.
+    fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError>;
 
     /// One statement's Xmip Storage: every operation asked through it goes
     /// to one Storage node, however many it is (the owner, 2026-10-03:

@@ -18,20 +18,20 @@ use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::XmipStorage;
+use super::columns::{ADMINISTRATION, Columns, KEPT_AUDIT};
 use super::commit::{AUDIT, CHUNK, Committer, Done, JOURNEY, KEPT, MESSAGE, NEXT, Op, sequence};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
 use super::publication::Publication;
+use super::query::Query;
 use super::record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk,
 };
-use crate::{EncryptedStore, Engine, PersistError};
-
-/// Where the administration database keeps an audit record the keeper
-/// moved, by its identifier.
-const KEPT_AUDIT: &str = "audit";
+use super::row;
+use super::schema::Database;
+use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The embedded Storage node's two databases, and the one writer to the
 /// first.
@@ -39,8 +39,16 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     runtime: Arc<EncryptedStore<R>>,
     administration: EncryptedStore<A>,
     committer: Committer,
-    /// One audit keeper at a time in this process.
-    keeping: Mutex<()>,
+    /// Each database's searchable columns (`super::columns`): the
+    /// runtime database's shared with its writer, the administration
+    /// database's stamped by `clock`.
+    runtime_columns: Arc<Columns>,
+    administration_columns: Columns,
+    clock: Arc<dyn Clock>,
+    /// One writer to the administration database at a time in this
+    /// process — the audit keeper or an administration write — so a
+    /// record's index entries are replaced by the write that replaces it.
+    administering: Mutex<()>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
@@ -75,12 +83,20 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, PersistError> {
         let runtime = Arc::new(runtime);
-        let committer = Committer::start(Arc::clone(&runtime), clock)?;
+        let runtime_columns = Arc::new(Columns::of(&runtime, Database::Runtime)?);
+        let committer = Committer::start(
+            Arc::clone(&runtime),
+            Arc::clone(&clock),
+            Arc::clone(&runtime_columns),
+        )?;
         Ok(Self {
+            runtime_columns,
+            administration_columns: Columns::of(&administration, Database::Administration)?,
             runtime,
             administration,
             committer,
-            keeping: Mutex::new(()),
+            clock,
+            administering: Mutex::new(()),
         })
     }
 
@@ -128,6 +144,17 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .map(|bytes| T::from_bytes(&bytes))
             .transpose()
     }
+
+    /// `changes` written to the administration database as one write, each
+    /// searchable record stamped and its index entries with it; the caller
+    /// holds `administering`.
+    fn administered(&self, changes: Vec<RecordChange<'_>>) -> Result<(), PersistError> {
+        let now = row::nanos(self.clock.unix_timestamp_nanos());
+        let (changes, entries) =
+            self.administration_columns
+                .written(&self.administration, changes, now)?;
+        self.administration.apply_indexed(&changes, &entries)
+    }
 }
 
 fn lease_nanos(lease: Duration) -> i128 {
@@ -143,7 +170,7 @@ fn chunk_key(stream: StreamId, index: u32) -> Vec<u8> {
 }
 
 fn administration_kind(kind: AdministrationKind) -> String {
-    format!("administration/{}", kind.word())
+    format!("{ADMINISTRATION}{}", kind.word())
 }
 
 impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
@@ -246,11 +273,14 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
-        self.written(Op::Audit(entry.clone()))
+        self.written(Op::Audit(Box::new(entry.clone())))
     }
 
     fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-        let _keeping = self.keeping.lock().unwrap_or_else(PoisonError::into_inner);
+        let _keeping = self
+            .administering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let kept = sequence(&self.runtime, KEPT)?;
         let next = sequence(&self.runtime, NEXT)?;
         let mut moved = 0;
@@ -258,12 +288,13 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
             let entry: AuditEntry = self.read(AUDIT, &number.to_be_bytes())?.ok_or_else(|| {
                 super::record::malformed(format!("audit record {number} is gone"))
             })?;
-            // Kept by its identifier, once: a record already there — this
-            // move cut short before, or the same record written twice — is
-            // not kept again.
+            // Kept by its identifier, once, with its index entries: a
+            // record already there — this move cut short before, or the
+            // same record written twice — is not kept again.
             let id = entry.id.value().to_be_bytes();
-            self.administration
-                .put_new(KEPT_AUDIT, &id, &entry.bytes())?;
+            if self.administration.get(KEPT_AUDIT, &id)?.is_none() {
+                self.administered(vec![(KEPT_AUDIT, id.to_vec(), Some(entry.bytes()))])?;
+            }
             if !self.yes(Op::Kept(number))? {
                 break;
             }
@@ -280,11 +311,16 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
-        self.administration.put(
-            &administration_kind(record.kind),
-            &record.id.to_be_bytes(),
-            &record.bytes(),
-        )
+        let _one = self
+            .administering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let kind = administration_kind(record.kind);
+        self.administered(vec![(
+            &kind,
+            record.id.to_be_bytes().to_vec(),
+            Some(record.bytes()),
+        )])
     }
 
     fn read_administration(
@@ -303,8 +339,31 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         kind: AdministrationKind,
         id: u128,
     ) -> Result<(), PersistError> {
-        self.administration
-            .remove(&administration_kind(kind), &id.to_be_bytes())
+        let _one = self
+            .administering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let kind = administration_kind(kind);
+        self.administered(vec![(&kind, id.to_be_bytes().to_vec(), None)])
+    }
+
+    fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
+        let plan = query.ask.plan();
+        let asked = (query.most, query.newest_first);
+        let at = (plan.table, plan.index);
+        match plan.database {
+            Database::Runtime => {
+                self.runtime_columns
+                    .find(&self.runtime, at, &plan.equal, plan.range, asked)
+            }
+            Database::Administration => self.administration_columns.find(
+                &self.administration,
+                at,
+                &plan.equal,
+                plan.range,
+                asked,
+            ),
+        }
     }
 }
 
@@ -312,6 +371,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
 mod tests {
     use super::*;
     use crate::fixture::Memory;
+    use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use secret::Held;
 
     /// A clock a test moves by hand.
@@ -357,6 +417,7 @@ mod tests {
         JourneyRecord {
             journey: id,
             body: body.to_vec(),
+            facts: JourneyFacts::default(),
         }
     }
 
@@ -378,6 +439,7 @@ mod tests {
         let message = MessageRecord {
             message: MessageId::new(5),
             body: b"context".to_vec(),
+            facts: MessageFacts::default(),
         };
         node.write_message(&message).expect("message");
         assert_eq!(
@@ -392,6 +454,7 @@ mod tests {
             kind: AdministrationKind::Operator,
             id: 6,
             body: b"paused by ilian".to_vec(),
+            updated_unix_nanos: 0,
         };
         node.write_administration(&pause).expect("administration");
         let kept = node.read_administration(AdministrationKind::Operator, 6);
@@ -512,6 +575,7 @@ mod tests {
             messages: vec![MessageRecord {
                 message: MessageId::new(9),
                 body: b"generation 2".to_vec(),
+                facts: MessageFacts::default(),
             }],
             next: vec![journey(next, b"to send")],
             leaves: Vec::new(),
@@ -570,6 +634,7 @@ mod tests {
             message: MessageRecord {
                 message: MessageId::new(7),
                 body: b"order".to_vec(),
+                facts: MessageFacts::default(),
             },
             journeys: vec![
                 journey(JOURNEY_ID, b"to billing"),
@@ -580,6 +645,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(9),
                 body: b"published".to_vec(),
+                facts: AuditFacts::default(),
             },
             claims: Vec::new(),
             lease_nanos: 0,
@@ -604,6 +670,7 @@ mod tests {
             message: MessageRecord {
                 message: MessageId::new(id),
                 body: b"order".to_vec(),
+                facts: MessageFacts::default(),
             },
             journeys: vec![journey(JourneyId::new(id), b"held")],
             held: vec![super::super::Hold {
@@ -615,6 +682,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
+                facts: AuditFacts::default(),
             },
             claims: Vec::new(),
             lease_nanos: 0,
@@ -628,6 +696,7 @@ mod tests {
             message: MessageRecord {
                 message: MessageId::new(id),
                 body: b"invoice".to_vec(),
+                facts: MessageFacts::default(),
             },
             journeys: Vec::new(),
             held: Vec::new(),
@@ -644,6 +713,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id),
                 body: b"published".to_vec(),
+                facts: AuditFacts::default(),
             },
             claims: Vec::new(),
             lease_nanos: 0,
@@ -666,6 +736,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id + 1000),
                 body: b"replayed".to_vec(),
+                facts: AuditFacts::default(),
             },
         }
     }
@@ -960,7 +1031,7 @@ mod tests {
 
         assert_eq!(again, Vec::new(), "no claim taken again");
         let read = node.read_journey(JourneyId::new(1)).expect("read");
-        assert_eq!(read, Some(journey(JourneyId::new(1), b"completed")));
+        assert_eq!(read.map(|r| r.body), Some(b"completed".to_vec()));
         assert_eq!(
             node.read_held(7, 0, 10).expect("read").count,
             0,
@@ -1031,6 +1102,7 @@ mod tests {
             .map(|id| AuditEntry {
                 id: AuditId::new(id),
                 body: format!("record {id}").into_bytes(),
+                facts: AuditFacts::default(),
             })
             .collect();
         for entry in &entries {

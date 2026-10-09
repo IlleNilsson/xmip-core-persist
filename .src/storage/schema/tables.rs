@@ -1,10 +1,18 @@
 //! Every table of Xmip Storage's two databases, in the order the scripts
 //! make them ([`super::scripts`]).
 
+use super::searchable::{
+    ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, DEAD_MESSAGE,
+    DEAD_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
+};
 use super::{Column, Database, Kind, Table};
 
 const fn column(name: &'static str, kind: Kind) -> Column {
-    Column { name, kind }
+    Column {
+        name,
+        kind,
+        null: false,
+    }
 }
 
 /// Every table, in the order the scripts make them.
@@ -21,42 +29,35 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["stream", "chunk"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
         name: "message",
-        keeps: "every Message, as a step wrote it",
-        columns: &[
-            column("message", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
+        keeps: "every Message, as a step wrote it, and what it is searched by",
+        columns: MESSAGE,
         key: &["message"],
         unique: &[],
+        indexes: MESSAGE_INDEXES,
     },
     Table {
         database: Database::Runtime,
         name: "journey",
-        keeps: "every Journey, as a step wrote it",
-        columns: &[
-            column("journey", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
+        keeps: "every Journey, as a step wrote it, and what it is searched by",
+        columns: JOURNEY,
         key: &["journey"],
         unique: &[],
+        indexes: JOURNEY_INDEXES,
     },
     Table {
         database: Database::Runtime,
         name: "held",
         keeps: "the Journeys a paused Subscription holds, at their place in its queue, \
                 each once",
-        columns: &[
-            column("queue", Kind::Identifier),
-            column("sequence", Kind::Number),
-            column("journey", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
+        columns: HELD,
         key: &["queue", "sequence"],
         unique: &["queue", "journey"],
+        indexes: HELD_INDEXES,
     },
     Table {
         database: Database::Runtime,
@@ -70,6 +71,7 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["queue"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
@@ -77,14 +79,10 @@ pub const TABLES: [Table; 13] = [
         keeps: "each node's Dead Message Queue: every Message nothing matched, at its place, \
                 with its receive context, what its gates concluded, its promoted properties \
                 and each Subscription's reason for declining, each once",
-        columns: &[
-            column("queue", Kind::Identifier),
-            column("sequence", Kind::Number),
-            column("message", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
+        columns: DEAD_MESSAGE,
         key: &["queue", "sequence"],
         unique: &["queue", "message"],
+        indexes: DEAD_MESSAGE_INDEXES,
     },
     Table {
         database: Database::Runtime,
@@ -98,6 +96,7 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["queue"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
@@ -110,6 +109,7 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["queue", "message"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
@@ -122,6 +122,7 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["message"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
@@ -138,6 +139,7 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["journey"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Runtime,
@@ -150,25 +152,25 @@ pub const TABLES: [Table; 13] = [
         ],
         key: &["sequence"],
         unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Administration,
         name: "audit",
-        keeps: "audit records kept over time, each once",
-        columns: &[column("id", Kind::Identifier), column("body", Kind::Bytes)],
+        keeps: "audit records kept over time, each once, and what each is searched by",
+        columns: AUDIT,
         key: &["id"],
         unique: &[],
+        indexes: AUDIT_INDEXES,
     },
     Table {
         database: Database::Administration,
         name: "administration",
-        keeps: "registration, membership, Modules, Handlers, deployment and operator state",
-        columns: &[
-            column("kind", Kind::Text),
-            column("id", Kind::Identifier),
-            column("body", Kind::Bytes),
-        ],
+        keeps: "registration, membership, Modules, Handlers, deployment and operator state, \
+                and when each was last written",
+        columns: ADMINISTRATION,
         key: &["kind", "id"],
         unique: &[],
+        indexes: ADMINISTRATION_INDEXES,
     },
 ];

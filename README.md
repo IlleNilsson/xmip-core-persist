@@ -21,8 +21,10 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
 - **`RuntimeStore`** — what the runtime writes and recovers them through.
   Every error is a `PersistError`.
 - **`Engine`** — bytes under bytes: `read`, `write` (durable on return),
-  `write_new` (one step, `false` when taken), `remove`. An engine sees only a
-  keyed hash as the key and a sealed record as the value.
+  `write_new` (one step, `false` when taken), `remove`, `apply` a batch whole,
+  and `scan` a range of keys in their byte order or the reverse. An engine
+  sees only a keyed hash — or an index entry's sortable key — as the key and
+  a sealed record as the value.
 - **`EncryptedStore<E: Engine>`** — the encryption, above every engine, once.
   Each record is AES-256-GCM under a fresh nonce with its place — its kind and
   key — as associated data, so a record copied under another key is refused.
@@ -30,12 +32,19 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   an engine's files hold neither what is stored nor the names it is stored
   under. Both keys are derived (HKDF-SHA-256) from one data key, created with
   the store, kept in it wrapped by the key home (`xmip-core-secret`) under a
-  named key-encryption key. `EncryptedStore` is a `RuntimeStore`.
+  named key-encryption key. `EncryptedStore` is a `RuntimeStore`. An index
+  entry (`apply_indexed`, `scan_index`; proposed 2026-10-09) is the one key
+  not hashed again, so it sorts: the caller builds it from values hashed
+  under a column's own key (`column_key`, HKDF from a third derived key, the
+  column's name the info) and from times and numbers in the clear; its value
+  is the record's identifier, sealed with the whole key as associated data.
 - **`fixture`**, behind the `test-support` feature — an engine in memory and
   `conformance`, the one set of checks every engine runs against itself:
-  a record back through the encryption after a reopen, neither key nor kind
-  nor value anywhere in the engine's files, a tampered record refused with
-  its scope, the store refused under another key of the same name.
+  a record back through the encryption after a reopen, index entries found
+  by a value within a time, oldest or newest first, neither key nor kind nor
+  value, nor an indexed value nor the record an entry finds, anywhere in the
+  engine's files, a tampered record refused with its scope, the store refused
+  under another key of the same name.
 
 ## Xmip Storage
 
@@ -84,7 +93,23 @@ and 9).
   tokens, while another Publication of that Message is refused (review of
   2026-10-06; the `publication` table on a database server); and a hand-on
   asked again is `true` while one after a mere release is `false` — the
-  claim keeps which of the two ended it.
+  claim keeps which of the two ended it. And `query`: the identifiers of the
+  records one index of one table finds (`Query`, `Ask`, `Span`), which the
+  caller reads as it reads any record.
+- **Searchable columns** (proposed 2026-10-09) — the Journey, Message, held,
+  Dead Message Queue, audit and administration tables keep their records'
+  facts in columns of their own beside the sealed body: times, states,
+  counts and flags in the clear; every identifier and name as `_ref`,
+  sixteen bytes of HMAC-SHA-256 under that column's own key, found by
+  equality, never by a pattern. The writer says the facts, typed, beside the
+  body (`JourneyFacts`, `MessageFacts`, `AuditFacts`; the runtime fills them
+  in one place from its objects); the times are Xmip Storage's, on its clock.
+  A database server keeps them as columns and indexes; the embedded engines,
+  which have no columns, keep each index as entries of its own written in
+  the record's own batch, the entries of a record it replaces or removes
+  taken out with it (`storage/columns.rs`). The other tables — chunks,
+  queues' places, publication, replayed, claim and the runtime database's
+  audit queue — keep what they kept.
 - **`Embedded`** — the embedded Storage node: the runtime database and the
   administration database, each an `EncryptedStore` over the engine the
   program gives it — RocksDB and SQLite for a node, RocksDB on disk and
@@ -111,7 +136,9 @@ and 9).
 - **`database`** and **`schema`** — a database server Xmip Storage is in
   front of (option A): the one reading of a connection,
   `<postgresql|sqlserver>://<login>@<host>[:<port>]/<database>`, and every
-  table both databases keep there, with the scripts IT runs for each server
+  table both databases keep there, its searchable columns and its indexes
+  (`schema/searchable.rs`, each index numbered once for the embedded
+  engines), with the scripts IT runs for each server
   (`scripts`), which `deploy/database/<server>/` holds and the estate root's
   `cargo test --test database` holds to it. The backends themselves follow
   as technologies of this crate, `xmip-core-persist-postgresql` first.
@@ -148,11 +175,12 @@ second way, for one engine (ADR-0063 clause 2). A device build leaves
 
 ## What it is not
 
-Not runtime orchestration, which is `xmip-core-runtime`'s. Not a range scan:
-a keyed hash does not keep the order of what it hashes, so the chronological
-scans `doc/record-identifier.md` describes for UUIDv7 keys are not available
-through the lookup key and need an index of their own when they are wanted.
-Not rotation: one data key per store until the key home designs it.
+Not runtime orchestration, which is `xmip-core-runtime`'s. Not a range scan
+by a record's key: a keyed hash does not keep the order of what it hashes, so
+the chronological scans `doc/record-identifier.md` describes for UUIDv7 keys
+are the searchable columns' indexes, by a time column, not the lookup key.
+Not a pattern search: a name is found by equality alone. Not rotation: one
+data key per store until the key home designs it.
 
 ## Verification
 

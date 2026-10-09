@@ -159,6 +159,7 @@ impl Form for Publication {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use xcore::{AuditId, JourneyId, MessageId};
 
     #[test]
@@ -167,15 +168,18 @@ mod tests {
             message: MessageRecord {
                 message: MessageId::new(1),
                 body: b"message".to_vec(),
+                facts: MessageFacts::default(),
             },
             journeys: vec![
                 JourneyRecord {
                     journey: JourneyId::new(2),
                     body: b"to billing".to_vec(),
+                    facts: JourneyFacts::default(),
                 },
                 JourneyRecord {
                     journey: JourneyId::new(3),
                     body: b"to archive".to_vec(),
+                    facts: JourneyFacts::default(),
                 },
             ],
             held: vec![Hold {
@@ -192,6 +196,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(4),
                 body: b"published".to_vec(),
+                facts: AuditFacts::default(),
             },
             claims: vec![Claim {
                 journey: JourneyId::new(2),
