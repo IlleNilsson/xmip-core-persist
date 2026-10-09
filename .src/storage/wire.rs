@@ -61,6 +61,7 @@ pub(crate) enum Request {
     WriteStream(StreamChunk, StreamRecord),
     ReadStream(StreamId),
     ReadKeptAuditChunk(AuditId, StreamId, u32),
+    ReadKeptAuditStream(AuditId, StreamId),
 }
 
 /// What an operation answered.
@@ -127,11 +128,14 @@ impl Request {
                 write_byte(out, 24);
                 write_u128(out, id.value());
             }
-            Self::ReadKeptAuditChunk(id, stream, index) => {
-                write_byte(out, 25);
+            Self::ReadKeptAuditStream(id, stream) | Self::ReadKeptAuditChunk(id, stream, _) => {
+                let chunk = matches!(self, Self::ReadKeptAuditChunk(..));
+                write_byte(out, if chunk { 25 } else { 26 });
                 write_u128(out, id.value());
                 write_u128(out, stream.value());
-                write_u32(out, *index);
+                if let Self::ReadKeptAuditChunk(.., index) = self {
+                    write_u32(out, *index);
+                }
             }
             _ => {}
         }
@@ -242,7 +246,8 @@ impl Form for Request {
             Self::Query(_)
             | Self::WriteStream(..)
             | Self::ReadStream(_)
-            | Self::ReadKeptAuditChunk(..) => self.write_late(out),
+            | Self::ReadKeptAuditChunk(..)
+            | Self::ReadKeptAuditStream(..) => self.write_late(out),
         }
     }
 
@@ -272,11 +277,14 @@ impl Form for Request {
             22 => Self::Query(Query::read(cursor)?),
             23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
             24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
-            25 => Self::ReadKeptAuditChunk(
-                AuditId::new(read_u128(cursor)?),
-                StreamId::new(read_u128(cursor)?),
-                read_u32(cursor)?,
-            ),
+            number @ (25 | 26) => {
+                let (id, stream) = (read_u128(cursor)?, read_u128(cursor)?);
+                let (id, stream) = (AuditId::new(id), StreamId::new(stream));
+                match number {
+                    25 => Self::ReadKeptAuditChunk(id, stream, read_u32(cursor)?),
+                    _ => Self::ReadKeptAuditStream(id, stream),
+                }
+            }
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -515,13 +523,13 @@ mod tests {
             Request::WriteStream(last, record),
             Request::ReadStream(StreamId::new(1)),
             Request::ReadKeptAuditChunk(AuditId::new(2), StreamId::new(1), 3),
+            Request::ReadKeptAuditStream(AuditId::new(2), StreamId::new(1)),
             Request::WriteAudit(AuditEntry {
                 id: AuditId::new(2),
                 body: b"published".to_vec(),
                 audited: Some(super::super::Audited {
                     message: b"order".to_vec(),
                     streams: vec![StreamId::new(1)],
-                    kept: vec![record],
                 }),
                 facts: AuditFacts::default(),
             }),

@@ -26,6 +26,7 @@
 //! key, which a server's `UPDATE` makes too.
 use std::collections::HashMap;
 
+use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
 use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::dead::Dead;
 use super::hold::Held;
@@ -50,6 +51,7 @@ enum Searched {
     Held,
     Dead,
     Audit,
+    AuditStream,
     Administration,
 }
 
@@ -62,6 +64,7 @@ impl Searched {
             (Database::Runtime, HELD) => Self::Held,
             (Database::Runtime, DEAD) => Self::Dead,
             (Database::Administration, KEPT_AUDIT) => Self::Audit,
+            (Database::Administration, KEPT_AUDIT_STREAMS) => Self::AuditStream,
             (Database::Administration, kind) if kind.starts_with(ADMINISTRATION) => {
                 Self::Administration
             }
@@ -76,6 +79,7 @@ impl Searched {
             Self::Held => "held",
             Self::Dead => "dead_message",
             Self::Audit => "audit",
+            Self::AuditStream => "audit_stream",
             Self::Administration => "administration",
         }
     }
@@ -89,6 +93,7 @@ impl Searched {
             Self::Held => row::<Held>(bytes),
             Self::Dead => row::<Dead>(bytes),
             Self::Audit => row::<AuditEntry>(bytes),
+            Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
         }
     }
@@ -107,6 +112,7 @@ impl Searched {
             Self::Held => stamp::<Held>(bytes, before, now),
             Self::Dead => stamp::<Dead>(bytes, before, now),
             Self::Audit => stamp::<AuditEntry>(bytes, before, now),
+            Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
         }
     }
@@ -260,18 +266,23 @@ impl Columns {
 }
 
 /// `value` as an entry's key keeps it, in the clear: an identifier as
-/// its sixteen bytes, words as their length and their UTF-8, and a time, a
-/// count or a flag big-endian, so it sorts.
+/// its sixteen bytes, words as their length and their UTF-8, bytes as their
+/// length and themselves, and a time, a count or a flag big-endian, so it
+/// sorts.
 fn encoded(value: &Value) -> Vec<u8> {
     match value {
         Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
         Value::Flag(flag) => vec![u8::from(*flag)],
-        Value::Text(text) => {
-            let length = u32::try_from(text.len()).unwrap_or(u32::MAX);
-            [length.to_be_bytes().as_slice(), text.as_bytes()].concat()
-        }
+        Value::Text(text) => counted(text.as_bytes()),
+        Value::Bytes(bytes) => counted(bytes),
         Value::Id(id) => id.to_be_bytes().to_vec(),
     }
+}
+
+/// `bytes` after their length, so what follows them sorts after them.
+fn counted(bytes: &[u8]) -> Vec<u8> {
+    let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    [length.to_be_bytes().as_slice(), bytes].concat()
 }
 
 /// The value `row` holds in `column`, where it holds one.
@@ -324,6 +335,16 @@ mod tests {
             audited: None,
             facts: AuditFacts::default(),
         };
+        let kept_stream = KeptStream {
+            audit: AuditId::new(4),
+            stream: crate::storage::StreamRecord {
+                stream: xcore::StreamId::new(6),
+                length: 0,
+                chunks: 1,
+                digest: [0; crate::storage::DIGEST],
+                written_unix_nanos: 0,
+            },
+        };
         let administration = AdministrationRecord {
             kind: AdministrationKind::Operator,
             id: 5,
@@ -336,6 +357,7 @@ mod tests {
             ("held", held.row()),
             ("dead_message", dead.row()),
             ("audit", audit.row()),
+            ("audit_stream", kept_stream.row()),
             ("administration", administration.row()),
         ]
     }

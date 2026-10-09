@@ -67,7 +67,7 @@ mod server;
 mod stream;
 mod wire;
 
-pub use audited::Audited;
+pub use audited::{Audited, KeptStream};
 pub use client::StorageClient;
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
@@ -305,6 +305,19 @@ pub trait XmipStorage: Send + Sync {
     ///
     /// When it cannot be read, or fails its tag.
     fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError>;
+
+    /// The Stream `stream` a kept audit record carries, as the keeper kept
+    /// it — its length, its chunks, its digest — or `None` where it carries
+    /// no such Stream (ADR-0070; the `audit_stream` table).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn read_kept_audit_stream(
+        &self,
+        id: AuditId,
+        stream: StreamId,
+    ) -> Result<Option<StreamRecord>, PersistError>;
 
     /// A chunk of the Stream `stream` a kept audit record carries, by its
     /// number, or `None` past its last: what the keeper kept beside the
