@@ -19,14 +19,14 @@ use super::facts::{AuditFacts, JourneyFacts, MessageFacts};
 use crate::PersistError;
 
 /// A piece of a Stream: a Stream is written in chunks, never whole in
-/// memory (`runtime-model.md` section 3, *Threads, pools and chunks*).
+/// memory (`runtime-model.md` section 3, *Threads, pools and chunks*). A
+/// Stream ends where it has no further chunk; its Message keeps its length,
+/// which a reader holds what it read to (the owner, 2026-10-09).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamChunk {
     pub stream: StreamId,
     /// Its number in the Stream, from zero.
     pub index: u32,
-    /// Whether it is the Stream's last.
-    pub last: bool,
     pub bytes: Vec<u8>,
 }
 
@@ -253,7 +253,6 @@ impl Form for StreamChunk {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.stream.value());
         write_u32(out, self.index);
-        write_byte(out, u8::from(self.last));
         write_bytes(out, &self.bytes);
     }
 
@@ -261,7 +260,6 @@ impl Form for StreamChunk {
         Ok(Self {
             stream: StreamId::new(read_u128(cursor)?),
             index: read_u32(cursor)?,
-            last: read_byte(cursor)? != 0,
             bytes: read_bytes(cursor)?,
         })
     }
@@ -404,7 +402,6 @@ mod tests {
         let chunk = StreamChunk {
             stream: StreamId::new(9),
             index: 3,
-            last: true,
             bytes: b"<Order/>".to_vec(),
         };
         assert_eq!(

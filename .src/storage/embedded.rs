@@ -427,7 +427,6 @@ mod tests {
         let chunk = StreamChunk {
             stream: StreamId::new(4),
             index: 1,
-            last: true,
             bytes: b"<Order/>".to_vec(),
         };
         node.write_chunk(&chunk).expect("chunk");

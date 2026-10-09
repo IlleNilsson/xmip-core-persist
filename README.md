@@ -166,7 +166,9 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 `Engine::apply_deferred` writes one whole and unsynced, durable with the next
 synced write: RocksDB's write-ahead log without a sync, and any other engine
 as `apply`. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
-a receive cycle costs one sync, its Publication's.
+a receive cycle costs one sync, its Publication's. A chunk is its Stream and its
+number in it, nothing more: a Stream ends where it has no further chunk, and
+its length is its Message's to keep (the owner, 2026-10-09).
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves
