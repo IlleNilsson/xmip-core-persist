@@ -372,7 +372,7 @@ mod tests {
             Ask::JourneysHolding { message: 2 },
             Ask::MessagesCreated { created: span },
             Ask::MessagesFromParty {
-                party: "Contoso".to_string(),
+                party: "partner-x".to_string(),
                 created: span,
             },
             Ask::MessagesOfContract {

@@ -442,7 +442,7 @@ mod tests {
             })),
             Request::Query(super::super::Query {
                 ask: super::super::Ask::MessagesFromParty {
-                    party: "Contoso".to_string(),
+                    party: "partner-x".to_string(),
                     created: super::super::Span::ALL,
                 },
                 most: 64,
