@@ -1,33 +1,30 @@
-//! The searchable columns as Xmip Storage writes them: each record's
-//! times set on Xmip Storage's clock, and, in the embedded engines, each
-//! of its table's indexes kept as entries of its own, in the same write as
-//! the record (proposed 2026-10-09).
+//! The laid-out columns as Xmip Storage writes them: each record's times
+//! set on Xmip Storage's clock, and, in the embedded engines, each of its
+//! table's indexes kept as entries of its own, in the same write as the
+//! record (proposed 2026-10-09).
 //!
 //! **One definition.** A table's columns and indexes are the schema's
 //! (`super::schema::searchable`); a database server keeps them as columns
 //! and indexes, and the embedded engines — key/value, with no columns —
 //! keep each index as entries: a key of the index's number, its columns'
-//! values in order and the record's tag, and the record's identifier,
-//! sealed, as the value ([`crate::EncryptedStore::apply_indexed`]). The
-//! smallest faithful equivalent of an index: one range read finds what an
-//! index on a server finds, and nothing else of a column is kept, since
-//! nothing else is asked of it there.
+//! values in order and the record's identifier, and the identifier, sealed,
+//! as the value ([`crate::EncryptedStore::apply_indexed`]). The smallest
+//! faithful equivalent of an index: one range read finds what an index on
+//! a server finds. The rest of a record's columns is a server's alone; the
+//! embedded engines keep it in the sealed record.
 //!
-//! **Keyed per column.** A name or an identifier — and, in an entry's key,
-//! a word — is sixteen bytes of HMAC-SHA-256 under its column's own key
-//! ([`crate::EncryptedStore::column_key`]); a time, a small number, a
-//! count or a flag is kept big-endian, so it sorts. The record's tag is
-//! its identifier hashed under its table's own key, so an entry says
-//! neither which record it finds nor that two indexes find one record.
+//! **In the clear, as on a server** (the owner, 2026-10-09: *Store it in
+//! the clear*). An entry's key holds its values as the server's columns
+//! do: an identifier as its sixteen bytes, words as their length and their
+//! UTF-8, a time, a small number, a count or a flag big-endian, so it
+//! sorts. An engine's files show what the indexes hold; the records stay
+//! sealed.
 //!
 //! **Kept with the record.** A record written replaces the entries of the
 //! one it replaces, and a record removed takes its entries with it, all in
 //! its write: the record it replaces is read for them — a point read of one
 //! key, which a server's `UPDATE` makes too.
-
 use std::collections::HashMap;
-
-use secret::DataKey;
 
 use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::dead::Dead;
@@ -138,35 +135,16 @@ pub(crate) fn table(database: Database, name: &str) -> Option<&'static Table> {
         .find(|table| table.database == database && table.name == name)
 }
 
-/// One database's searchable columns: the key of each, and of each
-/// table's tags.
+/// One database's laid-out tables, as its records are written and its
+/// indexes read.
 pub(crate) struct Columns {
     database: Database,
-    keys: HashMap<String, DataKey>,
 }
 
 impl Columns {
-    /// The columns of `database`, their keys derived from `store`'s.
-    ///
-    /// # Errors
-    ///
-    /// Where a key cannot be derived.
-    pub(crate) fn of<E: Engine>(
-        store: &EncryptedStore<E>,
-        database: Database,
-    ) -> Result<Self, PersistError> {
-        let mut keys = HashMap::new();
-        for table in TABLES.iter().filter(|t| t.database == database) {
-            if table.indexes.is_empty() {
-                continue;
-            }
-            keys.insert(table.name.to_string(), store.column_key(table.name)?);
-            for column in table.columns {
-                let name = format!("{}.{}", table.name, column.name);
-                keys.insert(name.clone(), store.column_key(&name)?);
-            }
-        }
-        Ok(Self { database, keys })
+    /// The tables of `database`.
+    pub(crate) const fn of(database: Database) -> Self {
+        Self { database }
     }
 
     /// `changes` as they are written at `now` — each searchable record
@@ -220,7 +198,7 @@ impl Columns {
     fn entries(&self, table: &str, row: &Row, id: u128) -> Result<Vec<Vec<u8>>, PersistError> {
         let table = self::table(self.database, table)
             .ok_or_else(|| super::record::malformed(format!("no table '{table}'")))?;
-        let tag = self.hashed(table.name, &id.to_be_bytes())?;
+        let tag = id.to_be_bytes();
         let mut keys = Vec::new();
         'indexes: for index in table.indexes {
             if let Some(flag) = index.only
@@ -233,7 +211,7 @@ impl Columns {
                 let Some(value) = value(row, column) else {
                     continue 'indexes;
                 };
-                key.extend(self.encoded(table.name, column, value)?);
+                key.extend(encoded(value));
             }
             key.extend(tag);
             keys.push(key);
@@ -265,8 +243,8 @@ impl Columns {
             .find(|candidate| candidate.name == index)
             .ok_or_else(missing)?;
         let mut prefix = vec![index.number];
-        for (column, value) in index.columns.iter().zip(equal) {
-            prefix.extend(self.encoded(table.name, column, value)?);
+        for value in equal.iter().take(index.columns.len()) {
+            prefix.extend(encoded(value));
         }
         let (first, last) = match range {
             Some((from, to)) if from > to => return Ok(Vec::new()),
@@ -279,31 +257,21 @@ impl Columns {
         let most = usize::try_from(most).unwrap_or(usize::MAX);
         store.scan_index(&first, &last, most, reverse)
     }
+}
 
-    /// `value` of `column` as an entry's key keeps it.
-    fn encoded(&self, table: &str, column: &str, value: &Value) -> Result<Vec<u8>, PersistError> {
-        Ok(match value {
-            Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
-            Value::Small(small) => small.to_be_bytes().to_vec(),
-            Value::Flag(flag) => vec![u8::from(*flag)],
-            Value::Text(text) | Value::Name(text) => self
-                .hashed(&format!("{table}.{column}"), text.trim().as_bytes())?
-                .to_vec(),
-            Value::Id(id) => self
-                .hashed(&format!("{table}.{column}"), &id.to_be_bytes())?
-                .to_vec(),
-        })
-    }
-
-    /// `data` hashed under the key `name`, sixteen bytes of it.
-    fn hashed(&self, name: &str, data: &[u8]) -> Result<[u8; 16], PersistError> {
-        let key = self
-            .keys
-            .get(name)
-            .ok_or_else(|| super::record::malformed(format!("no column key '{name}'")))?;
-        let mut hashed = [0u8; 16];
-        hashed.copy_from_slice(&key.keyed_hash(data)[..16]);
-        Ok(hashed)
+/// `value` as an entry's key keeps it, in the clear: an identifier as
+/// its sixteen bytes, words as their length and their UTF-8, and a time, a
+/// small number, a count or a flag big-endian, so it sorts.
+fn encoded(value: &Value) -> Vec<u8> {
+    match value {
+        Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
+        Value::Small(small) => small.to_be_bytes().to_vec(),
+        Value::Flag(flag) => vec![u8::from(*flag)],
+        Value::Text(text) => {
+            let length = u32::try_from(text.len()).unwrap_or(u32::MAX);
+            [length.to_be_bytes().as_slice(), text.as_bytes()].concat()
+        }
+        Value::Id(id) => id.to_be_bytes().to_vec(),
     }
 }
 
@@ -514,7 +482,7 @@ mod tests {
                 facts: AuditFacts {
                     occurred_unix_nanos: 50,
                     failed: id == 2,
-                    artifact: Some("OrdersIn".to_string()),
+                    artifact_name: Some("OrdersIn".to_string()),
                     journey: Some(id + 100),
                     message: Some(id),
                     ..AuditFacts::default()
@@ -544,7 +512,7 @@ mod tests {
     fn messages_are_found_by_party_contract_time_and_what_they_came_from() {
         let (node, _) = three();
         let party = |created| Ask::MessagesFromParty {
-            party: " Contoso ".to_string(),
+            party: "Contoso".to_string(),
             created,
         };
         assert_eq!(find(&node, party(Span::ALL)), [1, 2], "oldest first");

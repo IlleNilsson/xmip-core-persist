@@ -73,9 +73,8 @@ pub enum Kind {
     Flag,
     /// The server's own ascending number, given as a row is written.
     Sequence,
-    /// Sixteen bytes of a keyed hash: `bytea`, and `binary(16)` on SQL
-    /// Server, where `varbinary(max)` cannot be a key.
-    Digest,
+    /// Words of any length: a record's own text, never a key.
+    LongText,
     /// A moment, as near the nanosecond as the server keeps it:
     /// `timestamptz`, and `datetime2(7)` on SQL Server, in UTC.
     Time,
@@ -346,15 +345,16 @@ fn indexes(server: Server, table: &Table) -> String {
 const fn kind(server: Server, kind: Kind) -> &'static str {
     match (server, kind) {
         (Server::PostgreSql, Kind::Identifier) => "uuid",
-        (Server::PostgreSql, Kind::Bytes | Kind::Digest) => "bytea",
-        (Server::PostgreSql, Kind::Text) => "text",
+        (Server::PostgreSql, Kind::Bytes) => "bytea",
+        (Server::PostgreSql, Kind::Text | Kind::LongText) => "text",
         (Server::PostgreSql | Server::SqlServer, Kind::Number) => "bigint",
         (Server::PostgreSql, Kind::Count) => "integer",
         (Server::PostgreSql, Kind::Flag) => "boolean",
         (Server::PostgreSql, Kind::Sequence) => "bigint GENERATED ALWAYS AS IDENTITY",
-        (Server::SqlServer, Kind::Identifier | Kind::Digest) => "binary(16)",
+        (Server::SqlServer, Kind::Identifier) => "binary(16)",
         (Server::SqlServer, Kind::Bytes) => "varbinary(max)",
         (Server::SqlServer, Kind::Text) => "nvarchar(400)",
+        (Server::SqlServer, Kind::LongText) => "nvarchar(max)",
         (Server::SqlServer, Kind::Count) => "int",
         (Server::SqlServer, Kind::Flag) => "bit",
         (Server::SqlServer, Kind::Sequence) => "bigint IDENTITY(1, 1)",

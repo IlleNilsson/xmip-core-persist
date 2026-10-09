@@ -9,19 +9,16 @@ use secret::{DataKey, KekName, KeyStore, SecretError};
 /// so this, at twenty-three, can never be one.
 const DATA_KEY: &[u8] = b"\0xmip-core-persist/key\0";
 
-/// The HKDF purposes the store's three keys are derived for. One wrapped
-/// key, three uses, and no key used for two.
+/// The HKDF purposes the store's two keys are derived for. One wrapped key,
+/// two uses, and no key used for both.
 const RECORD_PURPOSE: &[u8] = b"xmip-core-persist/record";
 const LOOKUP_PURPOSE: &[u8] = b"xmip-core-persist/lookup";
-/// The root of the column keys: each searchable column's own key is
-/// derived from it in turn, the column's name the info
-/// ([`EncryptedStore::column_key`]).
-const COLUMN_PURPOSE: &[u8] = b"xmip-core-persist/column";
 
 /// What every index entry's engine key opens with, so the entries sort
 /// together, apart from the records: a keyed hash begins with these seven
 /// bytes once in 2^56, and is refused by its tag if a range ever meets one.
 const INDEX: &[u8] = b"\0index\0";
+
 /// The first byte of every sealed record: the layout it was written in, so
 /// a later one can be told from this.
 const LAYOUT: u8 = 1;
@@ -34,17 +31,14 @@ const LAYOUT: u8 = 1;
 /// is refused. The key it is found by is HMAC-SHA-256 of that place under a
 /// second key, so the engine's files hold neither what is stored nor the
 /// names it is stored under. An index entry ([`EncryptedStore::apply_indexed`])
-/// is the one key not hashed again, so it sorts: built by the caller from
-/// keyed hashes under each column's own key and from times and numbers in
-/// the clear, its value the record's identifier, sealed. Every key
-/// derives from one data key, created with the store and kept in it
-/// wrapped by the key home (`xmip-core-secret`).
+/// is the one key not hashed: the caller builds it in the clear, so it
+/// sorts, and its value, the identifier of the record it finds, is sealed.
+/// Both keys derive from one data key, created with the store and kept in
+/// it wrapped by the key home (`xmip-core-secret`).
 pub struct EncryptedStore<E> {
     engine: E,
     record: DataKey,
     lookup: DataKey,
-    /// The root each column's key is derived from.
-    column: DataKey,
 }
 
 impl<E: Engine> EncryptedStore<E> {
@@ -75,7 +69,6 @@ impl<E: Engine> EncryptedStore<E> {
         Ok(Self {
             record: data.derive(RECORD_PURPOSE)?,
             lookup: data.derive(LOOKUP_PURPOSE)?,
-            column: data.derive(COLUMN_PURPOSE)?,
             engine,
         })
     }
@@ -215,18 +208,6 @@ impl<E: Engine> EncryptedStore<E> {
             .collect()
     }
 
-    /// The key of the searchable column `column`, derived by HKDF from the
-    /// store's column root with its name as the info: a value hashed under
-    /// it (`DataKey::keyed_hash`) is found by equality in that column and
-    /// matches nothing in another.
-    ///
-    /// # Errors
-    ///
-    /// [`PersistError::Key`] where the derivation fails.
-    pub fn column_key(&self, column: &str) -> Result<DataKey, PersistError> {
-        Ok(self.column.derive(column.as_bytes())?)
-    }
-
     /// Every change of `changes` as one write through the engine's
     /// [`Engine::apply_deferred`]: all or none, durable with the next write
     /// that is durable on return, not on its own.
@@ -347,31 +328,6 @@ mod tests {
         conformance(
             || -> Box<dyn Engine + '_> { Box::new(&memory) },
             || memory.everything(),
-        );
-    }
-
-    #[test]
-    fn a_value_hashes_apart_under_every_column_and_every_store() {
-        let keys = Held::new(secret::fixture::Memory::default());
-        let store = EncryptedStore::open(Memory::default(), &keys, &kek()).expect("open");
-        let other = EncryptedStore::open(Memory::default(), &keys, &kek()).expect("open");
-        let hash = |store: &EncryptedStore<Memory>, column: &str| {
-            store
-                .column_key(column)
-                .expect("key")
-                .keyed_hash(b"Billing")
-        };
-        assert_ne!(
-            hash(&store, "journey.send_port_ref"),
-            hash(&store, "message.party_ref")
-        );
-        assert_eq!(
-            hash(&store, "journey.send_port_ref"),
-            hash(&store, "journey.send_port_ref")
-        );
-        assert_ne!(
-            hash(&other, "journey.send_port_ref"),
-            hash(&store, "journey.send_port_ref")
         );
     }
 

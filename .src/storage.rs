@@ -15,8 +15,8 @@
 //!   hand a step on, leaving a queue or waiting in one; write an audit
 //!   record as it is first written;
 //! - **a search** of either: the records one index of one table finds, by
-//!   the searchable columns each record's table keeps beside its sealed
-//!   body (`query`, proposed 2026-10-09);
+//!   the columns each record's table lays out beside its sealed body,
+//!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records from the runtime database to
 //!   the administration database (ADR-0062, amendment 2026-10-01);
 //! - **the administration database**: what must be shared and kept over
@@ -307,7 +307,7 @@ pub trait XmipStorage: Send + Sync {
 
     /// The identifiers of the records `query` finds, up to its most, in
     /// its index's order or the reverse: one index of one table read, a
-    /// name or an identifier asked hashed under its column's key
+    /// name or an identifier found by equality, as its column keeps it
     /// (`schema` names the columns and the indexes). The caller reads each
     /// record as it reads any.
     ///

@@ -34,7 +34,7 @@ pub const TABLES: [Table; 13] = [
     Table {
         database: Database::Runtime,
         name: "message",
-        keeps: "every Message, as a step wrote it, and what it is searched by",
+        keeps: "every Message, as a step wrote it, every single value of it in a column of its own",
         columns: MESSAGE,
         key: &["message"],
         unique: &[],
@@ -43,7 +43,7 @@ pub const TABLES: [Table; 13] = [
     Table {
         database: Database::Runtime,
         name: "journey",
-        keeps: "every Journey, as a step wrote it, and what it is searched by",
+        keeps: "every Journey, as a step wrote it, every single value of it in a column of its own",
         columns: JOURNEY,
         key: &["journey"],
         unique: &[],
@@ -157,7 +157,8 @@ pub const TABLES: [Table; 13] = [
     Table {
         database: Database::Administration,
         name: "audit",
-        keeps: "audit records kept over time, each once, and what each is searched by",
+        keeps: "audit records kept over time, each once, every single value of each in a \
+                column of its own",
         columns: AUDIT,
         key: &["id"],
         unique: &[],

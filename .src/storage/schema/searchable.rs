@@ -1,14 +1,16 @@
 //! The columns and indexes of the six tables a search reads (proposed
-//! 2026-10-09): each table's searchable facts in columns of its own beside
-//! its sealed body, filled from the record it writes
-//! (`super::super::facts`), and the indexes a query of it uses
-//! (`super::super::query`).
+//! 2026-10-09; the owner, the same day: *Store it in the clear*, *All
+//! columns shall be laid out*): every single value of each table's record in
+//! a column of its own, in the clear, beside its sealed body, filled from
+//! the record it writes (`super::super::facts`), and the indexes a query of
+//! it uses (`super::super::query`).
 //!
-//! **What a column holds.** A time, a state, a count or a flag in the
-//! clear; an identifier or a name as `_ref`, sixteen bytes of HMAC-SHA-256
-//! under that column's own key, found by equality and never by a pattern.
-//! A fact a record may lack is a column that may hold nothing, and an index
-//! holds no row that lacks one of its columns' facts.
+//! **What a column holds.** An identifier as the keys are kept, a name or a
+//! word as text, a time, a state, a count or a flag as it is. A list — a
+//! Journey's entries, a Message's Sections and context, an audit record's
+//! properties — is not split into tables of its own; it stays in the body.
+//! A value a record may lack is a column that may hold nothing, and an
+//! index holds no row that lacks one of its columns' values.
 //!
 //! **Numbered once.** An index's number names it to the embedded engines,
 //! which have no columns and keep each index as entries of its own
@@ -48,39 +50,45 @@ pub(super) const JOURNEY: &[Column] = &[
     column("created_at", Kind::Time),
     column("updated_at", Kind::Time),
     column("state", Kind::Small),
-    column("attempts", Kind::Count),
+    maybe("previous_journey", Kind::Identifier),
+    maybe("subscription", Kind::Text),
+    maybe("cause_work_process", Kind::Text),
     column("depth", Kind::Count),
-    maybe("send_port_ref", Kind::Digest),
-    maybe("work_process_ref", Kind::Digest),
-    maybe("previous_journey_ref", Kind::Digest),
-    maybe("message_ref", Kind::Digest),
+    maybe("work_process", Kind::Text),
+    maybe("send_port", Kind::Text),
+    column("send_location", Kind::Count),
+    column("attempts", Kind::Count),
+    maybe("message", Kind::Identifier),
 ];
 
 pub(super) const JOURNEY_INDEXES: &[Index] = &[
     index(1, "journey_state", &["state", "updated_at"]),
-    index(2, "journey_send_port", &["send_port_ref", "state"]),
-    index(3, "journey_previous", &["previous_journey_ref"]),
-    index(4, "journey_message", &["message_ref"]),
+    index(2, "journey_send_port", &["send_port", "state"]),
+    index(3, "journey_previous", &["previous_journey"]),
+    index(4, "journey_message", &["message"]),
 ];
 
 pub(super) const MESSAGE: &[Column] = &[
     column("message", Kind::Identifier),
     column("body", Kind::Bytes),
     column("created_at", Kind::Time),
+    maybe("previous_message", Kind::Identifier),
     column("generation", Kind::Count),
     column("created_by", Kind::Small),
+    column("priority", Kind::Small),
+    column("execution_profile", Kind::Small),
+    column("durability", Kind::Small),
     column("size_bytes", Kind::Number),
-    maybe("previous_message_ref", Kind::Digest),
-    maybe("party_ref", Kind::Digest),
-    maybe("contract_ref", Kind::Digest),
-    maybe("stream_ref", Kind::Digest),
+    maybe("party", Kind::Text),
+    maybe("contract", Kind::Text),
+    maybe("stream", Kind::Identifier),
 ];
 
 pub(super) const MESSAGE_INDEXES: &[Index] = &[
     index(5, "message_created", &["created_at"]),
-    index(6, "message_party", &["party_ref", "created_at"]),
-    index(7, "message_contract", &["contract_ref", "created_at"]),
-    index(8, "message_previous", &["previous_message_ref"]),
+    index(6, "message_party", &["party", "created_at"]),
+    index(7, "message_contract", &["contract", "created_at"]),
+    index(8, "message_previous", &["previous_message"]),
 ];
 
 pub(super) const HELD: &[Column] = &[
@@ -98,9 +106,10 @@ pub(super) const DEAD_MESSAGE: &[Column] = &[
     column("sequence", Kind::Number),
     column("message", Kind::Identifier),
     column("body", Kind::Bytes),
+    column("stream", Kind::Identifier),
+    column("node", Kind::Text),
+    column("receive_location", Kind::Text),
     column("queued_at", Kind::Time),
-    column("node_ref", Kind::Digest),
-    column("receive_location_ref", Kind::Digest),
 ];
 
 pub(super) const DEAD_MESSAGE_INDEXES: &[Index] =
@@ -115,21 +124,28 @@ pub(super) const AUDIT: &[Column] = &[
     column("phase", Kind::Text),
     column("severity", Kind::Text),
     column("failed", Kind::Flag),
+    maybe("message_text", Kind::LongText),
     column("program", Kind::Text),
+    column("host", Kind::Text),
+    column("process", Kind::Count),
+    maybe("location", Kind::Text),
+    column("hidden", Kind::Flag),
+    maybe("execution", Kind::Identifier),
+    maybe("journey", Kind::Identifier),
+    maybe("message", Kind::Identifier),
+    maybe("artifact", Kind::Identifier),
     maybe("artifact_kind", Kind::Text),
-    maybe("cluster_ref", Kind::Digest),
-    maybe("node_ref", Kind::Digest),
-    maybe("artifact_ref", Kind::Digest),
-    maybe("journey_ref", Kind::Digest),
-    maybe("message_ref", Kind::Digest),
-    maybe("execution_ref", Kind::Digest),
+    maybe("artifact_name", Kind::Text),
+    maybe("artifact_version", Kind::Text),
+    maybe("node", Kind::Identifier),
+    maybe("cluster", Kind::Identifier),
 ];
 
 pub(super) const AUDIT_INDEXES: &[Index] = &[
     index(11, "audit_occurred", &["occurred_at"]),
-    index(12, "audit_journey", &["journey_ref"]),
-    index(13, "audit_message", &["message_ref"]),
-    index(14, "audit_artifact", &["artifact_ref", "occurred_at"]),
+    index(12, "audit_journey", &["journey"]),
+    index(13, "audit_message", &["message"]),
+    index(14, "audit_artifact", &["artifact_name", "occurred_at"]),
     Index {
         only: Some("failed"),
         ..index(15, "audit_failed", &["failed", "occurred_at"])

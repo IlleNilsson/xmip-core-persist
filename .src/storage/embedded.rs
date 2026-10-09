@@ -83,7 +83,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, PersistError> {
         let runtime = Arc::new(runtime);
-        let runtime_columns = Arc::new(Columns::of(&runtime, Database::Runtime)?);
+        let runtime_columns = Arc::new(Columns::of(Database::Runtime));
         let committer = Committer::start(
             Arc::clone(&runtime),
             Arc::clone(&clock),
@@ -91,7 +91,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         )?;
         Ok(Self {
             runtime_columns,
-            administration_columns: Columns::of(&administration, Database::Administration)?,
+            administration_columns: Columns::of(Database::Administration),
             runtime,
             administration,
             committer,
