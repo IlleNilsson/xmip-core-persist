@@ -5,10 +5,12 @@
 //! the record it writes (`super::super::facts`), and the indexes a query of
 //! it uses (`super::super::query`).
 //!
-//! **What a column holds.** An identifier as the keys are kept, a name or a
-//! word as text, a time, a state, a count or a flag as it is. A list — a
-//! Journey's entries, a Message's Sections and context, an audit record's
-//! properties — is not split into tables of its own; it stays in the body.
+//! **What a column holds.** An identifier as the keys are kept, a name as
+//! text, an enumeration — a state, a phase, how a Message was made — as its
+//! word, as the enum names it, and a time, a count or a flag as it is. A
+//! list — a Journey's entries, a Message's Sections and context, an audit
+//! record's properties — is not split into tables of its own; it stays in
+//! the body.
 //! A value a record may lack is a column that may hold nothing, and an
 //! index holds no row that lacks one of its columns' values.
 //!
@@ -44,12 +46,19 @@ const fn index(number: u8, name: &'static str, columns: &'static [&'static str])
     }
 }
 
+pub(super) const STREAM: &[Column] = &[
+    column("stream", Kind::Identifier),
+    column("length", Kind::Number),
+    column("chunks", Kind::Count),
+    column("written_at", Kind::Time),
+];
+
 pub(super) const JOURNEY: &[Column] = &[
     column("journey", Kind::Identifier),
     column("body", Kind::Bytes),
     column("created_at", Kind::Time),
     column("updated_at", Kind::Time),
-    column("state", Kind::Small),
+    column("state", Kind::Word),
     maybe("previous_journey", Kind::Identifier),
     maybe("subscription", Kind::Text),
     maybe("cause_work_process", Kind::Text),
@@ -74,10 +83,10 @@ pub(super) const MESSAGE: &[Column] = &[
     column("created_at", Kind::Time),
     maybe("previous_message", Kind::Identifier),
     column("generation", Kind::Count),
-    column("created_by", Kind::Small),
-    column("priority", Kind::Small),
-    column("execution_profile", Kind::Small),
-    column("durability", Kind::Small),
+    column("created_by", Kind::Word),
+    column("priority", Kind::Word),
+    column("execution_profile", Kind::Word),
+    column("durability", Kind::Word),
     column("size_bytes", Kind::Number),
     maybe("party", Kind::Text),
     maybe("contract", Kind::Text),
@@ -89,6 +98,7 @@ pub(super) const MESSAGE_INDEXES: &[Index] = &[
     index(6, "message_party", &["party", "created_at"]),
     index(7, "message_contract", &["contract", "created_at"]),
     index(8, "message_previous", &["previous_message"]),
+    index(17, "message_stream", &["stream"]),
 ];
 
 pub(super) const HELD: &[Column] = &[
@@ -121,8 +131,8 @@ pub(super) const AUDIT: &[Column] = &[
     column("occurred_at", Kind::Time),
     column("kept_at", Kind::Time),
     column("action", Kind::Text),
-    column("phase", Kind::Text),
-    column("severity", Kind::Text),
+    column("phase", Kind::Word),
+    column("severity", Kind::Word),
     column("failed", Kind::Flag),
     maybe("message_text", Kind::LongText),
     column("program", Kind::Text),
@@ -134,7 +144,7 @@ pub(super) const AUDIT: &[Column] = &[
     maybe("journey", Kind::Identifier),
     maybe("message", Kind::Identifier),
     maybe("artifact", Kind::Identifier),
-    maybe("artifact_kind", Kind::Text),
+    maybe("artifact_kind", Kind::Word),
     maybe("artifact_name", Kind::Text),
     maybe("artifact_version", Kind::Text),
     maybe("node", Kind::Identifier),
@@ -153,7 +163,7 @@ pub(super) const AUDIT_INDEXES: &[Index] = &[
 ];
 
 pub(super) const ADMINISTRATION: &[Column] = &[
-    column("kind", Kind::Text),
+    column("kind", Kind::Word),
     column("id", Kind::Identifier),
     column("body", Kind::Bytes),
     column("updated_at", Kind::Time),

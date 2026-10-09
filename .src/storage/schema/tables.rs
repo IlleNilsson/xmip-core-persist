@@ -4,6 +4,7 @@
 use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, DEAD_MESSAGE,
     DEAD_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
+    STREAM,
 };
 use super::{Column, Database, Kind, Table};
 
@@ -16,11 +17,22 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 13] = [
+pub const TABLES: [Table; 14] = [
+    Table {
+        database: Database::Runtime,
+        name: "stream",
+        keeps: "every Stream, once, as written and never changed: its length and its chunks; \
+                a chunk and every Message referring to it refer to it by its identifier",
+        columns: STREAM,
+        key: &["stream"],
+        unique: &[],
+        indexes: &[],
+    },
     Table {
         database: Database::Runtime,
         name: "stream_chunk",
-        keeps: "every Stream, in chunks",
+        keeps: "every Stream's chunks, by its identifier and their number; a Stream ends \
+                where it has no further chunk",
         columns: &[
             column("stream", Kind::Identifier),
             column("chunk", Kind::Count),

@@ -19,7 +19,9 @@ use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::XmipStorage;
 use super::columns::{ADMINISTRATION, Columns, KEPT_AUDIT};
-use super::commit::{AUDIT, CHUNK, Committer, Done, JOURNEY, KEPT, MESSAGE, NEXT, Op, sequence};
+use super::commit::{
+    AUDIT, CHUNK, Committer, Done, JOURNEY, KEPT, MESSAGE, NEXT, Op, STREAM, sequence,
+};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
@@ -31,6 +33,7 @@ use super::record::{
 };
 use super::row;
 use super::schema::Database;
+use super::stream::StreamRecord;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The embedded Storage node's two databases, and the one writer to the
@@ -188,6 +191,25 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
         self.read(CHUNK, &chunk_key(stream, index))
+    }
+
+    fn write_stream(&self, last: &StreamChunk, stream: &StreamRecord) -> Result<(), PersistError> {
+        // With the last chunk, unsynced as it is: the Publication's sync
+        // makes both durable. Its time is this node's.
+        let written = StreamRecord {
+            written_unix_nanos: row::nanos(self.clock.unix_timestamp_nanos()),
+            ..*stream
+        };
+        let key = chunk_key(last.stream, last.index);
+        let id = stream.stream.value().to_be_bytes().to_vec();
+        self.runtime.apply_deferred(&[
+            (CHUNK, key, Some(last.bytes())),
+            (STREAM, id, Some(written.bytes())),
+        ])
+    }
+
+    fn read_stream(&self, stream: StreamId) -> Result<Option<StreamRecord>, PersistError> {
+        self.read(STREAM, &stream.value().to_be_bytes())
     }
 
     fn write_message(&self, message: &MessageRecord) -> Result<(), PersistError> {
@@ -432,9 +454,27 @@ mod tests {
         node.write_chunk(&chunk).expect("chunk");
         assert_eq!(
             node.read_chunk(StreamId::new(4), 1).expect("read"),
-            Some(chunk)
+            Some(chunk.clone())
         );
         assert_eq!(node.read_chunk(StreamId::new(4), 0).expect("read"), None);
+        let ended = super::super::StreamRecord {
+            stream: StreamId::new(4),
+            length: 9,
+            chunks: 2,
+            written_unix_nanos: 0,
+        };
+        let last = StreamChunk {
+            index: 2,
+            ..chunk.clone()
+        };
+        node.write_stream(&last, &ended).expect("ended");
+        assert_eq!(
+            node.read_chunk(StreamId::new(4), 2).expect("read"),
+            Some(last)
+        );
+        let kept = node.read_stream(StreamId::new(4)).expect("read");
+        assert_eq!(kept, Some(ended), "its time the Storage node's, here zero");
+        assert_eq!(node.read_stream(StreamId::new(5)).expect("read"), None);
         let message = MessageRecord {
             message: MessageId::new(5),
             body: b"context".to_vec(),

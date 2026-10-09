@@ -25,8 +25,8 @@ use crate::PersistError;
 /// A Journey's fields, as its record is written.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JourneyFacts {
-    /// Its state, by the number the Journey's own form gives it.
-    pub state: u8,
+    /// Its state, by its word (`JourneyState::word`).
+    pub state: String,
     /// The Journey it came from.
     pub previous_journey: Option<u128>,
     /// What caused it: the Subscription that matched, and the Work Process
@@ -58,11 +58,12 @@ pub struct MessageFacts {
     /// How many times its content or metadata changed since it was received.
     pub generation: u32,
     /// How it was made, and its treatment — priority, execution profile,
-    /// durability — each by the number the Message's own form gives it.
-    pub created_by: u8,
-    pub priority: u8,
-    pub execution_profile: u8,
-    pub durability: u8,
+    /// durability — each by its word (`MessageCreationSource::word` and its
+    /// siblings).
+    pub created_by: String,
+    pub priority: String,
+    pub execution_profile: String,
+    pub durability: String,
     /// Its Sections' length together.
     pub size_bytes: u64,
     /// The Party it came from, as its context says.
@@ -141,7 +142,7 @@ fn read_id_maybe(cursor: &mut Cursor<'_>) -> Result<Option<u128>, PersistError> 
 
 impl Form for JourneyFacts {
     fn write(&self, out: &mut Vec<u8>) {
-        write_byte(out, self.state);
+        write_text(out, &self.state);
         write_id_maybe(out, self.previous_journey);
         write_text_maybe(out, self.subscription.as_deref());
         write_text_maybe(out, self.cause_work_process.as_deref());
@@ -157,7 +158,7 @@ impl Form for JourneyFacts {
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
-            state: read_byte(cursor)?,
+            state: read_text(cursor)?,
             previous_journey: read_id_maybe(cursor)?,
             subscription: read_text_maybe(cursor)?,
             cause_work_process: read_text_maybe(cursor)?,
@@ -177,13 +178,13 @@ impl Form for MessageFacts {
     fn write(&self, out: &mut Vec<u8>) {
         write_id_maybe(out, self.previous_message);
         write_u32(out, self.generation);
-        for number in [
-            self.created_by,
-            self.priority,
-            self.execution_profile,
-            self.durability,
+        for word in [
+            &self.created_by,
+            &self.priority,
+            &self.execution_profile,
+            &self.durability,
         ] {
-            write_byte(out, number);
+            write_text(out, word);
         }
         write_u64(out, self.size_bytes);
         write_text_maybe(out, self.party.as_deref());
@@ -196,10 +197,10 @@ impl Form for MessageFacts {
         Ok(Self {
             previous_message: read_id_maybe(cursor)?,
             generation: read_u32(cursor)?,
-            created_by: read_byte(cursor)?,
-            priority: read_byte(cursor)?,
-            execution_profile: read_byte(cursor)?,
-            durability: read_byte(cursor)?,
+            created_by: read_text(cursor)?,
+            priority: read_text(cursor)?,
+            execution_profile: read_text(cursor)?,
+            durability: read_text(cursor)?,
             size_bytes: read_u64(cursor)?,
             party: read_text_maybe(cursor)?,
             contract: read_text_maybe(cursor)?,
@@ -271,7 +272,7 @@ mod tests {
     #[test]
     fn every_field_comes_back_from_its_bytes_as_it_was() {
         let journey = JourneyFacts {
-            state: 5,
+            state: "Failed".to_string(),
             previous_journey: Some(7),
             subscription: Some("billing".to_string()),
             cause_work_process: None,
@@ -291,10 +292,10 @@ mod tests {
         let message = MessageFacts {
             previous_message: None,
             generation: 1,
-            created_by: 2,
-            priority: 3,
-            execution_profile: 1,
-            durability: 2,
+            created_by: "Receive".to_string(),
+            priority: "Normal".to_string(),
+            execution_profile: "Business".to_string(),
+            durability: "Recoverable".to_string(),
             size_bytes: 3,
             party: Some("Contoso".to_string()),
             contract: Some("Order".to_string()),

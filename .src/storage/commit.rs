@@ -31,6 +31,8 @@ use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The record kinds of the runtime database.
 pub(crate) const CHUNK: &str = "chunk";
+/// A Stream's own record (`super::stream`).
+pub(crate) const STREAM: &str = "stream";
 pub(crate) const MESSAGE: &str = "message";
 pub(crate) const JOURNEY: &str = "journey";
 pub(crate) const CLAIM: &str = "claim";
