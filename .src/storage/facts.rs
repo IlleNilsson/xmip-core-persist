@@ -81,7 +81,8 @@ pub struct AuditFacts {
     /// When it happened, by its writer's clock.
     pub occurred_unix_nanos: u64,
     pub action: String,
-    /// Its phase and its severity, in the words the record model writes.
+    /// Its phase and its severity, by their words as the enums name them
+    /// (`ExecutionPhase::word`, `Severity::word`).
     pub phase: String,
     pub severity: String,
     /// A failure: the `failure` phase or an `error`, always kept.
