@@ -492,15 +492,15 @@ mod tests {
         }
     }
 
-    /// Three Publications: Contoso's to Billing at ten, Contoso's to
+    /// Three Publications: partner-x's to Billing at ten, partner-x's to
     /// Archive and Fabrikam's to Billing, in another state, at twenty.
     fn three() -> (Embedded<Memory, Memory>, Arc<Pinned>) {
         let (node, clock) = node();
         clock.set(10);
-        node.publish(&published(1, "Contoso", "Billing", "Active"))
+        node.publish(&published(1, "partner-x", "Billing", "Active"))
             .expect("published");
         clock.set(20);
-        node.publish(&published(2, "Contoso", "Archive", "Active"))
+        node.publish(&published(2, "partner-x", "Archive", "Active"))
             .expect("published");
         node.publish(&published(3, "Fabrikam", "Billing", "Completed"))
             .expect("published");
@@ -511,7 +511,7 @@ mod tests {
     fn messages_are_found_by_party_contract_time_and_what_they_came_from() {
         let (node, _) = three();
         let party = |created| Ask::MessagesFromParty {
-            party: "Contoso".to_string(),
+            party: "partner-x".to_string(),
             created,
         };
         assert_eq!(find(&node, party(Span::ALL)), [1, 2], "oldest first");
@@ -556,7 +556,7 @@ mod tests {
         };
         assert_eq!(find(&node, held).len(), 2);
         let crossed = Ask::JourneysAtSendPort {
-            send_port: "Contoso".to_string(),
+            send_port: "partner-x".to_string(),
             state: "Active".to_string(),
         };
         assert_eq!(find(&node, crossed), [], "a Party is no Send Port");
@@ -621,7 +621,7 @@ mod tests {
             .expect("removed");
         assert_eq!(find(&node, updated(Span::ALL)), [], "gone with it");
 
-        let mut unmatched = published(4, "Contoso", "Billing", "Active");
+        let mut unmatched = published(4, "partner-x", "Billing", "Active");
         unmatched.journeys.clear();
         unmatched.held.clear();
         unmatched.dead = Some(DeadMessage {
@@ -647,11 +647,11 @@ mod tests {
             .put(PLACES, &places_key(9), b"torn")
             .expect("torn");
         assert!(
-            node.publish(&published(1, "Contoso", "Billing", "Active"))
+            node.publish(&published(1, "partner-x", "Billing", "Active"))
                 .is_err()
         );
         let party = Ask::MessagesFromParty {
-            party: "Contoso".to_string(),
+            party: "partner-x".to_string(),
             created: Span::ALL,
         };
         assert_eq!(find(&node, party), []);

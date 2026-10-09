@@ -299,7 +299,7 @@ mod tests {
             execution_profile: "Business".to_string(),
             durability: "Recoverable".to_string(),
             size_bytes: 3,
-            party: Some("Contoso".to_string()),
+            party: Some("partner-x".to_string()),
             contract: Some("Order".to_string()),
             stream: Some(4),
             created_unix_nanos: 5,
@@ -321,7 +321,7 @@ mod tests {
             hidden: true,
             artifact_kind: Some("ReceiveLocation".to_string()),
             journey: Some(2),
-            node: Some("S1".to_string()),
+            node: Some(configure::fixture::test_cluster().node(0).name.clone()),
             kept_unix_nanos: 3,
             ..AuditFacts::default()
         };
