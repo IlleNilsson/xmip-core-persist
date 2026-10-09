@@ -34,17 +34,16 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   the store, kept in it wrapped by the key home (`xmip-core-secret`) under a
   named key-encryption key. `EncryptedStore` is a `RuntimeStore`. An index
   entry (`apply_indexed`, `scan_index`; proposed 2026-10-09) is the one key
-  not hashed again, so it sorts: the caller builds it from values hashed
-  under a column's own key (`column_key`, HKDF from a third derived key, the
-  column's name the info) and from times and numbers in the clear; its value
-  is the record's identifier, sealed with the whole key as associated data.
+  not hashed, so it sorts: the caller builds it from its values in the
+  clear; its value is the record's identifier, sealed with the whole key as
+  associated data.
 - **`fixture`**, behind the `test-support` feature — an engine in memory and
   `conformance`, the one set of checks every engine runs against itself:
   a record back through the encryption after a reopen, index entries found
-  by a value within a time, oldest or newest first, neither key nor kind nor
-  value, nor an indexed value nor the record an entry finds, anywhere in the
-  engine's files, a tampered record refused with its scope, the store refused
-  under another key of the same name.
+  by a value within a time, oldest or newest first, their values in the
+  clear in the files, and neither key nor kind nor value anywhere in them,
+  a tampered record refused with its scope, the store refused under another
+  key of the same name.
 
 ## Xmip Storage
 
@@ -96,18 +95,19 @@ and 9).
   claim keeps which of the two ended it. And `query`: the identifiers of the
   records one index of one table finds (`Query`, `Ask`, `Span`), which the
   caller reads as it reads any record.
-- **Searchable columns** (proposed 2026-10-09) — the Journey, Message, held,
-  Dead Message Queue, audit and administration tables keep their records'
-  facts in columns of their own beside the sealed body: times, states,
-  counts and flags in the clear; every identifier and name as `_ref`,
-  sixteen bytes of HMAC-SHA-256 under that column's own key, found by
-  equality, never by a pattern. The writer says the facts, typed, beside the
-  body (`JourneyFacts`, `MessageFacts`, `AuditFacts`; the runtime fills them
-  in one place from its objects); the times are Xmip Storage's, on its clock.
-  A database server keeps them as columns and indexes; the embedded engines,
-  which have no columns, keep each index as entries of its own written in
-  the record's own batch, the entries of a record it replaces or removes
-  taken out with it (`storage/columns.rs`). The other tables — chunks,
+- **Laid-out columns** (proposed 2026-10-09; the owner, the same day: *Store
+  it in the clear*, *All columns shall be laid out*) — the Journey, Message,
+  held, Dead Message Queue, audit and administration tables keep every
+  single value of their records in columns of their own, in the clear,
+  beside the sealed body; a list — entries, Sections, context, properties,
+  declines — stays in the body alone, never a table of its own. The writer
+  says the values, typed, beside the body (`JourneyFacts`, `MessageFacts`,
+  `AuditFacts`; the runtime fills them in one place from its objects); the
+  times are Xmip Storage's, on its clock. A database server keeps them as
+  columns and indexes; the embedded engines, which have no columns, keep
+  each index as entries of its own, their values in the clear as the
+  server's, written in the record's own batch, the entries of a record it
+  replaces or removes taken out with it (`storage/columns.rs`). The other tables — chunks,
   queues' places, publication, replayed, claim and the runtime database's
   audit queue — keep what they kept.
 - **`Embedded`** — the embedded Storage node: the runtime database and the

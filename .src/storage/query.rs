@@ -3,9 +3,9 @@
 //! (`super::schema::searchable`), answered with the identifiers of the
 //! records found, which the caller reads as it reads any record.
 //!
-//! A name or an identifier is asked as the caller has it; Xmip Storage
-//! hashes it under its column's key, so it is found by equality and never
-//! by a pattern. A time is a span, both ends included.
+//! A name or an identifier is asked as the caller has it and found by
+//! equality, as its column keeps it, in the clear; never by a pattern. A
+//! time is a span, both ends included.
 
 use codec::cursor::Cursor;
 
@@ -135,7 +135,7 @@ impl Ask {
     /// The values its index's first columns equal, and the span of the
     /// next where it asks one.
     fn values(&self) -> (Vec<Value>, Option<Span>) {
-        let name = |text: &String| Value::Name(text.clone());
+        let name = |text: &String| Value::Text(text.clone());
         let small = |state: &u8| Value::Small(u16::from(*state));
         match self {
             Self::JourneysInState { state, updated } => (vec![small(state)], Some(*updated)),

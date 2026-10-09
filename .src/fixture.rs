@@ -100,50 +100,46 @@ const KEY: &[u8] = b"orders-4711";
 const VALUE: &[u8] = b"PAYLOAD-4711-plain";
 
 /// The value every check indexes, and the first record it finds.
-const PARTY: &str = "PARTY-4711-plain";
+const PARTY: &str = "PARTY-4711";
 const RECORD: u128 = 0x0199_0000_0000_7000_8000_0000_4711_0001;
 
 fn kek() -> KekName {
     KekName::new("runtime").expect("name")
 }
 
-/// An index entry's key as a column index builds one: the hash of `party`
-/// under the column's key, `at` big-endian, and the record's tag, a keyed
-/// hash of it, so its identifier is not in the key.
-fn entry<E: Engine>(store: &EncryptedStore<E>, party: &str, at: u64, record: u128) -> IndexEntry {
-    let hash = store
-        .column_key("message.party_ref")
-        .expect("key")
-        .keyed_hash(party.as_bytes());
-    let tag = store
-        .column_key("message")
-        .expect("key")
-        .keyed_hash(&record.to_be_bytes());
-    let key = [&hash[..16], &at.to_be_bytes(), &tag[..16]].concat();
+/// An index entry's key as a column index builds one: `party` as its
+/// length and its bytes, `at` big-endian, the record.
+fn entry(party: &str, at: u64, record: u128) -> IndexEntry {
+    let length = u32::try_from(party.len()).expect("short");
+    let key = [
+        length.to_be_bytes().as_slice(),
+        party.as_bytes(),
+        &at.to_be_bytes(),
+        &record.to_be_bytes(),
+    ]
+    .concat();
     (key, Some(record))
 }
 
 /// Four records' entries: three of [`PARTY`] at ten, twenty and thirty, and
 /// one of another Party at twenty.
-fn indexed<E: Engine>(store: &EncryptedStore<E>) -> Vec<IndexEntry> {
+fn indexed() -> Vec<IndexEntry> {
     vec![
-        entry(store, PARTY, 10, RECORD),
-        entry(store, PARTY, 20, RECORD + 1),
-        entry(store, PARTY, 30, RECORD + 2),
-        entry(store, "another", 20, RECORD + 3),
+        entry(PARTY, 10, RECORD),
+        entry(PARTY, 20, RECORD + 1),
+        entry(PARTY, 30, RECORD + 2),
+        entry("another", 20, RECORD + 3),
     ]
 }
 
 /// The entries [`indexed`] wrote, found by their value within a time,
 /// oldest or newest first, as many as asked.
 fn searches<E: Engine>(store: &EncryptedStore<E>) {
-    let hash = store
-        .column_key("message.party_ref")
-        .expect("key")
-        .keyed_hash(PARTY.as_bytes());
+    let length = u32::try_from(PARTY.len()).expect("short");
+    let party = [length.to_be_bytes().as_slice(), PARTY.as_bytes()].concat();
     let within = |from: u64, to: u64, most, reverse| {
-        let first = [&hash[..16], &from.to_be_bytes()].concat();
-        let last = [&hash[..16], &to.to_be_bytes(), &[0xFF; 16]].concat();
+        let first = [party.as_slice(), &from.to_be_bytes()].concat();
+        let last = [party.as_slice(), &to.to_be_bytes(), &[0xFF; 16]].concat();
         store
             .scan_index(&first, &last, most, reverse)
             .expect("read")
@@ -188,8 +184,8 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// Proves: a record comes back through the encryption after the engine is
 /// closed and reopened, and so does a batch, whole; an index entry is
 /// found by a value within a time, oldest or newest first, as many as
-/// asked; neither the record's key, its kind, its value, an indexed value
-/// nor the record an entry finds is anywhere in the files;
+/// asked, its value in the files in the clear; neither the record's key,
+/// its kind nor its value is anywhere in the files;
 /// a tampered record is refused with its scope; the store does not open
 /// under another key of the same name.
 ///
@@ -203,9 +199,7 @@ pub fn conformance<E: Engine>(open: impl Fn() -> E, everything: impl Fn() -> Vec
         store.put(KIND, KEY, VALUE).expect("put");
         assert!(store.put_new("lease", KEY, b"first").expect("put_new"));
         assert!(!store.put_new("lease", KEY, b"second").expect("put_new"));
-        store
-            .apply_indexed(&[], &indexed(&store))
-            .expect("index entries");
+        store.apply_indexed(&[], &indexed()).expect("index entries");
     }
     {
         let store = EncryptedStore::open(open(), &keys, &kek()).expect("reopen");
@@ -219,8 +213,10 @@ pub fn conformance<E: Engine>(open: impl Fn() -> E, everything: impl Fn() -> Vec
 
     let files = everything();
     assert!(!files.is_empty(), "the engine wrote no files");
-    let record = RECORD.to_be_bytes();
-    for needle in [KEY, VALUE, KIND.as_bytes(), PARTY.as_bytes(), &record] {
+    // An indexed value is in the clear, as a server's column is (the owner,
+    // 2026-10-09: *Store it in the clear*); the record it finds is sealed.
+    assert!(contains(&files, PARTY.as_bytes()), "an indexed value");
+    for needle in [KEY, VALUE, KIND.as_bytes()] {
         assert!(
             !contains(&files, needle),
             "'{}' is in the engine's files",

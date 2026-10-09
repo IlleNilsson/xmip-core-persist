@@ -1,15 +1,14 @@
-//! Each searchable record's row: the values of its table's searchable
-//! columns, by the names the schema gives them
-//! (`super::schema::searchable`), and the times Xmip Storage sets as it
-//! writes it ([`super::columns`]).
+//! Each laid-out record's row: the values of its table's columns besides
+//! its key and its body, by the names the schema gives them
+//! (`super::schema::searchable`), in the clear, and the times Xmip Storage
+//! sets as it writes it ([`super::columns`]).
 
 use super::dead::Dead;
 use super::hold::Held;
 use super::record::{AdministrationRecord, AuditEntry, Form, JourneyRecord, MessageRecord};
 
-/// A value of a searchable column: in the clear — a time, a small number,
-/// a count, a flag, a word — or hashed under its column's key — a name or
-/// an identifier.
+/// A value of a column: a time, a small number, a count, a flag, words or
+/// an identifier, each as it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Value {
     Time(u64),
@@ -17,14 +16,13 @@ pub(crate) enum Value {
     Count(u64),
     Flag(bool),
     Text(String),
-    Name(String),
     Id(u128),
 }
 
-/// A record's searchable columns, by name: `None` where it lacks the fact.
+/// A record's columns, by name: `None` where it holds nothing there.
 pub(crate) type Row = Vec<(&'static str, Option<Value>)>;
 
-/// A record its table keeps searchable columns of.
+/// A record its table lays out in columns.
 pub(crate) trait Columned: Form {
     /// What its index entries find: its identifier.
     fn id(&self) -> u128;
@@ -42,8 +40,24 @@ pub(crate) fn nanos(time: i128) -> u64 {
     u64::try_from(time.max(0)).unwrap_or(u64::MAX)
 }
 
-fn name(text: Option<&String>) -> Option<Value> {
-    text.map(|text| Value::Name(text.clone()))
+fn time(nanos: u64) -> Value {
+    Value::Time(nanos)
+}
+
+fn small(number: u8) -> Value {
+    Value::Small(u16::from(number))
+}
+
+fn count(number: impl Into<u64>) -> Value {
+    Value::Count(number.into())
+}
+
+fn text(text: &str) -> Value {
+    Value::Text(text.to_string())
+}
+
+fn text_maybe(text: Option<&String>) -> Option<Value> {
+    text.map(|text| Value::Text(text.clone()))
 }
 
 fn id(id: Option<u128>) -> Option<Value> {
@@ -63,15 +77,21 @@ impl Columned for JourneyRecord {
     fn row(&self) -> Row {
         let facts = &self.facts;
         vec![
-            ("created_at", Some(Value::Time(facts.created_unix_nanos))),
-            ("updated_at", Some(Value::Time(facts.updated_unix_nanos))),
-            ("state", Some(Value::Small(u16::from(facts.state)))),
-            ("attempts", Some(Value::Count(u64::from(facts.attempts)))),
-            ("depth", Some(Value::Count(u64::from(facts.depth)))),
-            ("send_port_ref", name(facts.send_port.as_ref())),
-            ("work_process_ref", name(facts.work_process.as_ref())),
-            ("previous_journey_ref", id(facts.previous_journey)),
-            ("message_ref", id(facts.message)),
+            ("created_at", Some(time(facts.created_unix_nanos))),
+            ("updated_at", Some(time(facts.updated_unix_nanos))),
+            ("state", Some(small(facts.state))),
+            ("previous_journey", id(facts.previous_journey)),
+            ("subscription", text_maybe(facts.subscription.as_ref())),
+            (
+                "cause_work_process",
+                text_maybe(facts.cause_work_process.as_ref()),
+            ),
+            ("depth", Some(count(facts.depth))),
+            ("work_process", text_maybe(facts.work_process.as_ref())),
+            ("send_port", text_maybe(facts.send_port.as_ref())),
+            ("send_location", Some(count(facts.send_location))),
+            ("attempts", Some(count(facts.attempts))),
+            ("message", id(facts.message)),
         ]
     }
 }
@@ -88,20 +108,17 @@ impl Columned for MessageRecord {
     fn row(&self) -> Row {
         let facts = &self.facts;
         vec![
-            ("created_at", Some(Value::Time(facts.created_unix_nanos))),
-            (
-                "generation",
-                Some(Value::Count(u64::from(facts.generation))),
-            ),
-            (
-                "created_by",
-                Some(Value::Small(u16::from(facts.created_by))),
-            ),
-            ("size_bytes", Some(Value::Count(facts.size_bytes))),
-            ("previous_message_ref", id(facts.previous_message)),
-            ("party_ref", name(facts.party.as_ref())),
-            ("contract_ref", name(facts.contract.as_ref())),
-            ("stream_ref", id(facts.stream)),
+            ("created_at", Some(time(facts.created_unix_nanos))),
+            ("previous_message", id(facts.previous_message)),
+            ("generation", Some(count(facts.generation))),
+            ("created_by", Some(small(facts.created_by))),
+            ("priority", Some(small(facts.priority))),
+            ("execution_profile", Some(small(facts.execution_profile))),
+            ("durability", Some(small(facts.durability))),
+            ("size_bytes", Some(count(facts.size_bytes))),
+            ("party", text_maybe(facts.party.as_ref())),
+            ("contract", text_maybe(facts.contract.as_ref())),
+            ("stream", id(facts.stream)),
         ]
     }
 }
@@ -118,7 +135,7 @@ impl Columned for Held {
     fn row(&self) -> Row {
         vec![
             ("queue", Some(Value::Id(self.hold.queue))),
-            ("held_at", Some(Value::Time(self.held_unix_nanos))),
+            ("held_at", Some(time(self.held_unix_nanos))),
         ]
     }
 }
@@ -135,15 +152,10 @@ impl Columned for Dead {
         let entry = &self.message;
         vec![
             ("queue", Some(Value::Id(entry.queue))),
-            (
-                "queued_at",
-                Some(Value::Time(nanos(entry.received_unix_nanos))),
-            ),
-            ("node_ref", Some(Value::Name(entry.node.clone()))),
-            (
-                "receive_location_ref",
-                Some(Value::Name(entry.location.clone())),
-            ),
+            ("stream", Some(Value::Id(entry.stream.value()))),
+            ("node", Some(text(&entry.node))),
+            ("receive_location", Some(text(&entry.location))),
+            ("queued_at", Some(time(nanos(entry.received_unix_nanos)))),
         ]
     }
 }
@@ -159,22 +171,31 @@ impl Columned for AuditEntry {
 
     fn row(&self) -> Row {
         let facts = &self.facts;
-        let text = |text: &String| Some(Value::Text(text.clone()));
         vec![
-            ("occurred_at", Some(Value::Time(facts.occurred_unix_nanos))),
-            ("kept_at", Some(Value::Time(facts.kept_unix_nanos))),
-            ("action", text(&facts.action)),
-            ("phase", text(&facts.phase)),
-            ("severity", text(&facts.severity)),
+            ("occurred_at", Some(time(facts.occurred_unix_nanos))),
+            ("kept_at", Some(time(facts.kept_unix_nanos))),
+            ("action", Some(text(&facts.action))),
+            ("phase", Some(text(&facts.phase))),
+            ("severity", Some(text(&facts.severity))),
             ("failed", Some(Value::Flag(facts.failed))),
-            ("program", text(&facts.program)),
-            ("artifact_kind", facts.artifact_kind.as_ref().and_then(text)),
-            ("cluster_ref", name(facts.cluster.as_ref())),
-            ("node_ref", name(facts.node.as_ref())),
-            ("artifact_ref", name(facts.artifact.as_ref())),
-            ("journey_ref", id(facts.journey)),
-            ("message_ref", id(facts.message)),
-            ("execution_ref", id(facts.execution)),
+            ("message_text", text_maybe(facts.text.as_ref())),
+            ("program", Some(text(&facts.program))),
+            ("host", Some(text(&facts.host))),
+            ("process", Some(count(facts.process))),
+            ("location", text_maybe(facts.location.as_ref())),
+            ("hidden", Some(Value::Flag(facts.hidden))),
+            ("execution", id(facts.execution)),
+            ("journey", id(facts.journey)),
+            ("message", id(facts.message)),
+            ("artifact", id(facts.artifact)),
+            ("artifact_kind", text_maybe(facts.artifact_kind.as_ref())),
+            ("artifact_name", text_maybe(facts.artifact_name.as_ref())),
+            (
+                "artifact_version",
+                text_maybe(facts.artifact_version.as_ref()),
+            ),
+            ("node", id(facts.node)),
+            ("cluster", id(facts.cluster)),
         ]
     }
 }
@@ -190,8 +211,8 @@ impl Columned for AdministrationRecord {
 
     fn row(&self) -> Row {
         vec![
-            ("kind", Some(Value::Text(self.kind.word().to_string()))),
-            ("updated_at", Some(Value::Time(self.updated_unix_nanos))),
+            ("kind", Some(text(self.kind.word()))),
+            ("updated_at", Some(time(self.updated_unix_nanos))),
         ]
     }
 }
