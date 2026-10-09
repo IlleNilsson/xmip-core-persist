@@ -100,7 +100,11 @@ and 9).
   held, Dead Message Queue, audit and administration tables keep every
   single value of their records in columns of their own, in the clear,
   beside the sealed body; a list — entries, Sections, context, properties,
-  declines — stays in the body alone, never a table of its own. The writer
+  declines — stays in the body alone, never a table of its own. An audit
+  record holds no reference but its Journey, Message and execution: its
+  artifact spelled out — kind, name, version — and its node and cluster by
+  name, as its origin's location says them (the owner, 2026-10-09: *In an
+  Audit you can't have references, it should be spelled out*). The writer
   says the values, typed, beside the body (`JourneyFacts`, `MessageFacts`,
   `AuditFacts`; the runtime fills them in one place from its objects); the
   times are Xmip Storage's, on its clock. A database server keeps them as
