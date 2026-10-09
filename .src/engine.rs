@@ -79,10 +79,33 @@ pub trait Engine: Send + Sync {
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
         self.apply(batch)
     }
+
+    /// Up to `most` keys and their values from `first` to `last`, both
+    /// included, in the order of their bytes — or the reverse, the last
+    /// first, where `reverse`.
+    ///
+    /// It is how an index entry is found
+    /// ([`crate::EncryptedStore::scan_index`]): an entry's key is not hashed
+    /// again, so it sorts by its index's columns, and a search is one range.
+    /// Nothing else reads a range; a keyed hash sorts nowhere.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot read.
+    fn scan(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<Entry>, PersistError>;
 }
 
 /// One change of a batch: a key and its new value, `None` removing it.
 pub type Change = (Vec<u8>, Option<Vec<u8>>);
+
+/// One key and its value, as a range read finds them.
+pub type Entry = (Vec<u8>, Vec<u8>);
 
 /// An engine boxed is an engine: a program that links several opens the one
 /// its configuration names, whichever it is (ADR-0018, amendment
@@ -115,6 +138,16 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
         (**self).apply_deferred(batch)
     }
+
+    fn scan(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<Entry>, PersistError> {
+        (**self).scan(first, last, most, reverse)
+    }
 }
 
 /// An engine lent is an engine: a test opens the layer again over the same
@@ -146,5 +179,15 @@ impl<E: Engine + ?Sized> Engine for &E {
 
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
         (**self).apply_deferred(batch)
+    }
+
+    fn scan(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<Entry>, PersistError> {
+        (**self).scan(first, last, most, reverse)
     }
 }

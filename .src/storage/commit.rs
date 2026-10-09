@@ -21,10 +21,12 @@ use std::thread::JoinHandle;
 use xcore::Clock;
 
 use super::claim::{self, Standing, Stored, end, hold};
+use super::columns::Columns;
 use super::dead::{self, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::publication::{self, Decided, Publication};
 use super::record::{AuditEntry, Claim, Form, malformed};
+use super::row;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// The record kinds of the runtime database.
@@ -73,7 +75,7 @@ pub(crate) enum Op {
     Publish(Box<Publication>),
     /// An entry's Journeys written and the entry taken out, audited.
     Replay(Box<Replay>),
-    Audit(AuditEntry),
+    Audit(Box<AuditEntry>),
     /// The keeper moved audit record `sequence`: forget it here, where the
     /// keeper has not moved past it already.
     Kept(u64),
@@ -98,7 +100,7 @@ pub(crate) struct Committer {
 }
 
 impl Committer {
-    /// The writer over `store`, telling time by `clock`.
+    /// The writer over `store`, telling time by `clock`, keeping `columns`.
     ///
     /// # Errors
     ///
@@ -106,13 +108,19 @@ impl Committer {
     pub(crate) fn start<R: Engine + 'static>(
         store: Arc<EncryptedStore<R>>,
         clock: Arc<dyn Clock>,
+        columns: Arc<Columns>,
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
         let (work, inbox) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("xmip-storage-commit".to_string())
             .spawn(move || {
-                let mut writer = Writer { store, clock, next };
+                let mut writer = Writer {
+                    store,
+                    clock,
+                    next,
+                    columns,
+                };
                 writer.run(&inbox);
             })
             .map_err(|error| PersistError::engine("xmip-storage", error))?;
@@ -166,6 +174,7 @@ struct Writer<R> {
     store: Arc<EncryptedStore<R>>,
     clock: Arc<dyn Clock>,
     next: u64,
+    columns: Arc<Columns>,
 }
 
 /// One batch being decided: what it has written so far, by place — or one
@@ -265,7 +274,11 @@ impl<R: Engine> Writer<R> {
         let written = if batch.changes.is_empty() {
             Ok(())
         } else {
-            self.store.apply(&batch.changes)
+            // Each searchable record stamped on this clock, and its index
+            // entries in the same write (`super::columns`).
+            self.columns
+                .written(&self.store, batch.changes, row::nanos(now))
+                .and_then(|(changes, entries)| self.store.apply_indexed(&changes, &entries))
         };
         if written.is_err() {
             self.next = before;
@@ -321,12 +334,12 @@ impl<R: Engine> Writer<R> {
             Op::Publish(asked) => match publication::decide(&self.store, batch, &asked, now)? {
                 Decided::Before(held) => Ok(Done::Claims(held)),
                 Decided::Now(held) => self
-                    .decide(Op::Audit(asked.audit), now, batch)
+                    .decide(Op::Audit(Box::new(asked.audit)), now, batch)
                     .map(|_| Done::Claims(held)),
             },
             Op::Replay(replay) => match dead::replay(&self.store, batch, &replay)? {
                 Replayed::Now => self
-                    .decide(Op::Audit(replay.audit), now, batch)
+                    .decide(Op::Audit(Box::new(replay.audit)), now, batch)
                     .map(|_| Done::Replayed(Replayed::Now)),
                 other => Ok(Done::Replayed(other)),
             },

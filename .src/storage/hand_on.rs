@@ -88,6 +88,7 @@ impl Form for HandOn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{JourneyFacts, MessageFacts};
     use xcore::{JourneyId, MessageId};
 
     #[test]
@@ -103,10 +104,12 @@ mod tests {
             result: JourneyRecord {
                 journey: claim.journey,
                 body: b"done".to_vec(),
+                facts: JourneyFacts::default(),
             },
             messages: vec![MessageRecord {
                 message: MessageId::new(8),
                 body: vec![0, 1, 2],
+                facts: MessageFacts::default(),
             }],
             next: Vec::new(),
             leaves: vec![7, 8],

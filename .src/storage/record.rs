@@ -15,6 +15,7 @@ use codec::field;
 use codec::writer::ByteWriter;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
+use super::facts::{AuditFacts, JourneyFacts, MessageFacts};
 use crate::PersistError;
 
 /// A piece of a Stream: a Stream is written in chunks, never whole in
@@ -34,6 +35,8 @@ pub struct StreamChunk {
 pub struct MessageRecord {
     pub message: MessageId,
     pub body: Vec<u8>,
+    /// What its table keeps of it in columns of their own (`super::facts`).
+    pub facts: MessageFacts,
 }
 
 /// A Journey as a step wrote it to the Ledger.
@@ -41,6 +44,8 @@ pub struct MessageRecord {
 pub struct JourneyRecord {
     pub journey: JourneyId,
     pub body: Vec<u8>,
+    /// What its table keeps of it in columns of their own (`super::facts`).
+    pub facts: JourneyFacts,
 }
 
 /// A claim on a Journey: who holds it, by which token, until when
@@ -65,6 +70,9 @@ pub struct Claim {
 pub struct AuditEntry {
     pub id: AuditId,
     pub body: Vec<u8>,
+    /// What the administration database keeps of it in columns of their
+    /// own once the keeper moved it there (`super::facts`).
+    pub facts: AuditFacts,
 }
 
 /// What the administration database keeps — what must be shared and kept
@@ -134,6 +142,9 @@ pub struct AdministrationRecord {
     pub kind: AdministrationKind,
     pub id: u128,
     pub body: Vec<u8>,
+    /// When Xmip Storage last wrote it, in nanoseconds since the Unix
+    /// epoch: Xmip Storage's to set.
+    pub updated_unix_nanos: u64,
 }
 
 /// A record's one binary form.
@@ -260,12 +271,14 @@ impl Form for MessageRecord {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.message.value());
         write_bytes(out, &self.body);
+        self.facts.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
             message: MessageId::new(read_u128(cursor)?),
             body: read_bytes(cursor)?,
+            facts: MessageFacts::read(cursor)?,
         })
     }
 }
@@ -274,12 +287,14 @@ impl Form for JourneyRecord {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.journey.value());
         write_bytes(out, &self.body);
+        self.facts.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
             journey: JourneyId::new(read_u128(cursor)?),
             body: read_bytes(cursor)?,
+            facts: JourneyFacts::read(cursor)?,
         })
     }
 }
@@ -302,6 +317,17 @@ impl Form for Claim {
     }
 }
 
+/// A record boxed is the record: an answer keeps a large one on the heap.
+impl<T: Form> Form for Box<T> {
+    fn write(&self, out: &mut Vec<u8>) {
+        (**self).write(out);
+    }
+
+    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+        T::read(cursor).map(Box::new)
+    }
+}
+
 impl<T: Form> Form for Vec<T> {
     fn write(&self, out: &mut Vec<u8>) {
         write_u32(out, u32::try_from(self.len()).unwrap_or(u32::MAX));
@@ -320,12 +346,14 @@ impl Form for AuditEntry {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.id.value());
         write_bytes(out, &self.body);
+        self.facts.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
             id: AuditId::new(read_u128(cursor)?),
             body: read_bytes(cursor)?,
+            facts: AuditFacts::read(cursor)?,
         })
     }
 }
@@ -345,6 +373,7 @@ impl Form for AdministrationRecord {
         self.kind.write(out);
         write_u128(out, self.id);
         write_bytes(out, &self.body);
+        write_u64(out, self.updated_unix_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -352,6 +381,7 @@ impl Form for AdministrationRecord {
             kind: AdministrationKind::read(cursor)?,
             id: read_u128(cursor)?,
             body: read_bytes(cursor)?,
+            updated_unix_nanos: read_u64(cursor)?,
         })
     }
 }
@@ -386,6 +416,7 @@ mod tests {
                 kind,
                 id: 7,
                 body: kind.word().as_bytes().to_vec(),
+                updated_unix_nanos: 0,
             };
             assert_eq!(
                 AdministrationRecord::from_bytes(&record.bytes()).expect("record"),

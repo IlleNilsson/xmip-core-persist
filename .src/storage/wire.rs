@@ -21,6 +21,7 @@ use super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::hold::HeldQueue;
 use super::publication::Publication;
+use super::query::Query;
 use super::record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
     MessageRecord, StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
@@ -51,11 +52,12 @@ pub(crate) enum Request {
     WriteAdministration(AdministrationRecord),
     ReadAdministration(AdministrationKind, u128),
     RemoveAdministration(AdministrationKind, u128),
-    Publish(Publication),
+    Publish(Box<Publication>),
     ReadHeld(u128, u64, u32),
     ReadDead(u128, u64, u32),
     ReadDeadMessage(u128, MessageId),
-    Replay(Replay),
+    Replay(Box<Replay>),
+    Query(Query),
 }
 
 /// What an operation answered.
@@ -63,14 +65,14 @@ pub(crate) enum Request {
 pub(crate) enum Answer {
     Done,
     Chunk(Option<StreamChunk>),
-    Message(Option<MessageRecord>),
-    Journey(Option<JourneyRecord>),
+    Message(Option<Box<MessageRecord>>),
+    Journey(Option<Box<JourneyRecord>>),
     Claim(Option<Claim>),
     /// The claims a Publication's node holds.
     Claims(Vec<Claim>),
     Yes(bool),
     Count(u32),
-    Audit(Option<AuditEntry>),
+    Audit(Option<Box<AuditEntry>>),
     Administration(Option<AdministrationRecord>),
     Held(HeldQueue),
     DeadQueue(DeadQueue),
@@ -81,6 +83,8 @@ pub(crate) enum Answer {
     Refused(String, String),
     /// The operation failed, in words.
     Failed(String),
+    /// The identifiers of the records a query found.
+    Records(Vec<u128>),
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
@@ -204,6 +208,10 @@ impl Form for Request {
                 write_byte(out, 21);
                 replay.write(out);
             }
+            Self::Query(query) => {
+                write_byte(out, 22);
+                query.write(out);
+            }
         }
     }
 
@@ -225,11 +233,12 @@ impl Form for Request {
             14 => Self::WriteAdministration(AdministrationRecord::read(cursor)?),
             15 => Self::ReadAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
             16 => Self::RemoveAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
-            17 => Self::Publish(Publication::read(cursor)?),
+            17 => Self::Publish(Box::new(Publication::read(cursor)?)),
             18 => Self::ReadHeld(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
             19 => Self::ReadDead(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
             20 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
-            21 => Self::Replay(Replay::read(cursor)?),
+            21 => Self::Replay(Box::new(Replay::read(cursor)?)),
+            22 => Self::Query(Query::read(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -300,6 +309,13 @@ impl Form for Answer {
                 write_byte(out, 15);
                 held.write(out);
             }
+            Self::Records(records) => {
+                write_byte(out, 16);
+                write_u32(out, u32::try_from(records.len()).unwrap_or(u32::MAX));
+                for record in records {
+                    write_u128(out, *record);
+                }
+            }
         }
     }
 
@@ -321,6 +337,11 @@ impl Form for Answer {
             13 => Self::Dead(DeadEntry::read(cursor)?),
             14 => Self::Replayed(Replayed::read(cursor)?),
             15 => Self::Claims(Vec::read(cursor)?),
+            16 => Self::Records(
+                (0..read_u32(cursor)?)
+                    .map(|_| read_u128(cursor))
+                    .collect::<Result<_, _>>()?,
+            ),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }
@@ -372,6 +393,7 @@ pub(crate) fn receive<T: Form>(connection: &mut impl Read) -> std::io::Result<Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
 
     #[test]
     fn a_request_and_an_answer_cross_a_frame_as_they_were() {
@@ -393,6 +415,7 @@ mod tests {
                 result: JourneyRecord {
                     journey: JourneyId::new(5),
                     body: b"delivered".to_vec(),
+                    facts: JourneyFacts::default(),
                 },
                 messages: Vec::new(),
                 next: Vec::new(),
@@ -402,10 +425,11 @@ mod tests {
                 kept_for_nanos: None,
             }),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
-            Request::Publish(Publication {
+            Request::Publish(Box::new(Publication {
                 message: MessageRecord {
                     message: MessageId::new(1),
                     body: b"order".to_vec(),
+                    facts: MessageFacts::default(),
                 },
                 journeys: Vec::new(),
                 held: Vec::new(),
@@ -413,13 +437,14 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(2),
                     body: b"published".to_vec(),
+                    facts: AuditFacts::default(),
                 },
                 claims: vec![claim.clone()],
                 lease_nanos: 30_000_000_000,
-            }),
+            })),
             Request::ReadDead(7, 2, 64),
             Request::ReadDeadMessage(7, MessageId::new(1)),
-            Request::Replay(Replay {
+            Request::Replay(Box::new(Replay {
                 queue: 7,
                 message: MessageId::new(1),
                 journeys: Vec::new(),
@@ -427,7 +452,16 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(3),
                     body: b"replayed".to_vec(),
+                    facts: AuditFacts::default(),
                 },
+            })),
+            Request::Query(super::super::Query {
+                ask: super::super::Ask::MessagesFromParty {
+                    party: "Contoso".to_string(),
+                    created: super::super::Span::ALL,
+                },
+                most: 64,
+                newest_first: true,
             }),
         ];
         let mut wire = Vec::new();
@@ -454,6 +488,7 @@ mod tests {
             Answer::DeadQueue(DeadQueue::default()),
             Answer::Dead(DeadEntry::Replayed),
             Answer::Replayed(Replayed::Before),
+            Answer::Records(vec![1, 2, 3]),
         ];
         for answer in answers {
             assert_eq!(Answer::from_bytes(&answer.bytes()).expect("answer"), answer);

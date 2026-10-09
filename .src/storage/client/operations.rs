@@ -11,6 +11,7 @@ use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
 use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
 use super::super::publication::Publication;
+use super::super::query::Query;
 use super::super::record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, JourneyRecord, MessageRecord,
     StreamChunk,
@@ -93,7 +94,7 @@ impl XmipStorage for StorageClient {
         expected(
             self.ask(&Request::ReadMessage(message))?,
             |answer| match answer {
-                Answer::Message(record) => Ok(record),
+                Answer::Message(record) => Ok(record.map(|record| *record)),
                 other => Err(other),
             },
         )
@@ -104,7 +105,10 @@ impl XmipStorage for StorageClient {
     }
 
     fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
-        expected(self.ask(&Request::Publish(publication.clone()))?, held)
+        expected(
+            self.ask(&Request::Publish(Box::new(publication.clone())))?,
+            held,
+        )
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
@@ -143,7 +147,7 @@ impl XmipStorage for StorageClient {
 
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
         expected(
-            self.ask(&Request::Replay(replay.clone()))?,
+            self.ask(&Request::Replay(Box::new(replay.clone())))?,
             |answer| match answer {
                 Answer::Replayed(replayed) => Ok(replayed),
                 other => Err(other),
@@ -155,7 +159,7 @@ impl XmipStorage for StorageClient {
         expected(
             self.ask(&Request::ReadJourney(journey))?,
             |answer| match answer {
-                Answer::Journey(record) => Ok(record),
+                Answer::Journey(record) => Ok(record.map(|record| *record)),
                 other => Err(other),
             },
         )
@@ -207,7 +211,7 @@ impl XmipStorage for StorageClient {
         expected(
             self.ask(&Request::ReadKeptAudit(id))?,
             |answer| match answer {
-                Answer::Audit(entry) => Ok(entry),
+                Answer::Audit(entry) => Ok(entry.map(|entry| *entry)),
                 other => Err(other),
             },
         )
@@ -240,5 +244,15 @@ impl XmipStorage for StorageClient {
         id: u128,
     ) -> Result<(), PersistError> {
         expected(self.ask(&Request::RemoveAdministration(kind, id))?, done)
+    }
+
+    fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
+        expected(
+            self.ask(&Request::Query(query.clone()))?,
+            |answer| match answer {
+                Answer::Records(records) => Ok(records),
+                other => Err(other),
+            },
+        )
     }
 }

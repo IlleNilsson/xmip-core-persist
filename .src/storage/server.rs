@@ -191,9 +191,13 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::WriteChunk(chunk) => storage.write_chunk(&chunk).map(|()| Answer::Done),
         Request::ReadChunk(stream, index) => storage.read_chunk(stream, index).map(Answer::Chunk),
         Request::WriteMessage(message) => storage.write_message(&message).map(|()| Answer::Done),
-        Request::ReadMessage(id) => storage.read_message(id).map(Answer::Message),
+        Request::ReadMessage(id) => storage
+            .read_message(id)
+            .map(|record| Answer::Message(record.map(Box::new))),
         Request::WriteJourney(journey) => storage.write_journey(&journey).map(|()| Answer::Done),
-        Request::ReadJourney(id) => storage.read_journey(id).map(Answer::Journey),
+        Request::ReadJourney(id) => storage
+            .read_journey(id)
+            .map(|record| Answer::Journey(record.map(Box::new))),
         Request::Claim(claim, lease) => storage
             .claim(
                 claim.journey,
@@ -209,7 +213,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
         Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
         Request::KeepAudit(most) => storage.keep_audit(most).map(Answer::Count),
-        Request::ReadKeptAudit(id) => storage.read_kept_audit(id).map(Answer::Audit),
+        Request::ReadKeptAudit(id) => storage
+            .read_kept_audit(id)
+            .map(|entry| Answer::Audit(entry.map(Box::new))),
         Request::WriteAdministration(record) => {
             storage.write_administration(&record).map(|()| Answer::Done)
         }
@@ -230,6 +236,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
             storage.read_dead_message(queue, message).map(Answer::Dead)
         }
         Request::Replay(replay) => storage.replay(&replay).map(Answer::Replayed),
+        Request::Query(query) => storage.query(&query).map(Answer::Records),
     };
     answered.unwrap_or_else(|error| match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),

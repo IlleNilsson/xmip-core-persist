@@ -57,6 +57,9 @@ pub struct Held {
     /// Its place, given by Xmip Storage as it was held: oldest lowest.
     pub sequence: u64,
     pub hold: Hold,
+    /// When Xmip Storage held it, in nanoseconds since the Unix epoch:
+    /// Xmip Storage's to set.
+    pub held_unix_nanos: u64,
 }
 
 /// A queue as read: where it starts and ends, how many it holds, and the
@@ -117,6 +120,7 @@ pub(crate) fn keep<R: Engine>(
         Held {
             sequence,
             hold: kept.clone(),
+            held_unix_nanos: 0,
         }
         .bytes()
     })
@@ -219,12 +223,14 @@ impl Form for Held {
     fn write(&self, out: &mut Vec<u8>) {
         write_u64(out, self.sequence);
         self.hold.write(out);
+        write_u64(out, self.held_unix_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
             sequence: read_u64(cursor)?,
             hold: Hold::read(cursor)?,
+            held_unix_nanos: read_u64(cursor)?,
         })
     }
 }
@@ -250,6 +256,7 @@ impl Form for HeldQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
 
     #[test]
     fn a_name_is_its_version_five_uuid_the_same_every_time() {
@@ -285,10 +292,12 @@ mod tests {
                 message: MessageRecord {
                     message: MessageId::new(id),
                     body: Vec::new(),
+                    facts: MessageFacts::default(),
                 },
                 journeys: vec![JourneyRecord {
                     journey,
                     body: b"waiting".to_vec(),
+                    facts: JourneyFacts::default(),
                 }],
                 held: vec![Hold {
                     queue,
@@ -299,6 +308,7 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(id),
                     body: Vec::new(),
+                    facts: AuditFacts::default(),
                 },
                 claims: Vec::new(),
                 lease_nanos: 0,
@@ -314,6 +324,7 @@ mod tests {
             result: JourneyRecord {
                 journey: first,
                 body: b"retried".to_vec(),
+                facts: JourneyFacts::default(),
             },
             messages: Vec::new(),
             next: Vec::new(),
@@ -344,6 +355,7 @@ mod tests {
                     journey: JourneyId::new(4),
                     body: b"facts".to_vec(),
                 },
+                held_unix_nanos: 6,
             }],
         };
         assert_eq!(HeldQueue::from_bytes(&queue.bytes()).expect("read"), queue);
