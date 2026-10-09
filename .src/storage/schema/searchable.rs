@@ -143,12 +143,11 @@ pub(super) const AUDIT: &[Column] = &[
     maybe("execution", Kind::Identifier),
     maybe("journey", Kind::Identifier),
     maybe("message", Kind::Identifier),
-    maybe("artifact", Kind::Identifier),
     maybe("artifact_kind", Kind::Word),
     maybe("artifact_name", Kind::Text),
     maybe("artifact_version", Kind::Text),
-    maybe("node", Kind::Identifier),
-    maybe("cluster", Kind::Identifier),
+    maybe("node", Kind::Text),
+    maybe("cluster", Kind::Text),
 ];
 
 pub(super) const AUDIT_INDEXES: &[Index] = &[

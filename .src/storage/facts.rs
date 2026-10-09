@@ -100,14 +100,16 @@ pub struct AuditFacts {
     pub execution: Option<u128>,
     pub journey: Option<u128>,
     pub message: Option<u128>,
-    /// The artifact the execution is at: its identifier, what it is, its
-    /// name and its version.
-    pub artifact: Option<u128>,
+    /// The artifact the execution is at, spelled out: what it is, its name
+    /// and its version — no reference (the owner, 2026-10-09: *In an Audit
+    /// you can't have references, it should be spelled out*).
     pub artifact_kind: Option<String>,
     pub artifact_name: Option<String>,
     pub artifact_version: Option<String>,
-    pub node: Option<u128>,
-    pub cluster: Option<u128>,
+    /// The node and the cluster it was written on, by name, as its origin's
+    /// location says them.
+    pub node: Option<String>,
+    pub cluster: Option<String>,
     /// When the audit keeper kept it in the administration database:
     /// Xmip Storage's to set.
     pub kept_unix_nanos: u64,
@@ -224,7 +226,7 @@ impl Form for AuditFacts {
         write_u32(out, self.process);
         write_text_maybe(out, self.location.as_deref());
         write_byte(out, u8::from(self.hidden));
-        for id in [self.execution, self.journey, self.message, self.artifact] {
+        for id in [self.execution, self.journey, self.message] {
             write_id_maybe(out, id);
         }
         for text in [
@@ -234,8 +236,8 @@ impl Form for AuditFacts {
         ] {
             write_text_maybe(out, text.as_deref());
         }
-        write_id_maybe(out, self.node);
-        write_id_maybe(out, self.cluster);
+        write_text_maybe(out, self.node.as_deref());
+        write_text_maybe(out, self.cluster.as_deref());
         write_u64(out, self.kept_unix_nanos);
     }
 
@@ -255,12 +257,11 @@ impl Form for AuditFacts {
             execution: read_id_maybe(cursor)?,
             journey: read_id_maybe(cursor)?,
             message: read_id_maybe(cursor)?,
-            artifact: read_id_maybe(cursor)?,
             artifact_kind: read_text_maybe(cursor)?,
             artifact_name: read_text_maybe(cursor)?,
             artifact_version: read_text_maybe(cursor)?,
-            node: read_id_maybe(cursor)?,
-            cluster: read_id_maybe(cursor)?,
+            node: read_text_maybe(cursor)?,
+            cluster: read_text_maybe(cursor)?,
             kept_unix_nanos: read_u64(cursor)?,
         })
     }
@@ -320,7 +321,7 @@ mod tests {
             hidden: true,
             artifact_kind: Some("ReceiveLocation".to_string()),
             journey: Some(2),
-            node: Some(6),
+            node: Some("S1".to_string()),
             kept_unix_nanos: 3,
             ..AuditFacts::default()
         };

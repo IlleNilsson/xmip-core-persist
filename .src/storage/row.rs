@@ -181,15 +181,14 @@ impl Columned for AuditEntry {
             ("execution", id(facts.execution)),
             ("journey", id(facts.journey)),
             ("message", id(facts.message)),
-            ("artifact", id(facts.artifact)),
             ("artifact_kind", text_maybe(facts.artifact_kind.as_ref())),
             ("artifact_name", text_maybe(facts.artifact_name.as_ref())),
             (
                 "artifact_version",
                 text_maybe(facts.artifact_version.as_ref()),
             ),
-            ("node", id(facts.node)),
-            ("cluster", id(facts.cluster)),
+            ("node", text_maybe(facts.node.as_ref())),
+            ("cluster", text_maybe(facts.cluster.as_ref())),
         ]
     }
 }
