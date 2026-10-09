@@ -527,6 +527,14 @@ mod tests {
             self.beneath.read_kept_audit(id)
         }
 
+        fn read_kept_audit_chunk(
+            &self,
+            id: AuditId,
+            index: u32,
+        ) -> Result<Option<StreamChunk>, PersistError> {
+            self.beneath.read_kept_audit_chunk(id, index)
+        }
+
         fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
             self.beneath.write_administration(record)
         }
@@ -602,6 +610,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(3),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: Vec::new(),

@@ -81,7 +81,12 @@ and 9).
   retry's backoff, holding no thread), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,
   moving each to the administration database exactly once, by its
-  identifier; and the administration records — registration, membership,
+  identifier — a record of an act on a Message, which carries the Message
+  in full (`Audited`), with its Stream's bytes copied beside it a chunk at a
+  time, their SHA-256 digest and length taken from the Stream's own record
+  (ADR-0070; `read_kept_audit_chunk` reads them, `ChunkReader::audited`
+  holds them to both and refuses a copy that does not match, in words); and
+  the administration records — registration, membership,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
   write returns once it is durable. Every operation is all or nothing: one
   that fails half-way writes nothing of itself. A request asked again after
@@ -104,7 +109,11 @@ and 9).
   record holds no reference but its Journey, Message and execution: its
   artifact spelled out — kind, name, version — and its node and cluster by
   name, as its origin's location says them (the owner, 2026-10-09: *In an
-  Audit you can't have references, it should be spelled out*). The writer
+  Audit you can't have references, it should be spelled out*) — and, once
+  kept, the SHA-256 digest and the length of the Stream it carries,
+  `stream_digest` as bytes, as the `publication` and `stream` tables keep a
+  digest, and `stream_length`, its bytes in `audit_stream_chunk` beside it
+  (ADR-0070). The writer
   says the values, typed, beside the body (`JourneyFacts`, `MessageFacts`,
   `AuditFacts`; the runtime fills them in one place from its objects); the
   times are Xmip Storage's, on its clock. A database server keeps them as
@@ -112,8 +121,9 @@ and 9).
   each index as entries of its own, their values in the clear as the
   server's, written in the record's own batch, the entries of a record it
   replaces or removes taken out with it (`storage/columns.rs`). The other tables — chunks,
-  queues' places, publication, replayed, claim and the runtime database's
-  audit queue — keep what they kept.
+  queues' places, publication, replayed, claim, the runtime database's
+  audit queue and the kept audit records' Stream chunks — keep what they
+  kept.
 - **`Embedded`** — the embedded Storage node: the runtime database and the
   administration database, each an `EncryptedStore` over the engine the
   program gives it — RocksDB and SQLite for a node, RocksDB on disk and
@@ -174,8 +184,10 @@ a receive cycle costs one sync, its Publication's. A chunk is its Stream and its
 number in it, nothing more: a Stream ends where it has no further chunk. A
 Stream is a record of its own (`StreamRecord`, `write_stream` with its last
 chunk, in the same unsynced write), written once and never changed: the one
-home of its length and its chunks, which every Message referring to it refers
-to by its identifier (the owner, 2026-10-09).
+home of its length, its chunks and the SHA-256 digest its writer took of its
+bytes as they passed once (`StreamDigest`; ADR-0070), which every Message
+referring to it refers to by its identifier (the owner, 2026-10-09). A Stream
+is read back a chunk at a time by `ChunkReader`, held to its length.
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves

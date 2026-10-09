@@ -42,6 +42,10 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # Xmip's own TLS, mutual, between a node and a Storage node (ADR-0063,
 # amendment 2026-10-01).
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
+# SHA-256 of a Stream's bytes as they pass once, kept in its record, and
+# what a read of an audit record's copy is held to (ADR-0070); the crate
+# the estate's archive checksum uses.
+sha2 = "0.11"
 
 [features]
 # The engine in memory and the checks every engine runs against itself, from

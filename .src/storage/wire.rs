@@ -60,6 +60,7 @@ pub(crate) enum Request {
     Query(Query),
     WriteStream(StreamChunk, StreamRecord),
     ReadStream(StreamId),
+    ReadKeptAuditChunk(AuditId, u32),
 }
 
 /// What an operation answered.
@@ -125,6 +126,11 @@ impl Request {
             Self::ReadStream(id) => {
                 write_byte(out, 24);
                 write_u128(out, id.value());
+            }
+            Self::ReadKeptAuditChunk(id, index) => {
+                write_byte(out, 25);
+                write_u128(out, id.value());
+                write_u32(out, *index);
             }
             _ => {}
         }
@@ -232,7 +238,10 @@ impl Form for Request {
                 write_byte(out, 21);
                 replay.write(out);
             }
-            Self::Query(_) | Self::WriteStream(..) | Self::ReadStream(_) => self.write_late(out),
+            Self::Query(_)
+            | Self::WriteStream(..)
+            | Self::ReadStream(_)
+            | Self::ReadKeptAuditChunk(..) => self.write_late(out),
         }
     }
 
@@ -262,6 +271,7 @@ impl Form for Request {
             22 => Self::Query(Query::read(cursor)?),
             23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
             24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
+            25 => Self::ReadKeptAuditChunk(AuditId::new(read_u128(cursor)?), read_u32(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -422,6 +432,7 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(2),
                     body: b"published".to_vec(),
+                    audited: None,
                     facts: AuditFacts::default(),
                 },
                 claims: vec![claim.clone()],
@@ -437,6 +448,7 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(3),
                     body: b"replayed".to_vec(),
+                    audited: None,
                     facts: AuditFacts::default(),
                 },
             })),
@@ -486,6 +498,7 @@ mod tests {
             stream: StreamId::new(1),
             length: 5,
             chunks: 1,
+            digest: [3; super::super::DIGEST],
             written_unix_nanos: 2,
         };
         let last = StreamChunk {
@@ -496,6 +509,16 @@ mod tests {
         for request in [
             Request::WriteStream(last, record),
             Request::ReadStream(StreamId::new(1)),
+            Request::ReadKeptAuditChunk(AuditId::new(2), 3),
+            Request::WriteAudit(AuditEntry {
+                id: AuditId::new(2),
+                body: b"published".to_vec(),
+                audited: Some(super::super::Audited {
+                    message: b"order".to_vec(),
+                    stream: StreamId::new(1),
+                }),
+                facts: AuditFacts::default(),
+            }),
         ] {
             assert_eq!(
                 Request::from_bytes(&request.bytes()).expect("read"),

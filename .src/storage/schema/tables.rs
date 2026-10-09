@@ -17,12 +17,13 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 14] = [
+pub const TABLES: [Table; 15] = [
     Table {
         database: Database::Runtime,
         name: "stream",
-        keeps: "every Stream, once, as written and never changed: its length and its chunks; \
-                a chunk and every Message referring to it refer to it by its identifier",
+        keeps: "every Stream, once, as written and never changed: its length, its chunks and \
+                the SHA-256 digest of its bytes; a chunk and every Message referring to it \
+                refer to it by its identifier",
         columns: STREAM,
         key: &["stream"],
         unique: &[],
@@ -174,6 +175,20 @@ pub const TABLES: [Table; 14] = [
         key: &["id"],
         unique: &[],
         indexes: AUDIT_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "audit_stream_chunk",
+        keeps: "the bytes of the Stream a kept audit record carries, in chunks by the \
+                record's identifier and their number, kept with it by the audit keeper",
+        columns: &[
+            column("audit", Kind::Identifier),
+            column("chunk", Kind::Count),
+            column("bytes", Kind::Bytes),
+        ],
+        key: &["audit", "chunk"],
+        unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Administration,

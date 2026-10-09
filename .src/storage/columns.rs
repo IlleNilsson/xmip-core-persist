@@ -260,18 +260,23 @@ impl Columns {
 }
 
 /// `value` as an entry's key keeps it, in the clear: an identifier as
-/// its sixteen bytes, words as their length and their UTF-8, and a time, a
-/// count or a flag big-endian, so it sorts.
+/// its sixteen bytes, words as their length and their UTF-8, bytes as their
+/// length and themselves, and a time, a count or a flag big-endian, so it
+/// sorts.
 fn encoded(value: &Value) -> Vec<u8> {
     match value {
         Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
         Value::Flag(flag) => vec![u8::from(*flag)],
-        Value::Text(text) => {
-            let length = u32::try_from(text.len()).unwrap_or(u32::MAX);
-            [length.to_be_bytes().as_slice(), text.as_bytes()].concat()
-        }
+        Value::Text(text) => counted(text.as_bytes()),
+        Value::Bytes(bytes) => counted(bytes),
         Value::Id(id) => id.to_be_bytes().to_vec(),
     }
+}
+
+/// `bytes` after their length, so what follows them sorts after them.
+fn counted(bytes: &[u8]) -> Vec<u8> {
+    let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    [length.to_be_bytes().as_slice(), bytes].concat()
 }
 
 /// The value `row` holds in `column`, where it holds one.
@@ -321,6 +326,7 @@ mod tests {
         let audit = AuditEntry {
             id: AuditId::new(4),
             body: Vec::new(),
+            audited: None,
             facts: AuditFacts::default(),
         };
         let administration = AdministrationRecord {
@@ -478,6 +484,7 @@ mod tests {
             audit: AuditEntry {
                 id: AuditId::new(id + 200),
                 body: b"published".to_vec(),
+                audited: None,
                 facts: AuditFacts {
                     occurred_unix_nanos: 50,
                     failed: id == 2,

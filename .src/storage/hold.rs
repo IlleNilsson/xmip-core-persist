@@ -308,6 +308,7 @@ mod tests {
                 audit: AuditEntry {
                     id: AuditId::new(id),
                     body: Vec::new(),
+                    audited: None,
                     facts: AuditFacts::default(),
                 },
                 claims: Vec::new(),

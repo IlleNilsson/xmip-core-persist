@@ -50,6 +50,7 @@ pub(super) const STREAM: &[Column] = &[
     column("stream", Kind::Identifier),
     column("length", Kind::Number),
     column("chunks", Kind::Count),
+    column("digest", Kind::Bytes),
     column("written_at", Kind::Time),
 ];
 
@@ -148,6 +149,8 @@ pub(super) const AUDIT: &[Column] = &[
     maybe("artifact_version", Kind::Text),
     maybe("node", Kind::Text),
     maybe("cluster", Kind::Text),
+    maybe("stream_digest", Kind::Bytes),
+    maybe("stream_length", Kind::Number),
 ];
 
 pub(super) const AUDIT_INDEXES: &[Index] = &[

@@ -15,6 +15,7 @@ use codec::field;
 use codec::writer::ByteWriter;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
+use super::audited::Audited;
 use super::facts::{AuditFacts, JourneyFacts, MessageFacts};
 use crate::PersistError;
 
@@ -70,6 +71,10 @@ pub struct Claim {
 pub struct AuditEntry {
     pub id: AuditId,
     pub body: Vec<u8>,
+    /// The Message an audited act was on, in full, and its Stream, whose
+    /// bytes the keeper keeps beside the record (ADR-0070,
+    /// `super::audited`); `None` for an act on none.
+    pub audited: Option<Audited>,
     /// What the administration database keeps of it in columns of their
     /// own once the keeper moved it there (`super::facts`).
     pub facts: AuditFacts,
@@ -344,6 +349,10 @@ impl Form for AuditEntry {
     fn write(&self, out: &mut Vec<u8>) {
         write_u128(out, self.id.value());
         write_bytes(out, &self.body);
+        write_byte(out, u8::from(self.audited.is_some()));
+        if let Some(audited) = &self.audited {
+            audited.write(out);
+        }
         self.facts.write(out);
     }
 
@@ -351,6 +360,10 @@ impl Form for AuditEntry {
         Ok(Self {
             id: AuditId::new(read_u128(cursor)?),
             body: read_bytes(cursor)?,
+            audited: match read_byte(cursor)? {
+                0 => None,
+                _ => Some(Audited::read(cursor)?),
+            },
             facts: AuditFacts::read(cursor)?,
         })
     }
