@@ -7,12 +7,10 @@ use super::dead::Dead;
 use super::hold::Held;
 use super::record::{AdministrationRecord, AuditEntry, Form, JourneyRecord, MessageRecord};
 
-/// A value of a column: a time, a small number, a count, a flag, words or
-/// an identifier, each as it is.
+/// A value of a column: a time, a count, a flag, words or an identifier, each as it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Value {
     Time(u64),
-    Small(u16),
     Count(u64),
     Flag(bool),
     Text(String),
@@ -42,10 +40,6 @@ pub(crate) fn nanos(time: i128) -> u64 {
 
 fn time(nanos: u64) -> Value {
     Value::Time(nanos)
-}
-
-fn small(number: u8) -> Value {
-    Value::Small(u16::from(number))
 }
 
 fn count(number: impl Into<u64>) -> Value {
@@ -79,7 +73,7 @@ impl Columned for JourneyRecord {
         vec![
             ("created_at", Some(time(facts.created_unix_nanos))),
             ("updated_at", Some(time(facts.updated_unix_nanos))),
-            ("state", Some(small(facts.state))),
+            ("state", Some(text(&facts.state))),
             ("previous_journey", id(facts.previous_journey)),
             ("subscription", text_maybe(facts.subscription.as_ref())),
             (
@@ -111,10 +105,10 @@ impl Columned for MessageRecord {
             ("created_at", Some(time(facts.created_unix_nanos))),
             ("previous_message", id(facts.previous_message)),
             ("generation", Some(count(facts.generation))),
-            ("created_by", Some(small(facts.created_by))),
-            ("priority", Some(small(facts.priority))),
-            ("execution_profile", Some(small(facts.execution_profile))),
-            ("durability", Some(small(facts.durability))),
+            ("created_by", Some(text(&facts.created_by))),
+            ("priority", Some(text(&facts.priority))),
+            ("execution_profile", Some(text(&facts.execution_profile))),
+            ("durability", Some(text(&facts.durability))),
             ("size_bytes", Some(count(facts.size_bytes))),
             ("party", text_maybe(facts.party.as_ref())),
             ("contract", text_maybe(facts.contract.as_ref())),

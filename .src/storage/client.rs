@@ -446,6 +446,21 @@ mod tests {
             self.beneath.read_chunk(s, i)
         }
 
+        fn write_stream(
+            &self,
+            l: &StreamChunk,
+            s: &super::super::StreamRecord,
+        ) -> Result<(), PersistError> {
+            self.beneath.write_stream(l, s)
+        }
+
+        fn read_stream(
+            &self,
+            s: StreamId,
+        ) -> Result<Option<super::super::StreamRecord>, PersistError> {
+            self.beneath.read_stream(s)
+        }
+
         fn write_message(&self, message: &MessageRecord) -> Result<(), PersistError> {
             self.beneath.write_message(message)
         }

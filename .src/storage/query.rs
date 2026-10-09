@@ -37,9 +37,9 @@ impl Span {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
     /// Journeys in a state, by when they were last written.
-    JourneysInState { state: u8, updated: Span },
+    JourneysInState { state: String, updated: Span },
     /// Journeys bound for a Send Port in a state.
-    JourneysAtSendPort { send_port: String, state: u8 },
+    JourneysAtSendPort { send_port: String, state: String },
     /// Journeys a Journey caused.
     JourneysAfter { journey: u128 },
     /// Journeys holding a Message last.
@@ -136,11 +136,10 @@ impl Ask {
     /// next where it asks one.
     fn values(&self) -> (Vec<Value>, Option<Span>) {
         let name = |text: &String| Value::Text(text.clone());
-        let small = |state: &u8| Value::Small(u16::from(*state));
         match self {
-            Self::JourneysInState { state, updated } => (vec![small(state)], Some(*updated)),
+            Self::JourneysInState { state, updated } => (vec![name(state)], Some(*updated)),
             Self::JourneysAtSendPort { send_port, state } => {
-                (vec![name(send_port), small(state)], None)
+                (vec![name(send_port), name(state)], None)
             }
             Self::JourneysAfter { journey: id }
             | Self::JourneysHolding { message: id }
@@ -194,13 +193,13 @@ impl Form for Ask {
         match self {
             Self::JourneysInState { state, updated } => {
                 write_byte(out, 1);
-                write_byte(out, *state);
+                write_text(out, state);
                 updated.write(out);
             }
             Self::JourneysAtSendPort { send_port, state } => {
                 write_byte(out, 2);
                 write_text(out, send_port);
-                write_byte(out, *state);
+                write_text(out, state);
             }
             Self::JourneysAfter { journey: id }
             | Self::JourneysHolding { message: id }
@@ -252,12 +251,12 @@ impl Form for Ask {
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(match read_byte(cursor)? {
             1 => Self::JourneysInState {
-                state: read_byte(cursor)?,
+                state: read_text(cursor)?,
                 updated: Span::read(cursor)?,
             },
             2 => Self::JourneysAtSendPort {
                 send_port: read_text(cursor)?,
-                state: read_byte(cursor)?,
+                state: read_text(cursor)?,
             },
             3 => Self::JourneysAfter {
                 journey: read_u128(cursor)?,
@@ -362,12 +361,12 @@ mod tests {
         let span = Span::ALL;
         let asks = [
             Ask::JourneysInState {
-                state: 5,
+                state: "Failed".to_string(),
                 updated: span,
             },
             Ask::JourneysAtSendPort {
                 send_port: "Billing".to_string(),
-                state: 1,
+                state: "Active".to_string(),
             },
             Ask::JourneysAfter { journey: 1 },
             Ask::JourneysHolding { message: 2 },

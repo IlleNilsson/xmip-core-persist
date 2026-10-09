@@ -167,8 +167,11 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 synced write: RocksDB's write-ahead log without a sync, and any other engine
 as `apply`. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
 a receive cycle costs one sync, its Publication's. A chunk is its Stream and its
-number in it, nothing more: a Stream ends where it has no further chunk, and
-its length is its Message's to keep (the owner, 2026-10-09).
+number in it, nothing more: a Stream ends where it has no further chunk. A
+Stream is a record of its own (`StreamRecord`, `write_stream` with its last
+chunk, in the same unsynced write), written once and never changed: the one
+home of its length and its chunks, which every Message referring to it refers
+to by its identifier (the owner, 2026-10-09).
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves

@@ -261,11 +261,10 @@ impl Columns {
 
 /// `value` as an entry's key keeps it, in the clear: an identifier as
 /// its sixteen bytes, words as their length and their UTF-8, and a time, a
-/// small number, a count or a flag big-endian, so it sorts.
+/// count or a flag big-endian, so it sorts.
 fn encoded(value: &Value) -> Vec<u8> {
     match value {
         Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
-        Value::Small(small) => small.to_be_bytes().to_vec(),
         Value::Flag(flag) => vec![u8::from(*flag)],
         Value::Text(text) => {
             let length = u32::try_from(text.len()).unwrap_or(u32::MAX);
@@ -440,12 +439,12 @@ mod tests {
 
     /// The Journey `id + 100` of the Message `id`, bound for `port` in
     /// `state`.
-    fn journey(id: u128, port: &str, state: u8) -> JourneyRecord {
+    fn journey(id: u128, port: &str, state: &str) -> JourneyRecord {
         JourneyRecord {
             journey: JourneyId::new(id + 100),
             body: b"to send".to_vec(),
             facts: JourneyFacts {
-                state,
+                state: state.to_string(),
                 send_port: Some(port.to_string()),
                 previous_journey: Some(8),
                 message: Some(id),
@@ -457,7 +456,7 @@ mod tests {
     /// The Message `id` from `party`, its Journey ([`journey`]) held in the
     /// queue nine, and its audit record `id + 200`, a failure for the
     /// Message two.
-    fn published(id: u128, party: &str, port: &str, state: u8) -> Publication {
+    fn published(id: u128, party: &str, port: &str, state: &str) -> Publication {
         Publication {
             message: MessageRecord {
                 message: MessageId::new(id),
@@ -498,12 +497,12 @@ mod tests {
     fn three() -> (Embedded<Memory, Memory>, Arc<Pinned>) {
         let (node, clock) = node();
         clock.set(10);
-        node.publish(&published(1, "Contoso", "Billing", 0))
+        node.publish(&published(1, "Contoso", "Billing", "Active"))
             .expect("published");
         clock.set(20);
-        node.publish(&published(2, "Contoso", "Archive", 0))
+        node.publish(&published(2, "Contoso", "Archive", "Active"))
             .expect("published");
-        node.publish(&published(3, "Fabrikam", "Billing", 4))
+        node.publish(&published(3, "Fabrikam", "Billing", "Completed"))
             .expect("published");
         (node, clock)
     }
@@ -538,14 +537,14 @@ mod tests {
     #[test]
     fn journeys_are_found_by_send_port_and_state_and_a_rewrite_moves_them() {
         let (node, clock) = three();
-        let billing = |state| Ask::JourneysAtSendPort {
+        let billing = |state: &str| Ask::JourneysAtSendPort {
             send_port: "Billing".to_string(),
-            state,
+            state: state.to_string(),
         };
-        assert_eq!(find(&node, billing(0)), [101]);
-        assert_eq!(find(&node, billing(4)), [103]);
+        assert_eq!(find(&node, billing("Active")), [101]);
+        assert_eq!(find(&node, billing("Completed")), [103]);
         let waiting = Ask::JourneysInState {
-            state: 0,
+            state: "Active".to_string(),
             updated: Span::ALL,
         };
         assert_eq!(find(&node, waiting.clone()), [101, 102], "by when written");
@@ -558,15 +557,15 @@ mod tests {
         assert_eq!(find(&node, held).len(), 2);
         let crossed = Ask::JourneysAtSendPort {
             send_port: "Contoso".to_string(),
-            state: 0,
+            state: "Active".to_string(),
         };
         assert_eq!(find(&node, crossed), [], "a Party is no Send Port");
 
         clock.set(30);
-        node.write_journey(&journey(1, "Billing", 4))
+        node.write_journey(&journey(1, "Billing", "Completed"))
             .expect("written again");
         assert_eq!(find(&node, waiting), [102], "its old entries gone");
-        let mut moved = find(&node, billing(4));
+        let mut moved = find(&node, billing("Completed"));
         moved.sort_unstable();
         assert_eq!(moved, [101, 103]);
         let facts = node.read_journey(JourneyId::new(101)).expect("read");
@@ -622,7 +621,7 @@ mod tests {
             .expect("removed");
         assert_eq!(find(&node, updated(Span::ALL)), [], "gone with it");
 
-        let mut unmatched = published(4, "Contoso", "Billing", 0);
+        let mut unmatched = published(4, "Contoso", "Billing", "Active");
         unmatched.journeys.clear();
         unmatched.held.clear();
         unmatched.dead = Some(DeadMessage {
@@ -648,7 +647,7 @@ mod tests {
             .put(PLACES, &places_key(9), b"torn")
             .expect("torn");
         assert!(
-            node.publish(&published(1, "Contoso", "Billing", 0))
+            node.publish(&published(1, "Contoso", "Billing", "Active"))
                 .is_err()
         );
         let party = Ask::MessagesFromParty {

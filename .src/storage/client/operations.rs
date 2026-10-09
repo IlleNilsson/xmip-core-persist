@@ -16,6 +16,7 @@ use super::super::record::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, JourneyRecord, MessageRecord,
     StreamChunk,
 };
+use super::super::stream::StreamRecord;
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
 use crate::PersistError;
@@ -81,6 +82,23 @@ impl XmipStorage for StorageClient {
             self.ask(&Request::ReadChunk(stream, index))?,
             |answer| match answer {
                 Answer::Chunk(chunk) => Ok(chunk),
+                other => Err(other),
+            },
+        )
+    }
+
+    fn write_stream(&self, last: &StreamChunk, stream: &StreamRecord) -> Result<(), PersistError> {
+        expected(
+            self.ask(&Request::WriteStream(last.clone(), *stream))?,
+            done,
+        )
+    }
+
+    fn read_stream(&self, stream: StreamId) -> Result<Option<StreamRecord>, PersistError> {
+        expected(
+            self.ask(&Request::ReadStream(stream))?,
+            |answer| match answer {
+                Answer::Stream(stream) => Ok(stream),
                 other => Err(other),
             },
         )

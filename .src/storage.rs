@@ -61,6 +61,7 @@ mod record;
 mod row;
 pub mod schema;
 mod server;
+mod stream;
 mod wire;
 
 pub use client::StorageClient;
@@ -78,6 +79,7 @@ pub use record::{
     MessageRecord, StreamChunk,
 };
 pub use server::{ALPN, StorageServer};
+pub use stream::StreamRecord;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,6 +117,26 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag.
     fn read_chunk(&self, stream: StreamId, index: u32)
     -> Result<Option<StreamChunk>, PersistError>;
+
+    /// Write a Stream's last chunk and the Stream's own record as one write
+    /// — durable with the next durable write, as every chunk is
+    /// ([`XmipStorage::write_chunk`]) — once, as its writer ends it: a
+    /// Stream is written once and never changed, and every Message that
+    /// refers to it, the one received and any assigned from it, refers to
+    /// this one record (the owner, 2026-10-09: *A new message might refer
+    /// to the same stream*). Its time is the Storage node's.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be written.
+    fn write_stream(&self, last: &StreamChunk, stream: &StreamRecord) -> Result<(), PersistError>;
+
+    /// A Stream's own record — its length and its chunks — or `None`.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn read_stream(&self, stream: StreamId) -> Result<Option<StreamRecord>, PersistError>;
 
     /// Write a Message, replacing the last written under its identifier.
     ///

@@ -237,6 +237,10 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         }
         Request::Replay(replay) => storage.replay(&replay).map(Answer::Replayed),
         Request::Query(query) => storage.query(&query).map(Answer::Records),
+        Request::WriteStream(last, stream) => {
+            storage.write_stream(&last, &stream).map(|()| Answer::Done)
+        }
+        Request::ReadStream(id) => storage.read_stream(id).map(Answer::Stream),
     };
     answered.unwrap_or_else(|error| match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),

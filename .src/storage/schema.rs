@@ -78,8 +78,10 @@ pub enum Kind {
     /// A moment, as near the nanosecond as the server keeps it:
     /// `timestamptz`, and `datetime2(7)` on SQL Server, in UTC.
     Time,
-    /// A small whole number: a state, a kind.
-    Small,
+    /// A word an enumeration names one of its values by: a state, a phase,
+    /// how a Message was made — `text`, and `nvarchar(32)` on SQL Server,
+    /// the longest word with room to spare.
+    Word,
 }
 
 /// One column.
@@ -346,7 +348,7 @@ const fn kind(server: Server, kind: Kind) -> &'static str {
     match (server, kind) {
         (Server::PostgreSql, Kind::Identifier) => "uuid",
         (Server::PostgreSql, Kind::Bytes) => "bytea",
-        (Server::PostgreSql, Kind::Text | Kind::LongText) => "text",
+        (Server::PostgreSql, Kind::Text | Kind::LongText | Kind::Word) => "text",
         (Server::PostgreSql | Server::SqlServer, Kind::Number) => "bigint",
         (Server::PostgreSql, Kind::Count) => "integer",
         (Server::PostgreSql, Kind::Flag) => "boolean",
@@ -360,7 +362,7 @@ const fn kind(server: Server, kind: Kind) -> &'static str {
         (Server::SqlServer, Kind::Sequence) => "bigint IDENTITY(1, 1)",
         (Server::PostgreSql, Kind::Time) => "timestamptz",
         (Server::SqlServer, Kind::Time) => "datetime2(7)",
-        (Server::PostgreSql | Server::SqlServer, Kind::Small) => "smallint",
+        (Server::SqlServer, Kind::Word) => "nvarchar(32)",
     }
 }
 

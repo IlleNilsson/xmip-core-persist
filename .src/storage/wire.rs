@@ -11,7 +11,6 @@
 //! Storage node per caller in flight, so many requests are in flight at
 //! once and the Storage node's writer shares their sync.
 
-use std::io::{Read, Write};
 use std::time::Duration;
 
 use codec::cursor::Cursor;
@@ -27,11 +26,12 @@ use super::record::{
     MessageRecord, StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
     write_byte, write_text, write_u32, write_u64, write_u128,
 };
+use super::stream::StreamRecord;
 use crate::PersistError;
 
-/// The most one frame holds: the ceiling every connection in the estate is
-/// read for (`net::MAX_BODY`).
-const MOST: usize = net::MAX_BODY;
+mod frame;
+
+pub(crate) use frame::{receive, send};
 
 /// One operation asked of Xmip Storage, with its fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +58,8 @@ pub(crate) enum Request {
     ReadDeadMessage(u128, MessageId),
     Replay(Box<Replay>),
     Query(Query),
+    WriteStream(StreamChunk, StreamRecord),
+    ReadStream(StreamId),
 }
 
 /// What an operation answered.
@@ -85,6 +87,8 @@ pub(crate) enum Answer {
     Failed(String),
     /// The identifiers of the records a query found.
     Records(Vec<u128>),
+    /// A Stream's own record, or none.
+    Stream(Option<StreamRecord>),
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
@@ -106,6 +110,26 @@ fn nanos(lease: Duration) -> u64 {
 }
 
 impl Request {
+    /// The operations numbered from 22 on, written as `write` writes the rest.
+    fn write_late(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Query(query) => {
+                write_byte(out, 22);
+                query.write(out);
+            }
+            Self::WriteStream(last, stream) => {
+                write_byte(out, 23);
+                last.write(out);
+                stream.write(out);
+            }
+            Self::ReadStream(id) => {
+                write_byte(out, 24);
+                write_u128(out, id.value());
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn claim(claim: Claim, lease: Duration) -> Self {
         Self::Claim(claim, nanos(lease))
     }
@@ -208,10 +232,7 @@ impl Form for Request {
                 write_byte(out, 21);
                 replay.write(out);
             }
-            Self::Query(query) => {
-                write_byte(out, 22);
-                query.write(out);
-            }
+            Self::Query(_) | Self::WriteStream(..) | Self::ReadStream(_) => self.write_late(out),
         }
     }
 
@@ -239,6 +260,8 @@ impl Form for Request {
             20 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
             21 => Self::Replay(Box::new(Replay::read(cursor)?)),
             22 => Self::Query(Query::read(cursor)?),
+            23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
+            24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -316,6 +339,10 @@ impl Form for Answer {
                     write_u128(out, *record);
                 }
             }
+            Self::Stream(stream) => {
+                write_byte(out, 17);
+                write_optional(out, stream.as_ref());
+            }
         }
     }
 
@@ -342,52 +369,10 @@ impl Form for Answer {
                     .map(|_| read_u128(cursor))
                     .collect::<Result<_, _>>()?,
             ),
+            17 => Self::Stream(read_optional(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }
-}
-
-/// Write `record` as one frame.
-///
-/// # Errors
-///
-/// Where the connection fails, or the record is larger than a frame holds.
-pub(crate) fn send(connection: &mut impl Write, record: &impl Form) -> std::io::Result<()> {
-    let bytes = record.bytes();
-    let length = u32::try_from(bytes.len())
-        .ok()
-        .filter(|length| *length as usize <= MOST)
-        .ok_or_else(|| std::io::Error::other("a record larger than a frame holds"))?;
-    let mut frame = Vec::with_capacity(4 + bytes.len());
-    frame.extend_from_slice(&length.to_be_bytes());
-    frame.extend_from_slice(&bytes);
-    connection.write_all(&frame)?;
-    connection.flush()
-}
-
-/// Read one frame, and the record in it. `None` where the connection ended
-/// cleanly before a frame began.
-///
-/// # Errors
-///
-/// Where the connection fails or ends inside a frame, or the frame is not
-/// a record.
-pub(crate) fn receive<T: Form>(connection: &mut impl Read) -> std::io::Result<Option<T>> {
-    let mut length = [0u8; 4];
-    match connection.read_exact(&mut length) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let length = u32::from_be_bytes(length) as usize;
-    if length > MOST {
-        return Err(std::io::Error::other("a frame larger than a frame holds"));
-    }
-    let mut bytes = vec![0u8; length];
-    connection.read_exact(&mut bytes)?;
-    T::from_bytes(&bytes)
-        .map(Some)
-        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 #[cfg(test)]
@@ -492,6 +477,33 @@ mod tests {
         ];
         for answer in answers {
             assert_eq!(Answer::from_bytes(&answer.bytes()).expect("answer"), answer);
+        }
+    }
+
+    #[test]
+    fn a_stream_s_record_and_its_last_chunk_cross_a_frame_as_they_were() {
+        let record = super::super::StreamRecord {
+            stream: StreamId::new(1),
+            length: 5,
+            chunks: 1,
+            written_unix_nanos: 2,
+        };
+        let last = StreamChunk {
+            stream: StreamId::new(1),
+            index: 0,
+            bytes: b"order".to_vec(),
+        };
+        for request in [
+            Request::WriteStream(last, record),
+            Request::ReadStream(StreamId::new(1)),
+        ] {
+            assert_eq!(
+                Request::from_bytes(&request.bytes()).expect("read"),
+                request
+            );
+        }
+        for answer in [Answer::Stream(Some(record)), Answer::Stream(None)] {
+            assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
         }
     }
 
