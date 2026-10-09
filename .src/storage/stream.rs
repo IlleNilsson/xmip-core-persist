@@ -36,8 +36,7 @@ use xcore::{AuditId, StreamId};
 
 use super::XmipStorage;
 use super::record::{
-    AuditEntry, Form, StreamChunk, malformed, read_u32, read_u64, read_u128, write_u32, write_u64,
-    write_u128,
+    Form, StreamChunk, malformed, read_u32, read_u64, read_u128, write_u32, write_u64, write_u128,
 };
 use crate::PersistError;
 
@@ -156,19 +155,24 @@ impl<'a> ChunkReader<'a> {
         }
     }
 
-    /// The Stream `stream` that `entry` carries, read as the audit keeper
-    /// kept it beside the record, held to the length and the digest the
-    /// record keeps of it; `None` where the record carries no such Stream,
-    /// or was not kept yet.
-    #[must_use]
+    /// The Stream `stream` that the kept audit record `audit` carries, read
+    /// as the audit keeper kept it beside the record, held to the length
+    /// and the digest its `audit_stream` row keeps; `None` where the record
+    /// carries no such Stream, or was not kept yet.
+    ///
+    /// # Errors
+    ///
+    /// Where its row cannot be read, or fails its tag.
     pub fn audited(
         storage: &'a dyn XmipStorage,
-        entry: &AuditEntry,
+        audit: AuditId,
         stream: StreamId,
-    ) -> Option<Self> {
-        let kept = entry.audited.as_ref()?.kept(stream)?;
-        let from = Chunked::Audit(entry.id, stream, kept.digest);
-        Some(Self::new(storage, from, kept.length))
+    ) -> Result<Option<Self>, PersistError> {
+        let kept = storage.read_kept_audit_stream(audit, stream)?;
+        Ok(kept.map(|kept| {
+            let from = Chunked::Audit(audit, stream, kept.digest);
+            Self::new(storage, from, kept.length)
+        }))
     }
 
     fn chunk(&self) -> Result<Option<StreamChunk>, PersistError> {

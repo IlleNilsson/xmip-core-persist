@@ -2,9 +2,9 @@
 //! make them ([`super::scripts`]).
 
 use super::searchable::{
-    ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, DEAD_MESSAGE,
-    DEAD_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
-    STREAM,
+    ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
+    AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY,
+    JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES, STREAM,
 };
 use super::{Column, Database, Kind, Table};
 
@@ -17,7 +17,7 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 15] = [
+pub const TABLES: [Table; 16] = [
     Table {
         database: Database::Runtime,
         name: "stream",
@@ -175,6 +175,17 @@ pub const TABLES: [Table; 15] = [
         key: &["id"],
         unique: &[],
         indexes: AUDIT_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "audit_stream",
+        keeps: "each Stream a kept audit record carries, once: its length, its chunks, the \
+                SHA-256 digest of its bytes and when the Ledger wrote it, written with the \
+                record by the audit keeper",
+        columns: AUDIT_STREAM,
+        key: &["audit", "stream"],
+        unique: &[],
+        indexes: AUDIT_STREAM_INDEXES,
     },
     Table {
         database: Database::Administration,

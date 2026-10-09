@@ -18,12 +18,15 @@
 //! next, which writes the same chunks again. A Stream two Sections share is
 //! copied once.
 //!
-//! **Each Stream's digest and length are in the record, not in columns.**
-//! The keeper takes them from the Stream's own record, their one home
-//! ([`super::StreamRecord`]), into [`Audited::kept`]: a Message has as
-//! many Streams as it has Sections, and a column holds one value, while a
-//! list stays in the body (`super::schema::searchable`). A read of a copy is
-//! held to both ([`super::ChunkReader::audited`]).
+//! **Each Stream is a row of its own** (the owner, 2026-10-09: *when the
+//! Xmip Core or its Providers uses the Audit functionality the whole
+//! shebang goes to audit*): the keeper writes, in the record's own write, a
+//! [`KeptStream`] for each — the record's identifier, and the Stream's own
+//! record ([`super::StreamRecord`], the one home of its length, its chunks,
+//! its digest and when it was written) — which the `audit_stream` table
+//! lays out in columns, in the clear, found by the record and by the
+//! Stream. A read of a copy is held to its length and its digest
+//! ([`super::ChunkReader::audited`]).
 
 use codec::cursor::Cursor;
 use xcore::{AuditId, StreamId};
@@ -36,27 +39,50 @@ use crate::PersistError;
 /// kept audit record carries.
 pub(crate) const KEPT_AUDIT_STREAM: &str = "audit-stream-chunk";
 
+/// Where the administration database keeps each Stream a kept audit record
+/// carries: the `audit_stream` table.
+pub(crate) const KEPT_AUDIT_STREAMS: &str = "audit_stream";
+
 /// The Message an audited act was on, and the Streams it is over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Audited {
     /// The Message in its one binary form, as it was at the audited event.
     pub message: Vec<u8>,
     /// The Streams its Sections are over, in the order of its Sections,
-    /// each once: those whose bytes the audit keeper keeps beside the
-    /// record.
+    /// each once: those the audit keeper keeps beside the record.
     pub streams: Vec<StreamId>,
-    /// Each Stream's own record as the keeper kept its bytes — its length,
-    /// its chunks and its SHA-256 digest: Xmip Storage's to set, empty
-    /// until the record is kept.
-    pub kept: Vec<StreamRecord>,
 }
 
-impl Audited {
-    /// The kept record of `stream`, where the keeper kept it.
-    #[must_use]
-    pub fn kept(&self, stream: StreamId) -> Option<&StreamRecord> {
-        self.kept.iter().find(|record| record.stream == stream)
+/// A Stream a kept audit record carries, as the keeper kept it: a row of
+/// the `audit_stream` table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeptStream {
+    pub audit: AuditId,
+    /// The Stream's own record as the Ledger kept it.
+    pub stream: StreamRecord,
+}
+
+impl Form for KeptStream {
+    fn write(&self, out: &mut Vec<u8>) {
+        write_u128(out, self.audit.value());
+        self.stream.write(out);
     }
+
+    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+        Ok(Self {
+            audit: AuditId::new(read_u128(cursor)?),
+            stream: StreamRecord::read(cursor)?,
+        })
+    }
+}
+
+/// A kept Stream's key: the audit record's identifier and the Stream's.
+pub(crate) fn stream_key(audit: AuditId, stream: StreamId) -> Vec<u8> {
+    [
+        audit.value().to_be_bytes().as_slice(),
+        &stream.value().to_be_bytes(),
+    ]
+    .concat()
 }
 
 impl Form for Audited {
@@ -66,7 +92,6 @@ impl Form for Audited {
         for stream in &self.streams {
             write_u128(out, stream.value());
         }
-        self.kept.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -74,11 +99,7 @@ impl Form for Audited {
         let streams = (0..read_u32(cursor)?)
             .map(|_| read_u128(cursor).map(StreamId::new))
             .collect::<Result<_, _>>()?;
-        Ok(Self {
-            message,
-            streams,
-            kept: Vec::read(cursor)?,
-        })
+        Ok(Self { message, streams })
     }
 }
 
@@ -102,17 +123,21 @@ mod tests {
         let audited = Audited {
             message: b"the Message".to_vec(),
             streams: vec![StreamId::new(4), StreamId::new(5)],
-            kept: vec![StreamRecord {
-                stream: StreamId::new(4),
-                length: 3,
-                chunks: 1,
-                digest: [2; super::super::DIGEST],
-                written_unix_nanos: 1,
-            }],
         };
         assert_eq!(
             Audited::from_bytes(&audited.bytes()).expect("read"),
             audited
         );
+        let kept = KeptStream {
+            audit: AuditId::new(1),
+            stream: StreamRecord {
+                stream: StreamId::new(4),
+                length: 3,
+                chunks: 1,
+                digest: [2; super::super::DIGEST],
+                written_unix_nanos: 1,
+            },
+        };
+        assert_eq!(KeptStream::from_bytes(&kept.bytes()).expect("read"), kept);
     }
 }

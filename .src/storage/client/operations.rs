@@ -235,6 +235,20 @@ impl XmipStorage for StorageClient {
         )
     }
 
+    fn read_kept_audit_stream(
+        &self,
+        id: AuditId,
+        stream: StreamId,
+    ) -> Result<Option<StreamRecord>, PersistError> {
+        expected(
+            self.ask(&Request::ReadKeptAuditStream(id, stream))?,
+            |answer| match answer {
+                Answer::Stream(stream) => Ok(stream),
+                other => Err(other),
+            },
+        )
+    }
+
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,

@@ -162,6 +162,20 @@ pub(super) const AUDIT_INDEXES: &[Index] = &[
     },
 ];
 
+pub(super) const AUDIT_STREAM: &[Column] = &[
+    column("audit", Kind::Identifier),
+    column("stream", Kind::Identifier),
+    column("length", Kind::Number),
+    column("chunks", Kind::Count),
+    column("digest", Kind::Bytes),
+    column("written_at", Kind::Time),
+];
+
+/// By the Stream: the audit records that carry it. By the record: its key,
+/// the record's identifier first, on a server; the embedded engines read a
+/// row by its key, the Streams a record carries being in the record.
+pub(super) const AUDIT_STREAM_INDEXES: &[Index] = &[index(18, "audit_stream_stream", &["stream"])];
+
 pub(super) const ADMINISTRATION: &[Column] = &[
     column("kind", Kind::Word),
     column("id", Kind::Identifier),

@@ -66,6 +66,8 @@ pub enum Ask {
     AuditOfArtifact { artifact: String, occurred: Span },
     /// Failures, by when they happened.
     AuditFailed { occurred: Span },
+    /// Audit records carrying a Stream (ADR-0070).
+    AuditOfStream { stream: u128 },
     /// Administration records of a kind, by when they were last written.
     AdministrationUpdated {
         kind: AdministrationKind,
@@ -126,6 +128,7 @@ impl Ask {
             Self::AuditOfMessage { .. } => (Administration, "audit", "audit_message"),
             Self::AuditOfArtifact { .. } => (Administration, "audit", "audit_artifact"),
             Self::AuditFailed { .. } => (Administration, "audit", "audit_failed"),
+            Self::AuditOfStream { .. } => (Administration, "audit_stream", "audit_stream_stream"),
             Self::AdministrationUpdated { .. } => {
                 (Administration, "administration", "administration_updated")
             }
@@ -145,7 +148,8 @@ impl Ask {
             | Self::JourneysHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
-            | Self::AuditOfMessage { message: id } => (vec![Value::Id(*id)], None),
+            | Self::AuditOfMessage { message: id }
+            | Self::AuditOfStream { stream: id } => (vec![Value::Id(*id)], None),
             Self::MessagesCreated { created: span } | Self::AuditOccurred { occurred: span } => {
                 (Vec::new(), Some(*span))
             }
@@ -205,7 +209,8 @@ impl Form for Ask {
             | Self::JourneysHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
-            | Self::AuditOfMessage { message: id } => {
+            | Self::AuditOfMessage { message: id }
+            | Self::AuditOfStream { stream: id } => {
                 write_byte(out, self.number());
                 write_u128(out, *id);
             }
@@ -306,6 +311,9 @@ impl Form for Ask {
                 kind: AdministrationKind::read(cursor)?,
                 updated: Span::read(cursor)?,
             },
+            17 => Self::AuditOfStream {
+                stream: read_u128(cursor)?,
+            },
             other => return Err(malformed(format!("no question is numbered {other}"))),
         })
     }
@@ -331,6 +339,7 @@ impl Ask {
             Self::AuditOfArtifact { .. } => 14,
             Self::AuditFailed { .. } => 15,
             Self::AdministrationUpdated { .. } => 16,
+            Self::AuditOfStream { .. } => 17,
         }
     }
 }
@@ -396,6 +405,7 @@ mod tests {
                 occurred: span,
             },
             Ask::AuditFailed { occurred: span },
+            Ask::AuditOfStream { stream: 8 },
             Ask::AdministrationUpdated {
                 kind: AdministrationKind::Operator,
                 updated: span,

@@ -306,6 +306,14 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.kept(id)
     }
 
+    fn read_kept_audit_stream(
+        &self,
+        id: AuditId,
+        stream: StreamId,
+    ) -> Result<Option<StreamRecord>, PersistError> {
+        self.kept_stream(id, stream)
+    }
+
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,

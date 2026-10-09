@@ -527,6 +527,14 @@ mod tests {
             self.beneath.read_kept_audit(id)
         }
 
+        fn read_kept_audit_stream(
+            &self,
+            id: AuditId,
+            stream: StreamId,
+        ) -> Result<Option<super::super::StreamRecord>, PersistError> {
+            self.beneath.read_kept_audit_stream(id, stream)
+        }
+
         fn read_kept_audit_chunk(
             &self,
             id: AuditId,
