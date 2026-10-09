@@ -60,7 +60,7 @@ pub(crate) enum Request {
     Query(Query),
     WriteStream(StreamChunk, StreamRecord),
     ReadStream(StreamId),
-    ReadKeptAuditChunk(AuditId, u32),
+    ReadKeptAuditChunk(AuditId, StreamId, u32),
 }
 
 /// What an operation answered.
@@ -127,9 +127,10 @@ impl Request {
                 write_byte(out, 24);
                 write_u128(out, id.value());
             }
-            Self::ReadKeptAuditChunk(id, index) => {
+            Self::ReadKeptAuditChunk(id, stream, index) => {
                 write_byte(out, 25);
                 write_u128(out, id.value());
+                write_u128(out, stream.value());
                 write_u32(out, *index);
             }
             _ => {}
@@ -271,7 +272,11 @@ impl Form for Request {
             22 => Self::Query(Query::read(cursor)?),
             23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
             24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
-            25 => Self::ReadKeptAuditChunk(AuditId::new(read_u128(cursor)?), read_u32(cursor)?),
+            25 => Self::ReadKeptAuditChunk(
+                AuditId::new(read_u128(cursor)?),
+                StreamId::new(read_u128(cursor)?),
+                read_u32(cursor)?,
+            ),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -509,13 +514,14 @@ mod tests {
         for request in [
             Request::WriteStream(last, record),
             Request::ReadStream(StreamId::new(1)),
-            Request::ReadKeptAuditChunk(AuditId::new(2), 3),
+            Request::ReadKeptAuditChunk(AuditId::new(2), StreamId::new(1), 3),
             Request::WriteAudit(AuditEntry {
                 id: AuditId::new(2),
                 body: b"published".to_vec(),
                 audited: Some(super::super::Audited {
                     message: b"order".to_vec(),
-                    stream: StreamId::new(1),
+                    streams: vec![StreamId::new(1)],
+                    kept: vec![record],
                 }),
                 facts: AuditFacts::default(),
             }),

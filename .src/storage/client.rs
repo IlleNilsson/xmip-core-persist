@@ -530,9 +530,10 @@ mod tests {
         fn read_kept_audit_chunk(
             &self,
             id: AuditId,
+            stream: StreamId,
             index: u32,
         ) -> Result<Option<StreamChunk>, PersistError> {
-            self.beneath.read_kept_audit_chunk(id, index)
+            self.beneath.read_kept_audit_chunk(id, stream, index)
         }
 
         fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {

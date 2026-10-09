@@ -241,9 +241,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
             storage.write_stream(&last, &stream).map(|()| Answer::Done)
         }
         Request::ReadStream(id) => storage.read_stream(id).map(Answer::Stream),
-        Request::ReadKeptAuditChunk(id, index) => {
-            storage.read_kept_audit_chunk(id, index).map(Answer::Chunk)
-        }
+        Request::ReadKeptAuditChunk(id, stream, index) => storage
+            .read_kept_audit_chunk(id, stream, index)
+            .map(Answer::Chunk),
     };
     answered.unwrap_or_else(|error| match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),

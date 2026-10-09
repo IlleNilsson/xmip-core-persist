@@ -115,9 +115,9 @@ impl StreamDigest {
 pub enum Chunked {
     /// The Ledger: the Stream's own chunks.
     Ledger(StreamId),
-    /// The copy a kept audit record carries, and the digest the record
-    /// says its bytes have.
-    Audit(AuditId, [u8; DIGEST]),
+    /// The copy of a Stream a kept audit record carries, and the digest the
+    /// record says its bytes have.
+    Audit(AuditId, StreamId, [u8; DIGEST]),
 }
 
 /// A Stream's chunks read in order, one held at a time, up to the first
@@ -156,20 +156,27 @@ impl<'a> ChunkReader<'a> {
         }
     }
 
-    /// The Stream `entry` carries, read as the audit keeper kept it beside
-    /// the record, held to the record's length and digest; `None` where the
-    /// record carries no Stream, or was not kept yet.
+    /// The Stream `stream` that `entry` carries, read as the audit keeper
+    /// kept it beside the record, held to the length and the digest the
+    /// record keeps of it; `None` where the record carries no such Stream,
+    /// or was not kept yet.
     #[must_use]
-    pub fn audited(storage: &'a dyn XmipStorage, entry: &AuditEntry) -> Option<Self> {
-        let facts = &entry.facts;
-        let (digest, length) = (facts.stream_digest?, facts.stream_length?);
-        Some(Self::new(storage, Chunked::Audit(entry.id, digest), length))
+    pub fn audited(
+        storage: &'a dyn XmipStorage,
+        entry: &AuditEntry,
+        stream: StreamId,
+    ) -> Option<Self> {
+        let kept = entry.audited.as_ref()?.kept(stream)?;
+        let from = Chunked::Audit(entry.id, stream, kept.digest);
+        Some(Self::new(storage, from, kept.length))
     }
 
     fn chunk(&self) -> Result<Option<StreamChunk>, PersistError> {
         match self.from {
             Chunked::Ledger(stream) => self.storage.read_chunk(stream, self.next),
-            Chunked::Audit(audit, _) => self.storage.read_kept_audit_chunk(audit, self.next),
+            Chunked::Audit(audit, stream, _) => {
+                self.storage.read_kept_audit_chunk(audit, stream, self.next)
+            }
         }
     }
 
@@ -184,18 +191,18 @@ impl<'a> ChunkReader<'a> {
                  and its record says {length}: a chunk was lost or damaged after it was \
                  published"
             ),
-            Chunked::Audit(audit, _) if read != length => format!(
-                "REFUSED: the audit record {audit} holds {read} bytes of its Stream in \
-                 {chunks} chunk(s), and says {length}: the copy is not the audited Stream"
+            Chunked::Audit(audit, stream, _) if read != length => format!(
+                "REFUSED: the audit record {audit} holds {read} bytes of the Stream {stream} \
+                 in {chunks} chunk(s), and says {length}: the copy is not the audited Stream"
             ),
-            Chunked::Audit(audit, said) => {
+            Chunked::Audit(audit, stream, said) => {
                 let digest = self.digest.take().unwrap_or_default().finish();
                 if digest == said {
                     String::new()
                 } else {
                     format!(
-                        "REFUSED: the Stream the audit record {audit} carries is not the \
-                         audited one: its bytes' SHA-256 is {}, and the record says {}",
+                        "REFUSED: the Stream {stream} the audit record {audit} carries is \
+                         not the audited one: its bytes' SHA-256 is {}, and the record says {}",
                         hex::encode(&digest),
                         hex::encode(&said)
                     )

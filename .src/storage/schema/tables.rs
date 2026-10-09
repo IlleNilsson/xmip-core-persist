@@ -179,14 +179,16 @@ pub const TABLES: [Table; 15] = [
     Table {
         database: Database::Administration,
         name: "audit_stream_chunk",
-        keeps: "the bytes of the Stream a kept audit record carries, in chunks by the \
-                record's identifier and their number, kept with it by the audit keeper",
+        keeps: "the bytes of each Stream a kept audit record carries, in chunks by the \
+                record's identifier, the Stream's and their number, kept with it by the \
+                audit keeper; a Stream two Sections share once",
         columns: &[
             column("audit", Kind::Identifier),
+            column("stream", Kind::Identifier),
             column("chunk", Kind::Count),
             column("bytes", Kind::Bytes),
         ],
-        key: &["audit", "chunk"],
+        key: &["audit", "stream", "chunk"],
         unique: &[],
         indexes: &[],
     },
