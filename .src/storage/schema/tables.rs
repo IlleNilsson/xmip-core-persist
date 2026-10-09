@@ -24,7 +24,6 @@ pub const TABLES: [Table; 13] = [
         columns: &[
             column("stream", Kind::Identifier),
             column("chunk", Kind::Count),
-            column("last", Kind::Flag),
             column("bytes", Kind::Bytes),
         ],
         key: &["stream", "chunk"],
