@@ -290,9 +290,9 @@ pub trait XmipStorage: Send + Sync {
     /// from the runtime database to the administration database. Each is
     /// kept exactly once — a move cut short is finished by the next, and a
     /// record written twice is kept once, by its identifier — and a record
-    /// that carries a Message keeps its Stream's bytes beside it, in chunks
-    /// of its own, with their digest and length from the Stream's record
-    /// (ADR-0070, `audited`). How many moved.
+    /// that carries a Message keeps the bytes of each of its Streams beside
+    /// it, in chunks of their own, with each Stream's own record — its
+    /// digest and its length (ADR-0070, `audited`). How many moved.
     ///
     /// # Errors
     ///
@@ -306,10 +306,10 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag.
     fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError>;
 
-    /// A chunk of the Stream a kept audit record carries, by its number,
-    /// or `None` past its last: what the keeper kept beside the record
-    /// (ADR-0070). Read them through [`ChunkReader::audited`], which holds
-    /// them to the record's length and digest.
+    /// A chunk of the Stream `stream` a kept audit record carries, by its
+    /// number, or `None` past its last: what the keeper kept beside the
+    /// record (ADR-0070). Read them through [`ChunkReader::audited`], which
+    /// holds them to the length and digest the record keeps of the Stream.
     ///
     /// # Errors
     ///
@@ -317,6 +317,7 @@ pub trait XmipStorage: Send + Sync {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
+        stream: StreamId,
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError>;
 

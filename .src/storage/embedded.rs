@@ -309,9 +309,10 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
+        stream: StreamId,
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
-        self.kept_chunk(id, index)
+        self.kept_chunk(id, stream, index)
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {

@@ -20,7 +20,6 @@ use super::record::{
     Form, read_byte, read_text, read_u32, read_u64, read_u128, write_byte, write_text, write_u32,
     write_u64, write_u128,
 };
-use super::stream::{DIGEST, read_digest, write_digest};
 use crate::PersistError;
 
 /// A Journey's fields, as its record is written.
@@ -111,11 +110,6 @@ pub struct AuditFacts {
     /// location says them.
     pub node: Option<String>,
     pub cluster: Option<String>,
-    /// The SHA-256 digest and the length of the Stream it carries, where
-    /// it carries one (ADR-0070): Xmip Storage's to set, from the Stream's
-    /// own record, as the audit keeper keeps its bytes beside it.
-    pub stream_digest: Option<[u8; DIGEST]>,
-    pub stream_length: Option<u64>,
     /// When the audit keeper kept it in the administration database:
     /// Xmip Storage's to set.
     pub kept_unix_nanos: u64,
@@ -244,17 +238,11 @@ impl Form for AuditFacts {
         }
         write_text_maybe(out, self.node.as_deref());
         write_text_maybe(out, self.cluster.as_deref());
-        let stream = self.stream_digest.zip(self.stream_length);
-        write_byte(out, u8::from(stream.is_some()));
-        if let Some((digest, length)) = stream {
-            write_digest(out, &digest);
-            write_u64(out, length);
-        }
         write_u64(out, self.kept_unix_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let mut facts = Self {
+        Ok(Self {
             occurred_unix_nanos: read_u64(cursor)?,
             action: read_text(cursor)?,
             phase: read_text(cursor)?,
@@ -274,14 +262,8 @@ impl Form for AuditFacts {
             artifact_version: read_text_maybe(cursor)?,
             node: read_text_maybe(cursor)?,
             cluster: read_text_maybe(cursor)?,
-            ..Self::default()
-        };
-        if read_byte(cursor)? != 0 {
-            facts.stream_digest = Some(read_digest(cursor)?);
-            facts.stream_length = Some(read_u64(cursor)?);
-        }
-        facts.kept_unix_nanos = read_u64(cursor)?;
-        Ok(facts)
+            kept_unix_nanos: read_u64(cursor)?,
+        })
     }
 }
 
@@ -340,8 +322,6 @@ mod tests {
             artifact_kind: Some("ReceiveLocation".to_string()),
             journey: Some(2),
             node: Some(configure::fixture::test_cluster().node(0).name.clone()),
-            stream_digest: Some([5; DIGEST]),
-            stream_length: Some(64_240),
             kept_unix_nanos: 3,
             ..AuditFacts::default()
         };

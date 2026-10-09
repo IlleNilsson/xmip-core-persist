@@ -82,10 +82,11 @@ and 9).
   audit record to the runtime database; `keep_audit`, the audit keeper,
   moving each to the administration database exactly once, by its
   identifier — a record of an act on a Message, which carries the Message
-  in full (`Audited`), with its Stream's bytes copied beside it a chunk at a
-  time, their SHA-256 digest and length taken from the Stream's own record
-  (ADR-0070; `read_kept_audit_chunk` reads them, `ChunkReader::audited`
-  holds them to both and refuses a copy that does not match, in words); and
+  in full (`Audited`), with the bytes of every Stream its Sections are over
+  copied beside it a chunk at a time, a Stream two Sections share once, and
+  each Stream's own record — its SHA-256 digest and length — kept in the
+  record (ADR-0070; `read_kept_audit_chunk` reads them, `ChunkReader::audited`
+  holds each to both and refuses a copy that does not match, in words); and
   the administration records — registration, membership,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
   write returns once it is durable. Every operation is all or nothing: one
@@ -109,11 +110,11 @@ and 9).
   record holds no reference but its Journey, Message and execution: its
   artifact spelled out — kind, name, version — and its node and cluster by
   name, as its origin's location says them (the owner, 2026-10-09: *In an
-  Audit you can't have references, it should be spelled out*) — and, once
-  kept, the SHA-256 digest and the length of the Stream it carries,
-  `stream_digest` as bytes, as the `publication` and `stream` tables keep a
-  digest, and `stream_length`, its bytes in `audit_stream_chunk` beside it
-  (ADR-0070). The writer
+  Audit you can't have references, it should be spelled out*). The digest
+  and length of each Stream it carries are in its body, not in columns: a
+  Message has a Stream per Section and a column holds one value, so they are
+  a list, and a list stays in the body; the bytes are in `audit_stream_chunk`
+  beside it (ADR-0070). The writer
   says the values, typed, beside the body (`JourneyFacts`, `MessageFacts`,
   `AuditFacts`; the runtime fills them in one place from its objects); the
   times are Xmip Storage's, on its clock. A database server keeps them as

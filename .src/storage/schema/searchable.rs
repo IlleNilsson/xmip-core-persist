@@ -149,8 +149,6 @@ pub(super) const AUDIT: &[Column] = &[
     maybe("artifact_version", Kind::Text),
     maybe("node", Kind::Text),
     maybe("cluster", Kind::Text),
-    maybe("stream_digest", Kind::Bytes),
-    maybe("stream_length", Kind::Number),
 ];
 
 pub(super) const AUDIT_INDEXES: &[Index] = &[
