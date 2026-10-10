@@ -1,20 +1,33 @@
-//! The database server a Storage node is in front of, where IT runs one
-//! (option A, `deployment-model.md` section 7), and the one reading of a
-//! connection to it.
+//! What each data domain's database is kept on, and the one reading of a
+//! connection to a database server (option A, `deployment-model.md`
+//! section 7).
 //!
-//! Xmip Storage keeps three databases on every backend, one to each data
-//! domain, and behind a server they are three separate databases, which IT
-//! may place on different servers (the owner, 2026-10-01: *We still need
-//! the distinction between runtime and administration databases,
-//! regardless of backend database technology*; and 2026-10-10: *The audit
-//! part might be better of in its own database so it can be hosted on a
-//! different set of nodes, different storage*). A node's configuration
-//! names all three in `[storage.database]` (`xmip-core-configure`), each as
-//! a connection read here: `<server>://<login>@<host>[:<port>]/<database>`.
-//! The password is never in it: the configuration names the secret it is
-//! kept under.
+//! Xmip Storage keeps three databases, one to each data domain — runtime,
+//! administration, audit — and each names its own storage and connection
+//! in a table of its own (the owner, 2026-10-10: *i would do it like
+//! runtime, storage, connection string. Same for audit and
+//! administration*, and *Yes, better*):
+//!
+//! ```toml
+//! [runtime]
+//! storage = "postgresql"
+//! connection = "host=db-1.example port=5432 dbname=xmip_runtime user=xmip_storage"
+//!
+//! [audit]
+//! storage = "sqlite"
+//! connection = "D:/Xmip/data/storage/audit.sqlite"
+//! ```
+//!
+//! `storage` is a [`Technology`]; each domain may be on another. On an
+//! embedded engine the connection is the store's path; on a database
+//! server it is the server's own connection string, read here
+//! ([`Connection::read`]). The password is never in it: the node's
+//! configuration names the secret it is kept under, in
+//! `[storage.database] password` (`xmip-core-configure`).
 
 use std::fmt;
+
+use super::schema::Database;
 
 /// The kinds of database server Xmip Storage can be in front of: PostgreSQL
 /// first (the owner, 2026-10-01: *Don't leave out the elephant, Postgres*),
@@ -29,7 +42,7 @@ impl Server {
     /// Every kind.
     pub const ALL: [Self; 2] = [Self::PostgreSql, Self::SqlServer];
 
-    /// The word a connection opens with, and the folder under
+    /// The word `storage` names it by, and the folder under
     /// `deploy/database` its operators' guide and scripts are in.
     #[must_use]
     pub const fn word(self) -> &'static str {
@@ -49,133 +62,235 @@ impl Server {
     }
 }
 
-/// One connection to a database on a server.
+/// What a data domain's database is kept on: an embedded engine, mounted
+/// beside this source, or a database server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Technology {
+    /// `RocksDB`, `xmip-core-persist-rocksdb`.
+    RocksDb,
+    /// `SQLite`, `xmip-core-persist-sqlite`.
+    Sqlite,
+    /// A database server IT runs.
+    Server(Server),
+}
+
+impl Technology {
+    /// Every one, in the order a refusal names them.
+    pub const ALL: [Self; 4] = [
+        Self::RocksDb,
+        Self::Sqlite,
+        Self::Server(Server::PostgreSql),
+        Self::Server(Server::SqlServer),
+    ];
+
+    /// The word `storage` names it by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::RocksDb => "rocksdb",
+            Self::Sqlite => "sqlite",
+            Self::Server(server) => server.word(),
+        }
+    }
+
+    /// The technology `word` names, where it names one.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|technology| technology.word() == word)
+    }
+
+    /// The embedded engine `database` is kept on, the one its domain may
+    /// name: `RocksDB` for the runtime database, always, and `SQLite` for
+    /// the administration and the audit databases (ADR-0015, amendment
+    /// 2026-10-01; ADR-0070, amendment 2026-10-10).
+    #[must_use]
+    pub const fn embedded(database: Database) -> Self {
+        match database {
+            Database::Runtime => Self::RocksDb,
+            Database::Administration | Database::Audit => Self::Sqlite,
+        }
+    }
+}
+
+/// One connection to a database on a server, as its connection string says
+/// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Connection {
     pub server: Server,
-    pub login: String,
+    /// The login, where the string names one.
+    pub login: Option<String>,
     pub host: String,
     pub port: u16,
     pub database: String,
 }
 
 impl Connection {
-    /// The connection `text` says.
+    /// The connection `text` says, in `server`'s own form: PostgreSQL's
+    /// keyword and value pairs, `host=<host> [port=<port>] dbname=<database>
+    /// [user=<login>]`, and SQL Server's, `Server=[tcp:]<host>[,<port>];
+    /// Database=<database>[;User Id=<login>]`. Nothing else is read: no
+    /// password, no option.
     ///
     /// # Errors
     ///
     /// What is wrong with it, in words naming the form it takes.
-    pub fn read(text: &str) -> Result<Self, String> {
-        let refused = |why: &str| {
-            format!(
-                "'{text}' {why}; write <postgresql|sqlserver>://<login>@<host>[:<port>]/<database>"
-            )
+    pub fn read(server: Server, text: &str) -> Result<Self, String> {
+        let form = match server {
+            Server::PostgreSql => "host=<host> [port=<port>] dbname=<database> [user=<login>]",
+            Server::SqlServer => "Server=<host>[,<port>];Database=<database>[;User Id=<login>]",
         };
-        let (scheme, rest) = text
-            .split_once("://")
-            .ok_or_else(|| refused("names no server"))?;
-        let server = Server::ALL
-            .into_iter()
-            .find(|server| server.word() == scheme)
-            .ok_or_else(|| refused("names a server Xmip Storage is not in front of"))?;
-        let (login, rest) = rest
-            .split_once('@')
-            .ok_or_else(|| refused("names no login"))?;
-        let (authority, database) = rest
-            .split_once('/')
-            .ok_or_else(|| refused("names no database"))?;
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((host, port)) if !port.contains(']') => {
-                let port = port
-                    .parse::<u16>()
-                    .ok()
-                    .filter(|port| *port > 0)
-                    .ok_or_else(|| refused("names no port from 1 to 65535"))?;
-                (host, port)
+        let refused = |why: String| format!("'{text}' {why}; write {form}");
+        let pairs: Vec<&str> = match server {
+            Server::PostgreSql => text.split_whitespace().collect(),
+            Server::SqlServer => text.split(';').map(str::trim).collect(),
+        };
+        let (mut host, mut port, mut database, mut login) = (None, None, None, None);
+        for pair in pairs.into_iter().filter(|pair| !pair.is_empty()) {
+            let (key, value) = pair
+                .split_once('=')
+                .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim()))
+                .ok_or_else(|| refused(format!("holds '{pair}', which is no key and value")))?;
+            if value.is_empty() || value.contains(char::is_whitespace) {
+                return Err(refused(format!("leaves '{key}' empty or spaced")));
             }
-            _ => (authority, server.port()),
+            match (server, key.as_str()) {
+                (Server::PostgreSql, "host") => host = Some(value.to_string()),
+                (Server::PostgreSql, "port") => port = Some(value),
+                (Server::PostgreSql, "dbname") | (Server::SqlServer, "database") => {
+                    database = Some(value.to_string());
+                }
+                (Server::PostgreSql, "user") | (Server::SqlServer, "user id") => {
+                    login = Some(value.to_string());
+                }
+                (Server::SqlServer, "server") => {
+                    let value = value.strip_prefix("tcp:").unwrap_or(value);
+                    let (named, numbered) = value
+                        .split_once(',')
+                        .map_or((value, None), |(host, port)| (host, Some(port)));
+                    host = Some(named.to_string());
+                    port = numbered;
+                }
+                _ => return Err(refused(format!("carries '{key}', which is not read"))),
+            }
+        }
+        let port = match port {
+            None => server.port(),
+            Some(port) => port
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .ok_or_else(|| refused("names no port from 1 to 65535".to_string()))?,
         };
-        let words = [login, host, database];
-        if words
-            .iter()
-            .any(|word| word.is_empty() || word.contains(char::is_whitespace))
-        {
-            return Err(refused("leaves its login, host or database empty"));
-        }
-        if database.contains(['/', '?', ';']) || login.contains(':') {
-            return Err(refused("carries more than a login and a database name"));
-        }
+        let (Some(host), Some(database)) = (host, database) else {
+            return Err(refused("names no host or no database".to_string()));
+        };
         Ok(Self {
             server,
-            login: login.to_string(),
-            host: host.to_string(),
+            login,
+            host,
             port,
-            database: database.to_string(),
+            database,
         })
     }
 }
 
 impl fmt::Display for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (server, login, host) = (self.server.word(), &self.login, &self.host);
-        write!(
-            f,
-            "{server}://{login}@{host}:{}/{}",
-            self.port, self.database
-        )
-    }
-}
-
-/// A Storage node's three connections, as its configuration says them.
-#[derive(Clone, Copy, Debug)]
-pub struct Connections<'a> {
-    pub runtime: &'a str,
-    pub administration: &'a str,
-    pub audit: &'a str,
-}
-
-/// What is wrong with a Storage node's three connections and the secret
-/// its password is kept under, in words, each opening with
-/// `[storage.database]`.
-#[must_use]
-pub fn problems(connections: Connections<'_>, password: &str) -> Vec<String> {
-    let said = |problem: String| format!("[storage.database] {problem}");
-    let mut problems = Vec::new();
-    let named = [
-        ("runtime", connections.runtime),
-        ("administration", connections.administration),
-        ("audit", connections.audit),
-    ];
-    let read: Vec<(&str, Connection)> = named
-        .into_iter()
-        .filter_map(|(key, text)| match Connection::read(text) {
-            Ok(connection) => Some((key, connection)),
-            Err(problem) => {
-                problems.push(said(format!("{key}: {problem}")));
-                None
+        let (host, port, database) = (&self.host, self.port, &self.database);
+        match self.server {
+            Server::PostgreSql => {
+                write!(f, "host={host} port={port} dbname={database}")?;
+                self.login
+                    .as_ref()
+                    .map_or(Ok(()), |login| write!(f, " user={login}"))
             }
-        })
-        .collect();
-    for (at, (key, connection)) in read.iter().enumerate() {
-        for (other, earlier) in &read[..at] {
-            if connection.server != earlier.server {
-                problems.push(said(format!(
-                    "names a {} {other} database and a {} {key} database; all three are on \
-                     one kind of server",
-                    earlier.server.word(),
-                    connection.server.word()
-                )));
-            }
-            if connection == earlier {
-                problems.push(said(format!(
-                    "names one database for {other} and {key}; the runtime, the \
-                     administration and the audit databases are separate"
-                )));
+            Server::SqlServer => {
+                write!(f, "Server=tcp:{host},{port};Database={database}")?;
+                self.login
+                    .as_ref()
+                    .map_or(Ok(()), |login| write!(f, ";User Id={login}"))
             }
         }
     }
-    if password.trim().is_empty() {
-        problems.push(said("password names no secret".to_string()));
+}
+
+/// One data domain's table, as the configuration says it: its storage and
+/// its connection.
+#[derive(Clone, Copy, Debug)]
+pub struct Domain<'a> {
+    pub database: Database,
+    pub storage: &'a str,
+    pub connection: &'a str,
+}
+
+/// What is wrong with the data domains' tables a configuration holds, and,
+/// where one names a database server, with the secret the password is kept
+/// under; in words, each opening with the table it is about. Two domains
+/// naming one database on one server are refused: the three are separate.
+#[must_use]
+pub fn problems(named: &[Domain<'_>], password: Option<&str>) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut servers: Vec<(Database, Connection)> = Vec::new();
+    for domain in named {
+        let said = |problem: String| format!("[{}] {problem}", domain.database.word());
+        let Some(technology) = Technology::named(domain.storage) else {
+            let words: Vec<&str> = Technology::ALL.iter().map(|t| t.word()).collect();
+            problems.push(said(format!(
+                "storage: '{}' is none Xmip Storage keeps a database on; write {}",
+                domain.storage,
+                words.join(", ")
+            )));
+            continue;
+        };
+        match technology {
+            Technology::Server(server) => match Connection::read(server, domain.connection) {
+                Ok(connection) => servers.push((domain.database, connection)),
+                Err(problem) => problems.push(said(format!("connection: {problem}"))),
+            },
+            embedded if embedded != Technology::embedded(domain.database) => {
+                problems.push(said(format!(
+                    "storage: the {} database is kept on {} where it is embedded, not {}",
+                    domain.database.word(),
+                    Technology::embedded(domain.database).word(),
+                    embedded.word()
+                )));
+            }
+            _ if domain.connection.trim().is_empty() => {
+                problems.push(said("connection names no path".to_string()));
+            }
+            _ => {}
+        }
+    }
+    for (at, (database, connection)) in servers.iter().enumerate() {
+        let same = |(_, earlier): &&(Database, Connection)| {
+            (
+                &earlier.server,
+                &earlier.host,
+                earlier.port,
+                &earlier.database,
+            ) == (
+                &connection.server,
+                &connection.host,
+                connection.port,
+                &connection.database,
+            )
+        };
+        if let Some((earlier, _)) = servers[..at].iter().find(same) {
+            problems.push(format!(
+                "[{}] connection names the {} database's; the runtime, the administration \
+                 and the audit databases are separate",
+                database.word(),
+                earlier.word()
+            ));
+        }
+    }
+    if !servers.is_empty() && password.is_none_or(|password| password.trim().is_empty()) {
+        problems.push(
+            "[storage.database] password names no secret, and a database server is named"
+                .to_string(),
+        );
     }
     problems
 }
@@ -185,79 +300,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_connection_is_read_with_the_servers_port_where_none_is_named() {
-        let runtime = Connection::read("postgresql://xmip_storage@db-1.example/xmip_runtime");
-        let runtime = runtime.expect("reads");
-        assert_eq!(runtime.server, Server::PostgreSql);
-        assert_eq!(runtime.port, 5432);
+    fn a_connection_is_read_in_its_servers_form_with_its_port_where_none_is_named() {
+        let read = Connection::read(
+            Server::PostgreSql,
+            "host=db-1 port=5432 dbname=xmip_runtime",
+        );
+        let runtime = read.expect("reads");
+        assert_eq!((runtime.port, runtime.login.as_deref()), (5432, None));
         assert_eq!(
             runtime.to_string(),
-            "postgresql://xmip_storage@db-1.example:5432/xmip_runtime"
+            "host=db-1 port=5432 dbname=xmip_runtime"
         );
-        let named = Connection::read("sqlserver://xmip_storage@[fd00::7]:14330/xmip_runtime");
+        let named = Connection::read(
+            Server::SqlServer,
+            "Server=tcp:sql-1.example,14330;Database=xmip_audit;User Id=xmip_storage",
+        );
         let named = named.expect("reads");
-        assert_eq!((named.host.as_str(), named.port), ("[fd00::7]", 14330));
-        let ipv6 = Connection::read("sqlserver://xmip_storage@[fd00::7]/xmip_runtime");
-        assert_eq!(ipv6.expect("reads").port, 1433);
+        assert_eq!((named.host.as_str(), named.port), ("sql-1.example", 14330));
+        assert_eq!(named.login.as_deref(), Some("xmip_storage"));
+        let plain = Connection::read(Server::SqlServer, "Server=sql-1;Database=xmip_audit");
+        assert_eq!(plain.expect("reads").port, 1433);
     }
 
     #[test]
     fn a_connection_that_is_not_one_is_refused_in_words() {
-        for (connection, why) in [
-            ("mysql://u@h/d", "not in front of"),
-            ("postgresql://h/d", "names no login"),
-            ("postgresql://u@h", "names no database"),
-            ("postgresql://u@h:0/d", "from 1 to 65535"),
-            ("postgresql://u:secret@h/d", "more than a login"),
-            ("sqlserver://u@h/d?encrypt=false", "more than a login"),
+        for (server, connection, why) in [
+            (Server::PostgreSql, "dbname=d", "no host or no database"),
+            (Server::PostgreSql, "host=h", "no host or no database"),
+            (
+                Server::PostgreSql,
+                "host=h port=0 dbname=d",
+                "from 1 to 65535",
+            ),
+            (
+                Server::PostgreSql,
+                "host=h dbname=d password=x",
+                "'password'",
+            ),
+            (Server::PostgreSql, "postgresql://u@h/d", "no key and value"),
+            (
+                Server::SqlServer,
+                "Server=h;Database=d;Encrypt=false",
+                "'encrypt'",
+            ),
         ] {
-            let refused = Connection::read(connection).expect_err(connection);
+            let refused = Connection::read(server, connection).expect_err(connection);
             assert!(refused.contains(why), "{connection}: {refused}");
         }
     }
 
-    fn three<'a>(runtime: &'a str, administration: &'a str, audit: &'a str) -> Connections<'a> {
-        Connections {
-            runtime,
-            administration,
-            audit,
+    fn named<'a>(database: Database, storage: &'a str, connection: &'a str) -> Domain<'a> {
+        Domain {
+            database,
+            storage,
+            connection,
         }
     }
 
     #[test]
-    fn one_database_for_two_two_kinds_of_server_or_no_secret_is_a_problem() {
-        let apart = three(
-            "postgresql://x@h/r",
-            "postgresql://x@h/a",
-            "postgresql://x@h2/u",
-        );
-        assert!(problems(apart, "p").is_empty());
-        let same = problems(
-            three(
-                "sqlserver://x@h/r",
-                "sqlserver://x@h/xmip",
-                "sqlserver://x@h/xmip",
+    fn each_domain_may_be_on_another_technology_and_two_on_one_database_are_refused() {
+        let apart = [
+            named(
+                Database::Runtime,
+                "postgresql",
+                "host=db-1 dbname=xmip_runtime",
             ),
-            "p",
-        );
-        assert_eq!(same.len(), 1, "{same:?}");
-        assert!(same[0].contains("administration and audit"), "{same:?}");
-        let mixed = problems(
-            three(
-                "sqlserver://x@h/r",
-                "sqlserver://x@h/a",
-                "postgresql://x@h/u",
+            named(
+                Database::Administration,
+                "sqlserver",
+                "Server=sql-1;Database=a",
             ),
-            " ",
-        );
-        assert_eq!(mixed.len(), 3, "{mixed:?}");
-        let wrong = problems(
-            three("postgresql://x@h/r", "postgresql://x@h/a", "nothing"),
-            "p",
-        );
+            named(
+                Database::Audit,
+                "sqlite",
+                "D:/Xmip/data/storage/audit.sqlite",
+            ),
+        ];
+        assert!(problems(&apart, Some("p")).is_empty());
+        let same = [
+            named(Database::Administration, "postgresql", "host=h dbname=xmip"),
+            named(
+                Database::Audit,
+                "postgresql",
+                "host=h port=5432 dbname=xmip",
+            ),
+        ];
+        let refused = problems(&same, Some("p"));
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].starts_with("[audit] connection names the administration"));
+        let unsealed = problems(&same[..1], None);
         assert!(
-            wrong[0].starts_with("[storage.database] audit: 'nothing'"),
-            "{wrong:?}"
+            unsealed[0].contains("password names no secret"),
+            "{unsealed:?}"
         );
+        let embedded = [named(Database::Audit, "sqlite", "a.sqlite")];
+        assert!(problems(&embedded, None).is_empty(), "no secret needed");
+    }
+
+    #[test]
+    fn an_unknown_storage_or_another_embedded_engine_is_refused_in_words() {
+        let wrong = [
+            named(Database::Runtime, "sqlite", "runtime.sqlite"),
+            named(Database::Administration, "mysql", "x"),
+            named(Database::Audit, "sqlite", " "),
+        ];
+        let refused = problems(&wrong, None);
+        assert!(refused[0].contains("kept on rocksdb"), "{refused:?}");
+        assert!(refused[1].contains("rocksdb, sqlite, postgresql, sqlserver"));
+        assert!(refused[2].starts_with("[audit] connection names no path"));
     }
 }

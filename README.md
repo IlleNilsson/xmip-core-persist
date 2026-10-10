@@ -168,9 +168,14 @@ and 9).
   on (the owner, 2026-10-03). A node that is itself the
   Storage node calls its `Embedded` in process instead: both are
   `XmipStorage`, so nothing above knows which it has.
-- **`database`** and **`schema`** — a database server Xmip Storage is in
-  front of (option A): the one reading of a connection,
-  `<postgresql|sqlserver>://<login>@<host>[:<port>]/<database>`, and every
+- **`database`** and **`schema`** — what each data domain's database is
+  kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql` or `sqlserver`,
+  as each domain's own table in the configuration names it in `storage`
+  (the owner, 2026-10-10: *i would do it like runtime, storage, connection
+  string*) — and a database server Xmip Storage is in front of (option A):
+  the one reading of a connection, in the server's own form
+  (`host=… port=… dbname=… user=…` for PostgreSQL,
+  `Server=…,<port>;Database=…;User Id=…` for SQL Server), and every
   table the three databases — runtime, administration, audit — keep there,
   its searchable columns and its indexes (`schema/searchable.rs`, each
   index numbered once for the embedded engines), with the scripts IT runs
