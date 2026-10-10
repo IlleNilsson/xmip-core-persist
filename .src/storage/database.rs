@@ -48,7 +48,7 @@ impl Server {
     pub const fn word(self) -> &'static str {
         match self {
             Self::PostgreSql => "postgresql",
-            Self::SqlServer => "sqlserver",
+            Self::SqlServer => "mssql",
         }
     }
 
@@ -365,11 +365,7 @@ mod tests {
                 "postgresql",
                 "host=db-1 dbname=xmip_runtime",
             ),
-            named(
-                Database::Administration,
-                "sqlserver",
-                "Server=sql-1;Database=a",
-            ),
+            named(Database::Administration, "mssql", "Server=sql-1;Database=a"),
             named(
                 Database::Audit,
                 "sqlite",
@@ -406,7 +402,7 @@ mod tests {
         ];
         let refused = problems(&wrong, None);
         assert!(refused[0].contains("kept on rocksdb"), "{refused:?}");
-        assert!(refused[1].contains("rocksdb, sqlite, postgresql, sqlserver"));
+        assert!(refused[1].contains("rocksdb, sqlite, postgresql, mssql"));
         assert!(refused[2].starts_with("[audit] connection names no path"));
     }
 }
