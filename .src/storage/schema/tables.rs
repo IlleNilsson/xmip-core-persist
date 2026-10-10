@@ -1,4 +1,4 @@
-//! Every table of Xmip Storage's two databases, in the order the scripts
+//! Every table of Xmip Storage's three databases, in the order the scripts
 //! make them ([`super::scripts`]).
 
 use super::searchable::{
@@ -167,7 +167,7 @@ pub const TABLES: [Table; 18] = [
         indexes: &[],
     },
     Table {
-        database: Database::Administration,
+        database: Database::Audit,
         name: "audit",
         keeps: "audit records kept over time, each once, every single value of each in a \
                 column of its own, each in its writer's audit chain: its number there, the \
@@ -178,7 +178,7 @@ pub const TABLES: [Table; 18] = [
         indexes: AUDIT_INDEXES,
     },
     Table {
-        database: Database::Administration,
+        database: Database::Audit,
         name: "audit_chain_head",
         keeps: "where each writer's audit chain stands: the number of its last kept record \
                 and that record's SHA-256 digest, written with it by the audit keeper",
@@ -192,7 +192,7 @@ pub const TABLES: [Table; 18] = [
         indexes: &[],
     },
     Table {
-        database: Database::Administration,
+        database: Database::Audit,
         name: "audit_body_chunk",
         keeps: "the body of each kept audit record, its record and the Message it carries, \
                 in chunks by the record's identifier and their number, as a Stream is kept, \
@@ -207,7 +207,7 @@ pub const TABLES: [Table; 18] = [
         indexes: &[],
     },
     Table {
-        database: Database::Administration,
+        database: Database::Audit,
         name: "audit_stream",
         keeps: "each Stream a kept audit record carries, once: its length, its chunks, the \
                 SHA-256 digest of its bytes and when the Ledger wrote it, written with the \
@@ -218,7 +218,7 @@ pub const TABLES: [Table; 18] = [
         indexes: AUDIT_STREAM_INDEXES,
     },
     Table {
-        database: Database::Administration,
+        database: Database::Audit,
         name: "audit_stream_chunk",
         keeps: "the bytes of each Stream a kept audit record carries, in chunks by the \
                 record's identifier, the Stream's and their number, kept with it by the \

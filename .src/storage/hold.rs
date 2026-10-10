@@ -284,7 +284,14 @@ mod tests {
 
         let keys = secret::Held::new(secret::fixture::Memory::default());
         let kek = secret::KekName::new("storage").expect("a name");
-        let node = Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("open");
+        let node = Embedded::open(
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+            &keys,
+            &kek,
+        )
+        .expect("open");
         let queue = 7;
         for id in 1..=3u128 {
             let journey = JourneyId::new(id);

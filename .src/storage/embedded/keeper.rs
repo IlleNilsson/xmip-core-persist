@@ -1,6 +1,6 @@
 //! The embedded Storage node's audit keeper (ADR-0062, amendment
 //! 2026-10-01): each audit record moved from the runtime database to the
-//! administration database exactly once, by its identifier, and a record
+//! audit database (ADR-0070, amendment 2026-10-10) exactly once, by its identifier, and a record
 //! of an act on a Message with the bytes of each of its Streams kept beside
 //! it, a chunk at a time, and each Stream's row of the `audit_stream` table
 //! — its length, its chunks, its digest — in the record's own write
@@ -34,10 +34,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     /// Move up to `most` audit records, oldest first, each body in chunks
     /// of `chunk` bytes: `keep_audit`.
     pub(super) fn keep(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
-        let _keeping = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _keeping = self.keeping.lock().unwrap_or_else(PoisonError::into_inner);
         let kept = sequence(&self.runtime, KEPT)?;
         let next = sequence(&self.runtime, NEXT)?;
         let mut moved = 0;
@@ -51,7 +48,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             // Chained as it is kept, after the last record of its writer's
             // chain, the chain's head moved in the same write (`chain`).
             let id = entry.id.value().to_be_bytes();
-            if self.administration.get(KEPT_AUDIT, &id)?.is_none() {
+            if self.audit.get(KEPT_AUDIT, &id)?.is_none() {
                 let (mut changes, streams) = self.streams_kept(&entry)?;
                 let mut kept = KeptAudit {
                     id: entry.id,
@@ -59,9 +56,9 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
                     facts: entry.facts.clone(),
                 };
                 self.body_kept(&entry, chunk, &mut kept.facts)?;
-                changes.push(chain::link(&self.administration, &mut kept, &streams)?);
+                changes.push(chain::link(&self.audit, &mut kept, &streams)?);
                 changes.push((KEPT_AUDIT, id.to_vec(), Some(kept.bytes())));
-                self.administered(changes)?;
+                self.indexed((&self.audit, &self.audit_columns), changes)?;
             }
             if !self.yes(Op::Kept(number))? {
                 break;
@@ -71,8 +68,8 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         Ok(moved)
     }
 
-    /// Each Stream `entry` carries, once, kept beside it in the
-    /// administration database a chunk at a time, each unsynced — the
+    /// Each Stream `entry` carries, once, kept beside it in the audit
+    /// database a chunk at a time, each unsynced — the
     /// record's own write, synced, after them makes them durable with it —
     /// and its `audit_stream` row, to go in that write: Xmip Storage's to
     /// set, from the Stream's own record — with those records, in order.
@@ -106,7 +103,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
                 .read(CHUNK, &chunk_key(stream, index))?
                 .ok_or_else(|| missing(format!("no chunk {index} of it")))?;
             let key = kept_chunk_key(id, stream, index);
-            self.administration
+            self.audit
                 .apply_deferred(&[(KEPT_AUDIT_STREAM, key, Some(chunk.bytes()))])?;
         }
         Ok(record)
@@ -128,7 +125,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         for piece in body.chunks(chunk.max(1)) {
             digest.update(piece);
             let key = body_key(entry.id, index);
-            self.administration
+            self.audit
                 .apply_deferred(&[(KEPT_AUDIT_BODY, key, Some(piece.to_vec()))])?;
             index += 1;
         }
@@ -140,7 +137,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
 
     /// An audit record the keeper moved: `read_kept_audit`.
     pub(super) fn kept(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError> {
-        self.administration
+        self.audit
             .get(KEPT_AUDIT, &id.value().to_be_bytes())?
             .map(|bytes| KeptAudit::from_bytes(&bytes))
             .transpose()
@@ -152,8 +149,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         id: AuditId,
         index: u32,
     ) -> Result<Option<Vec<u8>>, PersistError> {
-        self.administration
-            .get(KEPT_AUDIT_BODY, &body_key(id, index))
+        self.audit.get(KEPT_AUDIT_BODY, &body_key(id, index))
     }
 
     /// A Stream a kept record carries: `read_kept_audit_stream`.
@@ -162,7 +158,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         id: AuditId,
         stream: StreamId,
     ) -> Result<Option<StreamRecord>, PersistError> {
-        self.administration
+        self.audit
             .get(KEPT_AUDIT_STREAMS, &stream_key(id, stream))?
             .map(|bytes| KeptStream::from_bytes(&bytes).map(|kept| kept.stream))
             .transpose()
@@ -175,7 +171,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         stream: StreamId,
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
-        self.administration
+        self.audit
             .get(KEPT_AUDIT_STREAM, &kept_chunk_key(id, stream, index))?
             .map(|bytes| StreamChunk::from_bytes(&bytes))
             .transpose()
@@ -201,6 +197,7 @@ mod tests {
         Node::over(
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("runtime"),
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
+            EncryptedStore::open(Memory::default(), &keys, &kek).expect("audit"),
             Arc::new(xcore::SystemClock),
         )
         .expect("node")
@@ -338,7 +335,7 @@ mod tests {
         let mut changed = changed.expect("a second chunk");
         changed.bytes[0] ^= 1;
         let key = kept_chunk_key(id, stream, 1);
-        node.administration()
+        node.audit()
             .put(KEPT_AUDIT_STREAM, &key, &changed.bytes())
             .expect("changed");
 
@@ -409,7 +406,7 @@ mod tests {
             .expect("read")
             .expect("there");
         changed[0] ^= 1;
-        node.administration()
+        node.audit()
             .put(KEPT_AUDIT_BODY, &key, &changed)
             .expect("changed");
         let mut read = Vec::new();

@@ -80,7 +80,7 @@ and 9).
   kept to a due time where the step waits (`HandOn::kept_for_nanos`, a
   retry's backoff, holding no thread), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,
-  moving each to the administration database exactly once, by its
+  moving each to the audit database exactly once, by its
   identifier — a record of an act on a Message, which carries the Message
   in full (`Audited`), with the bytes of every Stream its Sections are over
   copied beside it a chunk at a time, a Stream two Sections share once, and
@@ -142,10 +142,13 @@ and 9).
   queues' places, publication, replayed, claim, the runtime database's
   audit queue and the kept audit records' body and Stream chunks — keep what
   they kept.
-- **`Embedded`** — the embedded Storage node: the runtime database and the
-  administration database, each an `EncryptedStore` over the engine the
-  program gives it — RocksDB and SQLite for a node, RocksDB on disk and
-  SQLite in memory for a Storage node under test. Every runtime write goes
+- **`Embedded`** — the embedded Storage node: the runtime database, the
+  administration database and the audit database, each an `EncryptedStore`
+  over the engine the program gives it — RocksDB for the runtime database
+  and SQLite for the other two, each a store of its own, for a node;
+  RocksDB on disk and SQLite in memory for a Storage node under test. The
+  audit database is a data domain of its own (ADR-0070, amendment
+  2026-10-10), so it may be on other storage than the other two. Every runtime write goes
   through one writer, which takes every write waiting into one batch under
   one sync: group commit, and the one place a claim's condition is decided.
   Each operation is decided on a stage of its own over the batch, and the
@@ -168,11 +171,13 @@ and 9).
 - **`database`** and **`schema`** — a database server Xmip Storage is in
   front of (option A): the one reading of a connection,
   `<postgresql|sqlserver>://<login>@<host>[:<port>]/<database>`, and every
-  table both databases keep there, its searchable columns and its indexes
-  (`schema/searchable.rs`, each index numbered once for the embedded
-  engines), with the scripts IT runs for each server
-  (`scripts`), which `deploy/database/<server>/` holds and the estate root's
-  `cargo test --test database` holds to it. The backends themselves follow
+  table the three databases — runtime, administration, audit — keep there,
+  its searchable columns and its indexes (`schema/searchable.rs`, each
+  index numbered once for the embedded engines), with the scripts IT runs
+  for each server, per data domain so each may be on a server of its own
+  (`scripts`: `01-roles.sql`, then `02-<domain>-database.sql` and
+  `03-<domain>-schema.sql`), which `deploy/database/<server>/` holds and
+  the estate root's `cargo test --test database` holds to it. The backends themselves follow
   as technologies of this crate, `xmip-core-persist-postgresql` first.
 
 ## A record that fails its tag
@@ -191,7 +196,7 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 | engine | store | crate |
 | --- | --- | --- |
 | `rocksdb` | the runtime database: Messages, Journeys, claims, checkpoints | `xmip-core-persist-rocksdb` |
-| `sqlite` | the administration database; in memory for a Storage node under test | `xmip-core-persist-sqlite` |
+| `sqlite` | the administration database and the audit database, each a store of its own; in memory for a Storage node under test | `xmip-core-persist-sqlite` |
 
 `Engine::apply` writes a batch whole or not at all, durable on return: a
 `WriteBatch` under one sync in RocksDB, a transaction in SQLite.

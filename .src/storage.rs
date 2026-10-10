@@ -14,17 +14,18 @@
 //!   and replay an entry; claim a Journey, renew the claim and release it;
 //!   hand a step on, leaving a queue or waiting in one; write an audit
 //!   record as it is first written;
-//! - **a search** of either: the records one index of one table finds, by
+//! - **a search** of any of them: the records one index of one table finds, by
 //!   the columns each record's table lays out beside its sealed body,
 //!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records from the runtime database to
-//!   the administration database (ADR-0062, amendment 2026-10-01), a
-//!   record of an act on a Message with its Stream's bytes beside it
-//!   (ADR-0070);
+//!   the audit database (ADR-0062, amendment 2026-10-01; ADR-0070,
+//!   amendment 2026-10-10), a record of an act on a Message with its
+//!   Stream's bytes beside it (ADR-0070);
 //! - **the administration database**: what must be shared and kept over
 //!   time — registration, membership, Modules, Handlers, deployment state,
-//!   operator state — and the audit kept there; never configuration
-//!   (`deployment-model.md` section 7).
+//!   operator state; never configuration (`deployment-model.md` section 7);
+//! - **the audit database**: the audit kept over time, a data domain of its
+//!   own, so it may be on other storage than the other two.
 //!
 //! **Every write counts only once the database has it durably** (the owner,
 //! 2026-10-01: *Safe way*): an operation returns once its write is on disk —

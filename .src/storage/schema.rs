@@ -1,6 +1,7 @@
-//! Xmip Storage's two databases on a server IT runs, said once: every
-//! table, its columns and its key, the roles that own and use them, and
-//! the scripts an operator runs to make them, in each server's dialect.
+//! Xmip Storage's three databases on a server IT runs, one to each data
+//! domain, said once: every table, its columns and its key, the roles that
+//! own and use them, and the scripts an operator runs to make them, in each
+//! server's dialect.
 //!
 //! The scripts under `deploy/database/<server>/` are generated from this
 //! and nothing else, and the estate root's `cargo test --test database`
@@ -26,18 +27,24 @@ mod tables;
 
 pub use tables::TABLES;
 
-/// Which of the two databases a table is in.
+/// Which of the three databases, one to each data domain, a table is in.
+/// Each is made by scripts of its own, so each may be on a server of its
+/// own (the owner, 2026-10-10: *The audit part might be better of in its
+/// own database so it can be hosted on a different set of nodes, different
+/// storage*).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Database {
     /// The runtime database: the Ledger.
     Runtime,
     /// The administration database.
     Administration,
+    /// The audit database: audit records kept over time.
+    Audit,
 }
 
 impl Database {
-    /// Both, in the order they are made.
-    pub const ALL: [Self; 2] = [Self::Runtime, Self::Administration];
+    /// All three, in the order their scripts are listed.
+    pub const ALL: [Self; 3] = [Self::Runtime, Self::Administration, Self::Audit];
 
     /// The database's name on the server, as the scripts make it.
     #[must_use]
@@ -45,13 +52,17 @@ impl Database {
         match self {
             Self::Runtime => "xmip_runtime",
             Self::Administration => "xmip_administration",
+            Self::Audit => "xmip_audit",
         }
     }
 
-    const fn word(self) -> &'static str {
+    /// The data domain's word: what its scripts are named by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
         match self {
             Self::Runtime => "runtime",
             Self::Administration => "administration",
+            Self::Audit => "audit",
         }
     }
 }
@@ -114,7 +125,7 @@ pub struct Table {
 /// for the index to hold it — a partial index, filtered on SQL Server.
 #[derive(Clone, Copy, Debug)]
 pub struct Index {
-    /// Its number, one to each index of both databases and never reused:
+    /// Its number, one to each index of every database and never reused:
     /// what the embedded engines file its entries under
     /// (`super::columns`).
     pub number: u8,
@@ -123,7 +134,7 @@ pub struct Index {
     pub only: Option<&'static str>,
 }
 
-/// The schema both databases keep their tables in.
+/// The schema every database keeps its tables in.
 pub const SCHEMA: &str = "xmip";
 /// The role that owns the schema; no one logs in as it.
 pub const OWNER: &str = "xmip_owner";
@@ -132,14 +143,22 @@ pub const LOGIN: &str = "xmip_storage";
 
 /// Every script an operator runs for `server`, in the order they are run:
 /// its file name and its text.
+///
+/// Per data domain: the number is the step, the word the domain. Every
+/// server runs `01-roles.sql`; then each domain it holds is made by
+/// `02-<domain>-database.sql` and filled by `03-<domain>-schema.sql`. One
+/// server holding all three runs them as they sort; a server holding one
+/// domain runs the roles and that domain's two, and the domains need
+/// nothing of one another.
 #[must_use]
 pub fn scripts(server: Server) -> Vec<(String, String)> {
-    let mut scripts = vec![
-        ("01-roles.sql".to_string(), roles(server)),
-        ("02-databases.sql".to_string(), databases(server)),
-    ];
-    for (number, database) in (3..).zip(Database::ALL) {
-        let name = format!("{number:02}-{}.sql", database.word());
+    let mut scripts = vec![("01-roles.sql".to_string(), roles(server))];
+    for database in Database::ALL {
+        let name = format!("02-{}-database.sql", database.word());
+        scripts.push((name, created(server, database)));
+    }
+    for database in Database::ALL {
+        let name = format!("03-{}-schema.sql", database.word());
         scripts.push((name, tables(server, database)));
     }
     scripts
@@ -205,32 +224,32 @@ fn roles(server: Server) -> String {
     }
 }
 
-fn databases(server: Server) -> String {
+/// The statements that make `database`, on the server that holds it.
+fn created(server: Server, database: Database) -> String {
     let run = match server {
         Server::PostgreSql => "Run as a superuser, connected to the postgres database.",
         Server::SqlServer => "Run as a sysadmin with sqlcmd.",
     };
-    let mut text = head(server, "the two databases", run);
-    for database in Database::ALL {
-        let name = database.name();
-        match server {
-            Server::PostgreSql => {
-                let _ = write!(
-                    text,
-                    "CREATE DATABASE {name} OWNER {OWNER} ENCODING 'UTF8' TEMPLATE template0;\n\
-                     REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n\
-                     GRANT CONNECT ON DATABASE {name} TO {LOGIN};\n\n"
-                );
-            }
-            Server::SqlServer => {
-                let _ = write!(
-                    text,
-                    "CREATE DATABASE {name};\nGO\n\
-                     -- Every commit durable before it returns: Xmip counts a write once\n\
-                     -- the database has it (runtime-model.md section 3).\n\
-                     ALTER DATABASE {name} SET DELAYED_DURABILITY = DISABLED;\nGO\n\n"
-                );
-            }
+    let what = format!("the {} database", database.word());
+    let mut text = head(server, &what, run);
+    let name = database.name();
+    match server {
+        Server::PostgreSql => {
+            let _ = write!(
+                text,
+                "CREATE DATABASE {name} OWNER {OWNER} ENCODING 'UTF8' TEMPLATE template0;\n\
+                 REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n\
+                 GRANT CONNECT ON DATABASE {name} TO {LOGIN};\n"
+            );
+        }
+        Server::SqlServer => {
+            let _ = write!(
+                text,
+                "CREATE DATABASE {name};\nGO\n\
+                 -- Every commit durable before it returns: Xmip counts a write once\n\
+                 -- the database has it (runtime-model.md section 3).\n\
+                 ALTER DATABASE {name} SET DELAYED_DURABILITY = DISABLED;\nGO\n"
+            );
         }
     }
     text
@@ -244,7 +263,8 @@ fn tables(server: Server, database: Database) -> String {
         }
         Server::SqlServer => "Run as a sysadmin with sqlcmd.".to_string(),
     };
-    let mut text = head(server, &format!("the {} database", database.word()), &run);
+    let what = format!("the {} database's schema", database.word());
+    let mut text = head(server, &what, &run);
     match server {
         Server::PostgreSql => {
             let _ = write!(
@@ -371,7 +391,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_key_is_a_column_of_its_table_and_every_table_is_in_one_script() {
+    fn every_key_is_a_column_of_its_table_and_every_table_is_in_its_domains_script() {
         for table in TABLES {
             for key in table.key.iter().chain(table.unique) {
                 assert!(
@@ -388,28 +408,72 @@ mod tests {
                 names,
                 [
                     "01-roles.sql",
-                    "02-databases.sql",
-                    "03-runtime.sql",
-                    "04-administration.sql"
+                    "02-runtime-database.sql",
+                    "02-administration-database.sql",
+                    "02-audit-database.sql",
+                    "03-runtime-schema.sql",
+                    "03-administration-schema.sql",
+                    "03-audit-schema.sql",
                 ]
             );
             for table in TABLES {
                 let creates = format!("CREATE TABLE {SCHEMA}.{} (", table.name);
-                let script = &scripts[if table.database == Database::Runtime {
-                    2
-                } else {
-                    3
-                }]
-                .1;
-                assert!(script.contains(&creates), "{server:?} {}", table.name);
+                // `audit` is a table of two databases: the runtime
+                // database's as first written, the audit database's kept.
+                let made_in: Vec<String> = TABLES
+                    .iter()
+                    .filter(|named| named.name == table.name)
+                    .map(|named| format!("03-{}-schema.sql", named.database.word()))
+                    .collect();
+                for (name, script) in &scripts {
+                    assert_eq!(
+                        script.contains(&creates),
+                        made_in.contains(name),
+                        "{server:?} {name} {}",
+                        table.name
+                    );
+                }
+            }
+            for database in Database::ALL {
+                let made = format!("CREATE DATABASE {}", database.name());
+                let making: Vec<&str> = scripts
+                    .iter()
+                    .filter(|(_, script)| script.contains(&made))
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                assert_eq!(making, [format!("02-{}-database.sql", database.word())]);
             }
         }
     }
 
     #[test]
+    fn the_kept_audit_is_in_the_audit_database_and_nowhere_else() {
+        let audit: Vec<&str> = TABLES
+            .iter()
+            .filter(|table| table.database == Database::Audit)
+            .map(|table| table.name)
+            .collect();
+        assert_eq!(
+            audit,
+            [
+                "audit",
+                "audit_chain_head",
+                "audit_body_chunk",
+                "audit_stream",
+                "audit_stream_chunk"
+            ]
+        );
+        let administration = TABLES
+            .iter()
+            .filter(|table| table.database == Database::Administration)
+            .map(|table| table.name);
+        assert!(administration.eq(["administration"]));
+    }
+
+    #[test]
     fn a_storage_node_may_read_and_write_and_nothing_more() {
         for server in Server::ALL {
-            for (_, script) in scripts(server).iter().skip(2) {
+            for (_, script) in scripts(server).iter().skip(4) {
                 let granted: Vec<&str> = script
                     .lines()
                     .filter(|line| line.starts_with("GRANT") && line.contains(LOGIN))
@@ -424,8 +488,10 @@ mod tests {
             }
         }
         let sql_server = scripts(Server::SqlServer);
-        assert!(sql_server[1].1.contains("DELAYED_DURABILITY = DISABLED"));
-        assert!(sql_server[2].1.contains("binary(16)"));
-        assert!(!sql_server[2].1.contains("uniqueidentifier"));
+        for (name, made) in &sql_server[1..4] {
+            assert!(made.contains("DELAYED_DURABILITY = DISABLED"), "{name}");
+        }
+        assert!(sql_server[4].1.contains("binary(16)"));
+        assert!(!sql_server[4].1.contains("uniqueidentifier"));
     }
 }

@@ -2,7 +2,7 @@
 //! (ADR-0070 clause 5, amended 2026-10-10: *one chain per writer* — the
 //! node's, or the program's where no node writes it), formed where the
 //! audit log is written: by the audit keeper, as it keeps each record in
-//! the administration database (`super::embedded::keeper`). It keeps them
+//! the audit database (`super::embedded::keeper`). It keeps them
 //! one at a time, in the order they were written, each once by its
 //! identifier — a record asked twice after a lost answer is chained once —
 //! and it reads the record of every Stream a record carries to keep it
@@ -39,7 +39,7 @@ use super::record::{Form, malformed, write_u32};
 use super::stream::{DIGEST, StreamRecord};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
-/// Where the administration database keeps the head of each writer's
+/// Where the audit database keeps the head of each writer's
 /// chain, by the writer: the number of its last record and its digest.
 pub(crate) const CHAIN: &str = "audit-chain-head";
 
@@ -131,17 +131,22 @@ mod tests {
     type Node = Embedded<&'static Memory, &'static Memory>;
     type Keys = Held<secret::fixture::Memory>;
 
-    /// Two engines that outlive every node over them: the committer's
+    /// Three engines that outlive every node over them: the committer's
     /// thread holds its store for as long as the process.
-    fn stores() -> &'static (Memory, Memory) {
-        Box::leak(Box::new((Memory::default(), Memory::default())))
+    fn stores() -> &'static [Memory; 3] {
+        Box::leak(Box::new([
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+        ]))
     }
 
-    fn node(keys: &Keys, (runtime, administration): (&'static Memory, &'static Memory)) -> Node {
+    fn node(keys: &Keys, [runtime, administration, audit]: &'static [Memory; 3]) -> Node {
         let kek = KekName::new("storage").expect("name");
         Embedded::over(
             EncryptedStore::open(runtime, keys, &kek).expect("runtime"),
             EncryptedStore::open(administration, keys, &kek).expect("administration"),
+            EncryptedStore::open(audit, keys, &kek).expect("audit"),
             Arc::new(xcore::SystemClock),
         )
         .expect("node")
@@ -194,7 +199,7 @@ mod tests {
     fn each_writer_s_records_are_numbered_and_chained_on_their_own() {
         let keys = Held::new(secret::fixture::Memory::default());
         let stores = stores();
-        let node = node(&keys, (&stores.0, &stores.1));
+        let node = node(&keys, stores);
         let cluster = configure::fixture::test_cluster();
         let (first, second) = (cluster.node_scope(0), cluster.node_scope(1));
         for id in 1..=5 {
@@ -214,12 +219,12 @@ mod tests {
         let stores = stores();
         let writer = configure::fixture::test_cluster().node_scope(0);
         {
-            let before = node(&keys, (&stores.0, &stores.1));
+            let before = node(&keys, stores);
             write(&before, 1, &writer);
             write(&before, 2, &writer);
             assert_eq!(before.keep_audit(10, CHUNK).expect("kept"), 2);
         }
-        let after = node(&keys, (&stores.0, &stores.1));
+        let after = node(&keys, stores);
         write(&after, 3, &writer);
 
         let chain = kept(&after, &writer);
