@@ -18,16 +18,18 @@ use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::XmipStorage;
+use super::audit_entry::AuditEntry;
 use super::columns::{ADMINISTRATION, Columns};
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
+use super::kept_audit::KeptAudit;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
-    MessageRecord, StreamChunk,
+    AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
+    StreamChunk,
 };
 use super::row;
 use super::schema::Database;
@@ -298,11 +300,11 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.written(Op::Audit(Box::new(entry.clone())))
     }
 
-    fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-        self.keep(most)
+    fn keep_audit(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
+        self.keep(most, chunk)
     }
 
-    fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+    fn read_kept_audit(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError> {
         self.kept(id)
     }
 
@@ -317,10 +319,13 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
-        stream: StreamId,
+        stream: Option<StreamId>,
         index: u32,
-    ) -> Result<Option<StreamChunk>, PersistError> {
-        self.kept_chunk(id, stream, index)
+    ) -> Result<Option<Vec<u8>>, PersistError> {
+        match stream {
+            None => self.kept_body_chunk(id, index),
+            Some(stream) => Ok(self.kept_chunk(id, stream, index)?.map(|chunk| chunk.bytes)),
+        }
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
@@ -693,8 +698,8 @@ mod tests {
             let read = node.read_journey(written.journey).expect("read");
             assert_eq!(read.as_ref(), Some(written));
         }
-        assert_eq!(node.keep_audit(10).expect("kept"), 1);
-        let kept = node.read_kept_audit(AuditId::new(9)).expect("read");
+        assert_eq!(node.keep_audit(10, 4096).expect("kept"), 1);
+        let kept = crate::fixture::kept_as_written(&node, AuditId::new(9));
         assert_eq!(kept, Some(publication.audit));
     }
 
@@ -819,7 +824,7 @@ mod tests {
         let (node, _) = node();
         node.publish(&unmatched(7, 1)).expect("published");
         node.publish(&unmatched(7, 2)).expect("published");
-        assert_eq!(node.keep_audit(10).expect("kept"), 2);
+        assert_eq!(node.keep_audit(10, 4096).expect("kept"), 2);
         let replay = replaying(7, 1, 5);
         assert_eq!(node.replay(&replay).expect("replayed"), Replayed::Now);
         assert_eq!(
@@ -832,7 +837,11 @@ mod tests {
         assert_eq!((queue.first, queue.count), (1, 1), "taken out");
         let replayed = node.read_dead_message(7, MessageId::new(1)).expect("read");
         assert_eq!(replayed, DeadEntry::Replayed);
-        assert_eq!(node.keep_audit(10).expect("kept"), 1, "the Replay audited");
+        assert_eq!(
+            node.keep_audit(10, 4096).expect("kept"),
+            1,
+            "the Replay audited"
+        );
 
         // Asked again after a lost answer, and again with Journeys of its
         // own: nothing written twice.
@@ -843,7 +852,11 @@ mod tests {
         assert_eq!(node.replay(&again).expect("asked again"), Replayed::Before);
         assert_eq!(node.read_journey(JourneyId::new(77)).expect("read"), None);
         assert_eq!(node.read_held(5, 0, 10).expect("read").count, 1);
-        assert_eq!(node.keep_audit(10).expect("kept"), 0, "not audited twice");
+        assert_eq!(
+            node.keep_audit(10, 4096).expect("kept"),
+            0,
+            "not audited twice"
+        );
         node.publish(&unmatched(7, 1))
             .expect("its Publication asked again");
         assert_eq!(
@@ -865,7 +878,11 @@ mod tests {
             .expect("torn");
         assert!(node.publish(&unmatched(7, 1)).is_err());
         assert_eq!(node.read_message(MessageId::new(1)).expect("read"), None);
-        assert_eq!(node.keep_audit(10).expect("kept"), 0, "no audit record");
+        assert_eq!(
+            node.keep_audit(10, 4096).expect("kept"),
+            0,
+            "no audit record"
+        );
         node.runtime()
             .remove(DEAD_PLACES, &places_key(7))
             .expect("mended");
@@ -929,7 +946,11 @@ mod tests {
         assert_eq!(node.read_journey(JourneyId::new(1)).expect("read"), None);
         let none_held = node.runtime().get(HELD, &held_key(7, 0)).expect("read");
         assert_eq!(none_held, None);
-        assert_eq!(node.keep_audit(10).expect("kept"), 0, "no audit record");
+        assert_eq!(
+            node.keep_audit(10, 4096).expect("kept"),
+            0,
+            "no audit record"
+        );
 
         // A hand-on whose queue cannot be read, after its Journey was
         // written and its place let go of.
@@ -1075,7 +1096,7 @@ mod tests {
             "not queued"
         );
         assert_eq!(node.renew(&first, LEASE).expect("asked"), []);
-        assert_eq!(node.keep_audit(10).expect("kept"), 1, "audited once");
+        assert_eq!(node.keep_audit(10, 4096).expect("kept"), 1, "audited once");
     }
 
     #[test]
@@ -1150,7 +1171,11 @@ mod tests {
         // lost answer writes it.
         node.write_audit(&entries[0]).expect("written again");
         // A move cut short: kept there already, not yet forgotten here.
-        let second = &entries[1];
+        let second = crate::storage::KeptAudit {
+            id: entries[1].id,
+            streams: Vec::new(),
+            facts: AuditFacts::default(),
+        };
         node.administration()
             .put_new(
                 KEPT_AUDIT,
@@ -1158,13 +1183,15 @@ mod tests {
                 &second.bytes(),
             )
             .expect("kept before");
-        assert_eq!(node.keep_audit(2).expect("kept"), 2);
-        assert_eq!(node.keep_audit(100).expect("kept"), 4);
-        assert_eq!(node.keep_audit(100).expect("kept"), 0);
-        for entry in &entries {
-            let kept = node.read_kept_audit(entry.id).expect("read");
+        assert_eq!(node.keep_audit(2, 4096).expect("kept"), 2);
+        assert_eq!(node.keep_audit(100, 4096).expect("kept"), 4);
+        assert_eq!(node.keep_audit(100, 4096).expect("kept"), 0);
+        for entry in entries.iter().filter(|entry| entry.id != second.id) {
+            let kept = crate::fixture::kept_as_written(&node, entry.id);
             assert_eq!(kept, Some(entry.clone()));
         }
+        let before = node.read_kept_audit(second.id).expect("read");
+        assert_eq!(before, Some(second), "not kept again");
         assert_eq!(sequence(node.runtime(), KEPT).expect("kept"), 6);
         for number in 0..6u64 {
             let left = node

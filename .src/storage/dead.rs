@@ -22,10 +22,11 @@
 
 use xcore::{MessageId, StreamId};
 
+use super::audit_entry::AuditEntry;
 use super::commit::{Batch, DEAD, DEAD_MESSAGE, DEAD_PLACES, JOURNEY};
 use super::hold::{self, Hold};
 use super::queue::{self, Kinds, Placed};
-use super::record::{AuditEntry, Form, JourneyRecord};
+use super::record::{Form, JourneyRecord};
 use crate::{EncryptedStore, Engine, PersistError};
 
 mod form;

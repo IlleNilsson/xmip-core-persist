@@ -30,7 +30,8 @@ use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
 use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::dead::Dead;
 use super::hold::Held;
-use super::record::{AdministrationRecord, AuditEntry, JourneyRecord, MessageRecord};
+use super::kept_audit::KeptAudit;
+use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
@@ -92,7 +93,7 @@ impl Searched {
             Self::Message => row::<MessageRecord>(bytes),
             Self::Held => row::<Held>(bytes),
             Self::Dead => row::<Dead>(bytes),
-            Self::Audit => row::<AuditEntry>(bytes),
+            Self::Audit => row::<KeptAudit>(bytes),
             Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
         }
@@ -111,7 +112,7 @@ impl Searched {
             Self::Message => stamp::<MessageRecord>(bytes, before, now),
             Self::Held => stamp::<Held>(bytes, before, now),
             Self::Dead => stamp::<Dead>(bytes, before, now),
-            Self::Audit => stamp::<AuditEntry>(bytes, before, now),
+            Self::Audit => stamp::<KeptAudit>(bytes, before, now),
             Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
         }
@@ -329,10 +330,9 @@ mod tests {
             sequence: 0,
             message: DeadMessage::default(),
         };
-        let audit = AuditEntry {
+        let audit = KeptAudit {
             id: AuditId::new(4),
-            body: Vec::new(),
-            audited: None,
+            streams: Vec::new(),
             facts: AuditFacts::default(),
         };
         let kept_stream = KeptStream {
@@ -498,7 +498,7 @@ mod tests {
                 body: Vec::new(),
             }],
             dead: None,
-            audit: AuditEntry {
+            audit: crate::storage::AuditEntry {
                 id: AuditId::new(id + 200),
                 body: b"published".to_vec(),
                 audited: None,
@@ -603,7 +603,7 @@ mod tests {
         let (node, _) = three();
         let of_journey = Ask::AuditOfJourney { journey: 101 };
         assert_eq!(find(&node, of_journey.clone()), [], "not kept yet");
-        assert_eq!(node.keep_audit(10).expect("kept"), 3);
+        assert_eq!(node.keep_audit(10, 4096).expect("kept"), 3);
         assert_eq!(find(&node, of_journey), [201]);
         assert_eq!(find(&node, Ask::AuditOfMessage { message: 3 }), [203]);
         let failed = Ask::AuditFailed {

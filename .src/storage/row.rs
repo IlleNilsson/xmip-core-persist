@@ -6,7 +6,8 @@
 use super::audited::KeptStream;
 use super::dead::Dead;
 use super::hold::Held;
-use super::record::{AdministrationRecord, AuditEntry, Form, JourneyRecord, MessageRecord};
+use super::kept_audit::KeptAudit;
+use super::record::{AdministrationRecord, Form, JourneyRecord, MessageRecord};
 
 /// A value of a column: a time, a count, a flag, words, an identifier or
 /// bytes, each as it is.
@@ -157,7 +158,7 @@ impl Columned for Dead {
     }
 }
 
-impl Columned for AuditEntry {
+impl Columned for KeptAudit {
     fn id(&self) -> u128 {
         self.id.value()
     }
@@ -192,6 +193,19 @@ impl Columned for AuditEntry {
             ),
             ("node", text_maybe(facts.node.as_ref())),
             ("cluster", text_maybe(facts.cluster.as_ref())),
+            ("writer", Some(text(&facts.writer))),
+            ("position", Some(count(facts.position))),
+            (
+                "previous_digest",
+                Some(Value::Bytes(facts.previous.to_vec())),
+            ),
+            ("digest", Some(Value::Bytes(facts.digest.to_vec()))),
+            ("body_length", Some(count(facts.body_length))),
+            ("body_chunks", Some(count(facts.body_chunks))),
+            (
+                "body_digest",
+                Some(Value::Bytes(facts.body_digest.to_vec())),
+            ),
         ]
     }
 }

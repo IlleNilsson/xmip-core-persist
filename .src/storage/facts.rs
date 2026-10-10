@@ -20,6 +20,7 @@ use super::record::{
     Form, read_byte, read_text, read_u32, read_u64, read_u128, write_byte, write_text, write_u32,
     write_u64, write_u128,
 };
+use super::stream::{DIGEST, read_digest, write_digest};
 use crate::PersistError;
 
 /// A Journey's fields, as its record is written.
@@ -110,6 +111,24 @@ pub struct AuditFacts {
     /// location says them.
     pub node: Option<String>,
     pub cluster: Option<String>,
+    /// Whose audit chain it is in (ADR-0070 clause 5, amended 2026-10-10:
+    /// *one chain per writer*), as its writer says it: the node's location,
+    /// or the program's name where no node writes it
+    /// (`xmip-core-audit`, `Origin::writer`).
+    pub writer: String,
+    /// Its number in that chain, from 1, the digest of the record before
+    /// it there and its own (`super::chain`): Xmip Storage's to set, as it
+    /// writes the record.
+    pub position: u64,
+    pub previous: [u8; DIGEST],
+    pub digest: [u8; DIGEST],
+    /// Its body — its record and the Message it carries — as the keeper
+    /// kept it in chunks of its own, as a Stream is kept (ADR-0070,
+    /// amendment 2026-10-10): its length, its chunks and the SHA-256 of its
+    /// bytes, taken as the chunks pass. Xmip Storage's to set.
+    pub body_length: u64,
+    pub body_chunks: u32,
+    pub body_digest: [u8; DIGEST],
     /// When the audit keeper kept it in the administration database:
     /// Xmip Storage's to set.
     pub kept_unix_nanos: u64,
@@ -238,6 +257,13 @@ impl Form for AuditFacts {
         }
         write_text_maybe(out, self.node.as_deref());
         write_text_maybe(out, self.cluster.as_deref());
+        write_text(out, &self.writer);
+        write_u64(out, self.position);
+        write_digest(out, &self.previous);
+        write_digest(out, &self.digest);
+        write_u64(out, self.body_length);
+        write_u32(out, self.body_chunks);
+        write_digest(out, &self.body_digest);
         write_u64(out, self.kept_unix_nanos);
     }
 
@@ -262,6 +288,13 @@ impl Form for AuditFacts {
             artifact_version: read_text_maybe(cursor)?,
             node: read_text_maybe(cursor)?,
             cluster: read_text_maybe(cursor)?,
+            writer: read_text(cursor)?,
+            position: read_u64(cursor)?,
+            previous: read_digest(cursor)?,
+            digest: read_digest(cursor)?,
+            body_length: read_u64(cursor)?,
+            body_chunks: read_u32(cursor)?,
+            body_digest: read_digest(cursor)?,
             kept_unix_nanos: read_u64(cursor)?,
         })
     }
@@ -322,6 +355,13 @@ mod tests {
             artifact_kind: Some("ReceiveLocation".to_string()),
             journey: Some(2),
             node: Some(configure::fixture::test_cluster().node(0).name.clone()),
+            writer: configure::fixture::test_cluster().node_scope(0),
+            position: 5,
+            previous: [6; DIGEST],
+            digest: [7; DIGEST],
+            body_length: 8,
+            body_chunks: 1,
+            body_digest: [9; DIGEST],
             kept_unix_nanos: 3,
             ..AuditFacts::default()
         };

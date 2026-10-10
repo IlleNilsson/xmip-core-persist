@@ -88,7 +88,21 @@ and 9).
   was written — kept as a row of `audit_stream` in the record's own write
   (ADR-0070; `read_kept_audit_stream` reads the row, `read_kept_audit_chunk`
   the bytes, `ChunkReader::audited` holds each to both and refuses a copy
-  that does not match, in words); and
+  that does not match, in words). The record's body — its record and the
+  Message it carries — is kept as a Stream is, in chunks of the size the
+  caller hands `keep_audit`, the runtime's Stream chunk, in
+  `audit_body_chunk` beside its row (`KeptAudit`), its length, chunks and
+  SHA-256 taken as they pass laid out in the row, read a chunk at a time by
+  `ChunkReader::audit_body` and held to them (ADR-0070, amendment
+  2026-10-10). And the keeper chains each record in its writer's audit chain
+  as it keeps it, once by its identifier, in the order written (`chain`;
+  ADR-0070 clause 5): its number there, the digest of the record before it
+  and its own over its canonical form — the kept row but its own digest and
+  the keeper's time, and its Streams' records (`chain_digest`) — the head of
+  each writer's chain kept in `audit_chain_head` in the record's own write,
+  so it goes on after a restart; `Ask::AuditChain` finds a writer's records in their order by the
+  `audit_chain` index for the walk (`xmip-core-audit`'s `audit_chain::walk`,
+  called by the runtime); and
   the administration records — registration, membership,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
   write returns once it is durable. Every operation is all or nothing: one
@@ -126,8 +140,8 @@ and 9).
   server's, written in the record's own batch, the entries of a record it
   replaces or removes taken out with it (`storage/columns.rs`). The other tables — chunks,
   queues' places, publication, replayed, claim, the runtime database's
-  audit queue and the kept audit records' Stream chunks — keep what they
-  kept.
+  audit queue and the kept audit records' body and Stream chunks — keep what
+  they kept.
 - **`Embedded`** — the embedded Storage node: the runtime database and the
   administration database, each an `EncryptedStore` over the engine the
   program gives it — RocksDB and SQLite for a node, RocksDB on disk and

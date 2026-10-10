@@ -519,11 +519,14 @@ mod tests {
             self.beneath.write_audit(entry)
         }
 
-        fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-            self.beneath.keep_audit(most)
+        fn keep_audit(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
+            self.beneath.keep_audit(most, chunk)
         }
 
-        fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+        fn read_kept_audit(
+            &self,
+            id: AuditId,
+        ) -> Result<Option<crate::storage::KeptAudit>, PersistError> {
             self.beneath.read_kept_audit(id)
         }
 
@@ -538,9 +541,9 @@ mod tests {
         fn read_kept_audit_chunk(
             &self,
             id: AuditId,
-            stream: StreamId,
+            stream: Option<StreamId>,
             index: u32,
-        ) -> Result<Option<StreamChunk>, PersistError> {
+        ) -> Result<Option<Vec<u8>>, PersistError> {
             self.beneath.read_kept_audit_chunk(id, stream, index)
         }
 
@@ -635,7 +638,11 @@ mod tests {
             "what the other node did stands"
         );
         assert_eq!(behind.read_held(queue, 0, 10).expect("read").count, 0);
-        assert_eq!(behind.keep_audit(10).expect("kept"), 1, "published once");
+        assert_eq!(
+            behind.keep_audit(10, 4096).expect("kept"),
+            1,
+            "published once"
+        );
         first.stop();
         second.stop();
     }

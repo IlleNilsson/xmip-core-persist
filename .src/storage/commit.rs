@@ -20,12 +20,13 @@ use std::thread::JoinHandle;
 
 use xcore::Clock;
 
+use super::audit_entry::AuditEntry;
 use super::claim::{self, Standing, Stored, end, hold};
 use super::columns::Columns;
 use super::dead::{self, Replay, Replayed};
 use super::hand_on::HandOn;
 use super::publication::{self, Decided, Publication};
-use super::record::{AuditEntry, Claim, Form, malformed};
+use super::record::{Claim, Form, malformed};
 use super::row;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 

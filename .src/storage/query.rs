@@ -68,6 +68,9 @@ pub enum Ask {
     AuditFailed { occurred: Span },
     /// Audit records carrying a Stream (ADR-0070).
     AuditOfStream { stream: u128 },
+    /// A writer's audit chain in its order, from the number `from` on
+    /// (ADR-0070 clause 5).
+    AuditChain { writer: String, from: u64 },
     /// Administration records of a kind, by when they were last written.
     AdministrationUpdated {
         kind: AdministrationKind,
@@ -129,6 +132,7 @@ impl Ask {
             Self::AuditOfArtifact { .. } => (Administration, "audit", "audit_artifact"),
             Self::AuditFailed { .. } => (Administration, "audit", "audit_failed"),
             Self::AuditOfStream { .. } => (Administration, "audit_stream", "audit_stream_stream"),
+            Self::AuditChain { .. } => (Administration, "audit", "audit_chain"),
             Self::AdministrationUpdated { .. } => {
                 (Administration, "administration", "administration_updated")
             }
@@ -171,6 +175,14 @@ impl Ask {
                 queued: span,
             } => (vec![Value::Id(*queue)], Some(*span)),
             Self::AuditFailed { occurred } => (vec![Value::Flag(true)], Some(*occurred)),
+            // A span of numbers: the index's next column is the number.
+            Self::AuditChain { writer, from } => {
+                let numbers = Span {
+                    from_unix_nanos: *from,
+                    to_unix_nanos: u64::MAX,
+                };
+                (vec![name(writer)], Some(numbers))
+            }
             Self::AdministrationUpdated { kind, updated } => {
                 (vec![Value::Text(kind.word().to_string())], Some(*updated))
             }
@@ -250,6 +262,11 @@ impl Form for Ask {
                 kind.write(out);
                 updated.write(out);
             }
+            Self::AuditChain { writer, from } => {
+                write_byte(out, self.number());
+                write_text(out, writer);
+                write_u64(out, *from);
+            }
         }
     }
 
@@ -314,6 +331,10 @@ impl Form for Ask {
             17 => Self::AuditOfStream {
                 stream: read_u128(cursor)?,
             },
+            18 => Self::AuditChain {
+                writer: read_text(cursor)?,
+                from: read_u64(cursor)?,
+            },
             other => return Err(malformed(format!("no question is numbered {other}"))),
         })
     }
@@ -340,6 +361,7 @@ impl Ask {
             Self::AuditFailed { .. } => 15,
             Self::AdministrationUpdated { .. } => 16,
             Self::AuditOfStream { .. } => 17,
+            Self::AuditChain { .. } => 18,
         }
     }
 }
@@ -406,6 +428,10 @@ mod tests {
             },
             Ask::AuditFailed { occurred: span },
             Ask::AuditOfStream { stream: 8 },
+            Ask::AuditChain {
+                writer: "xmip-cli".to_string(),
+                from: 1,
+            },
             Ask::AdministrationUpdated {
                 kind: AdministrationKind::Operator,
                 updated: span,
