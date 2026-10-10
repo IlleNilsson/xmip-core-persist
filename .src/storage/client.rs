@@ -294,7 +294,13 @@ mod tests {
     fn storage() -> Arc<dyn XmipStorage> {
         let keys = Held::new(secret::fixture::Memory::default());
         let kek = KekName::new("storage").expect("name");
-        let node = Embedded::open(Memory::default(), Memory::default(), &keys, &kek);
+        let node = Embedded::open(
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+            &keys,
+            &kek,
+        );
         Arc::new(node.expect("node"))
     }
 

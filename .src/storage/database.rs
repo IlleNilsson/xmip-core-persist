@@ -2,14 +2,17 @@
 //! (option A, `deployment-model.md` section 7), and the one reading of a
 //! connection to it.
 //!
-//! Xmip Storage keeps two databases on every backend, and behind a server
-//! they are two separate databases, which IT may place on different
-//! servers (the owner, 2026-10-01: *We still need the distinction between
-//! runtime and administration databases, regardless of backend database
-//! technology*). A node's configuration names both in `[storage.database]`
-//! (`xmip-core-configure`), each as a connection read here:
-//! `<server>://<login>@<host>[:<port>]/<database>`. The password is never
-//! in it: the configuration names the secret it is kept under.
+//! Xmip Storage keeps three databases on every backend, one to each data
+//! domain, and behind a server they are three separate databases, which IT
+//! may place on different servers (the owner, 2026-10-01: *We still need
+//! the distinction between runtime and administration databases,
+//! regardless of backend database technology*; and 2026-10-10: *The audit
+//! part might be better of in its own database so it can be hosted on a
+//! different set of nodes, different storage*). A node's configuration
+//! names all three in `[storage.database]` (`xmip-core-configure`), each as
+//! a connection read here: `<server>://<login>@<host>[:<port>]/<database>`.
+//! The password is never in it: the configuration names the secret it is
+//! kept under.
 
 use std::fmt;
 
@@ -123,32 +126,52 @@ impl fmt::Display for Connection {
     }
 }
 
-/// What is wrong with a Storage node's two connections and the secret its
-/// password is kept under, in words, each opening with `[storage.database]`.
+/// A Storage node's three connections, as its configuration says them.
+#[derive(Clone, Copy, Debug)]
+pub struct Connections<'a> {
+    pub runtime: &'a str,
+    pub administration: &'a str,
+    pub audit: &'a str,
+}
+
+/// What is wrong with a Storage node's three connections and the secret
+/// its password is kept under, in words, each opening with
+/// `[storage.database]`.
 #[must_use]
-pub fn problems(runtime: &str, administration: &str, password: &str) -> Vec<String> {
+pub fn problems(connections: Connections<'_>, password: &str) -> Vec<String> {
     let said = |problem: String| format!("[storage.database] {problem}");
     let mut problems = Vec::new();
-    let read = [("runtime", runtime), ("administration", administration)].map(|(key, text)| {
-        Connection::read(text)
-            .map_err(|problem| problems.push(said(format!("{key}: {problem}"))))
-            .ok()
-    });
-    if let [Some(runtime), Some(administration)] = &read {
-        if runtime.server != administration.server {
-            problems.push(said(format!(
-                "names a {} runtime database and a {} administration database; both are on \
-                 one kind of server",
-                runtime.server.word(),
-                administration.server.word()
-            )));
-        }
-        if runtime == administration {
-            problems.push(said(
-                "names one database for both; the runtime and the administration databases \
-                 are separate"
-                    .to_string(),
-            ));
+    let named = [
+        ("runtime", connections.runtime),
+        ("administration", connections.administration),
+        ("audit", connections.audit),
+    ];
+    let read: Vec<(&str, Connection)> = named
+        .into_iter()
+        .filter_map(|(key, text)| match Connection::read(text) {
+            Ok(connection) => Some((key, connection)),
+            Err(problem) => {
+                problems.push(said(format!("{key}: {problem}")));
+                None
+            }
+        })
+        .collect();
+    for (at, (key, connection)) in read.iter().enumerate() {
+        for (other, earlier) in &read[..at] {
+            if connection.server != earlier.server {
+                problems.push(said(format!(
+                    "names a {} {other} database and a {} {key} database; all three are on \
+                     one kind of server",
+                    earlier.server.word(),
+                    connection.server.word()
+                )));
+            }
+            if connection == earlier {
+                problems.push(said(format!(
+                    "names one database for {other} and {key}; the runtime, the \
+                     administration and the audit databases are separate"
+                )));
+            }
         }
     }
     if password.trim().is_empty() {
@@ -193,16 +216,47 @@ mod tests {
         }
     }
 
+    fn three<'a>(runtime: &'a str, administration: &'a str, audit: &'a str) -> Connections<'a> {
+        Connections {
+            runtime,
+            administration,
+            audit,
+        }
+    }
+
     #[test]
-    fn one_database_for_both_two_kinds_of_server_or_no_secret_is_a_problem() {
-        assert!(problems("postgresql://x@h/r", "postgresql://x@h/a", "p").is_empty());
-        let same = problems("sqlserver://x@h/xmip", "sqlserver://x@h/xmip", "p");
-        assert!(same[0].contains("separate"), "{same:?}");
-        let mixed = problems("sqlserver://x@h/r", "postgresql://x@h/a", " ");
-        assert_eq!(mixed.len(), 2, "{mixed:?}");
-        let wrong = problems("nothing", "postgresql://x@h/a", "p");
+    fn one_database_for_two_two_kinds_of_server_or_no_secret_is_a_problem() {
+        let apart = three(
+            "postgresql://x@h/r",
+            "postgresql://x@h/a",
+            "postgresql://x@h2/u",
+        );
+        assert!(problems(apart, "p").is_empty());
+        let same = problems(
+            three(
+                "sqlserver://x@h/r",
+                "sqlserver://x@h/xmip",
+                "sqlserver://x@h/xmip",
+            ),
+            "p",
+        );
+        assert_eq!(same.len(), 1, "{same:?}");
+        assert!(same[0].contains("administration and audit"), "{same:?}");
+        let mixed = problems(
+            three(
+                "sqlserver://x@h/r",
+                "sqlserver://x@h/a",
+                "postgresql://x@h/u",
+            ),
+            " ",
+        );
+        assert_eq!(mixed.len(), 3, "{mixed:?}");
+        let wrong = problems(
+            three("postgresql://x@h/r", "postgresql://x@h/a", "nothing"),
+            "p",
+        );
         assert!(
-            wrong[0].starts_with("[storage.database] runtime: 'nothing'"),
+            wrong[0].starts_with("[storage.database] audit: 'nothing'"),
             "{wrong:?}"
         );
     }

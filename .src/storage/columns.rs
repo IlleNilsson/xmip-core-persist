@@ -36,7 +36,7 @@ use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 
-/// Where the administration database keeps an audit record the keeper
+/// Where the audit database keeps an audit record the keeper
 /// moved, by its identifier.
 pub(crate) const KEPT_AUDIT: &str = "audit";
 
@@ -64,8 +64,8 @@ impl Searched {
             (Database::Runtime, MESSAGE) => Self::Message,
             (Database::Runtime, HELD) => Self::Held,
             (Database::Runtime, DEAD) => Self::Dead,
-            (Database::Administration, KEPT_AUDIT) => Self::Audit,
-            (Database::Administration, KEPT_AUDIT_STREAMS) => Self::AuditStream,
+            (Database::Audit, KEPT_AUDIT) => Self::Audit,
+            (Database::Audit, KEPT_AUDIT_STREAMS) => Self::AuditStream,
             (Database::Administration, kind) if kind.starts_with(ADMINISTRATION) => {
                 Self::Administration
             }
@@ -438,6 +438,7 @@ mod tests {
         let node = Embedded::over(
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("runtime"),
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
+            EncryptedStore::open(Memory::default(), &keys, &kek).expect("audit"),
             Arc::clone(&clock) as Arc<dyn Clock>,
         )
         .expect("node");

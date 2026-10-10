@@ -11,7 +11,7 @@
 //!
 //! **Each Stream is kept beside it, in chunks of its own.** A Stream may be
 //! large, and is never whole in memory: the audit keeper, moving the record
-//! to the administration database, copies each Stream's chunks one at a
+//! to the audit database, copies each Stream's chunks one at a
 //! time beside it, by the record's identifier, the Stream's and their
 //! number, each unsynced, and keeps the record last, synced, so the record
 //! is there only once its chunks are; a move cut short is finished by the
@@ -35,11 +35,11 @@ use super::record::{Form, read_bytes, read_u32, read_u128, write_bytes, write_u3
 use super::stream::StreamRecord;
 use crate::PersistError;
 
-/// Where the administration database keeps the chunks of the Streams a
+/// Where the audit database keeps the chunks of the Streams a
 /// kept audit record carries.
 pub(crate) const KEPT_AUDIT_STREAM: &str = "audit-stream-chunk";
 
-/// Where the administration database keeps each Stream a kept audit record
+/// Where the audit database keeps each Stream a kept audit record
 /// carries: the `audit_stream` table.
 pub(crate) const KEPT_AUDIT_STREAMS: &str = "audit_stream";
 

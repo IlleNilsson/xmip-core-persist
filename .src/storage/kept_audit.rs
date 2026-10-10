@@ -14,7 +14,7 @@ use super::facts::AuditFacts;
 use super::record::{Form, read_u32, read_u128, write_u32, write_u128};
 use crate::PersistError;
 
-/// Where the administration database keeps the chunks of each kept audit
+/// Where the audit database keeps the chunks of each kept audit
 /// record's body: the `audit_body_chunk` table.
 pub(crate) const KEPT_AUDIT_BODY: &str = "audit-body-chunk";
 

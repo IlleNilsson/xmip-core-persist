@@ -11,7 +11,7 @@ use super::record::{Form, read_byte, read_bytes, read_u128, write_byte, write_by
 use crate::PersistError;
 
 /// An audit record as its writer said it: written to the runtime database
-/// first and moved to the administration database by the audit keeper
+/// first and moved to the audit database by the audit keeper
 /// (ADR-0062, amendment 2026-10-01). The body is the audit capability's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuditEntry {
@@ -21,7 +21,7 @@ pub struct AuditEntry {
     /// bytes the keeper keeps beside the record (ADR-0070,
     /// `super::audited`); `None` for an act on none.
     pub audited: Option<Audited>,
-    /// What the administration database keeps of it in columns of their
+    /// What the audit database keeps of it in columns of their
     /// own once the keeper moved it there (`super::facts`).
     pub facts: AuditFacts,
 }

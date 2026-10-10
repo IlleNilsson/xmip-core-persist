@@ -114,7 +114,7 @@ impl Ask {
 
     /// The index it reads: its database, its table and its name.
     const fn index(&self) -> (Database, &'static str, &'static str) {
-        use Database::{Administration, Runtime};
+        use Database::{Administration, Audit, Runtime};
         match self {
             Self::JourneysInState { .. } => (Runtime, "journey", "journey_state"),
             Self::JourneysAtSendPort { .. } => (Runtime, "journey", "journey_send_port"),
@@ -126,13 +126,13 @@ impl Ask {
             Self::MessagesAfter { .. } => (Runtime, "message", "message_previous"),
             Self::Held { .. } => (Runtime, "held", "held_time"),
             Self::DeadMessages { .. } => (Runtime, "dead_message", "dead_message_time"),
-            Self::AuditOccurred { .. } => (Administration, "audit", "audit_occurred"),
-            Self::AuditOfJourney { .. } => (Administration, "audit", "audit_journey"),
-            Self::AuditOfMessage { .. } => (Administration, "audit", "audit_message"),
-            Self::AuditOfArtifact { .. } => (Administration, "audit", "audit_artifact"),
-            Self::AuditFailed { .. } => (Administration, "audit", "audit_failed"),
-            Self::AuditOfStream { .. } => (Administration, "audit_stream", "audit_stream_stream"),
-            Self::AuditChain { .. } => (Administration, "audit", "audit_chain"),
+            Self::AuditOccurred { .. } => (Audit, "audit", "audit_occurred"),
+            Self::AuditOfJourney { .. } => (Audit, "audit", "audit_journey"),
+            Self::AuditOfMessage { .. } => (Audit, "audit", "audit_message"),
+            Self::AuditOfArtifact { .. } => (Audit, "audit", "audit_artifact"),
+            Self::AuditFailed { .. } => (Audit, "audit", "audit_failed"),
+            Self::AuditOfStream { .. } => (Audit, "audit_stream", "audit_stream_stream"),
+            Self::AuditChain { .. } => (Audit, "audit", "audit_chain"),
             Self::AdministrationUpdated { .. } => {
                 (Administration, "administration", "administration_updated")
             }

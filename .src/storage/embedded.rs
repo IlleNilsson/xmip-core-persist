@@ -1,17 +1,19 @@
-//! The embedded Storage node: its runtime database and its administration
-//! database kept by the node itself, for a single machine and an edge
+//! The embedded Storage node: its runtime, administration and audit
+//! databases kept by the node itself, for a single machine and an edge
 //! site, with no failover (`deployment-model.md` section 7).
 //!
-//! Both are persist's [`EncryptedStore`], so Xmip encrypts its own files at
-//! rest itself, test nodes included (ADR-0063, amendment 2026-10-01). Which
-//! engines are beneath is the program's: `RocksDB` for the runtime database,
-//! always, and `SQLite` for the administration database (ADR-0015,
-//! amendment 2026-10-01) — on disk for a node, in memory for a Storage node
-//! under test. Every runtime write goes through one writer that shares one
-//! sync among the writes waiting ([`super::commit`]); an administration
-//! write is the administration engine's own, durable on return.
+//! All three are persist's [`EncryptedStore`], so Xmip encrypts its own
+//! files at rest itself, test nodes included (ADR-0063, amendment
+//! 2026-10-01). Which engines are beneath is the program's: `RocksDB` for
+//! the runtime database, always, and `SQLite` for the administration
+//! database (ADR-0015, amendment 2026-10-01) and for the audit database,
+//! its own store (ADR-0070, amendment 2026-10-10) — on disk for a node, in
+//! memory for a Storage node under test. Every runtime write goes through
+//! one writer that shares one sync among the writes waiting
+//! ([`super::commit`]); an administration or audit write is its engine's
+//! own, durable on return.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use secret::{KekName, KeyStore};
@@ -19,7 +21,7 @@ use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::XmipStorage;
 use super::audit_entry::AuditEntry;
-use super::columns::{ADMINISTRATION, Columns};
+use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::hand_on::HandOn;
@@ -36,48 +38,57 @@ use super::schema::Database;
 use super::stream::StreamRecord;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
+mod administration;
 mod keeper;
 
-/// The embedded Storage node's two databases, and the one writer to the
-/// first.
+/// The embedded Storage node's three databases, and the one writer to the
+/// first. The audit database is on the administration database's engine,
+/// a store of its own.
 pub struct Embedded<R: Engine + 'static, A: Engine> {
     runtime: Arc<EncryptedStore<R>>,
     administration: EncryptedStore<A>,
+    audit: EncryptedStore<A>,
     committer: Committer,
     /// Each database's searchable columns (`super::columns`): the
     /// runtime database's shared with its writer, the administration
-    /// database's stamped by `clock`.
+    /// and audit databases' stamped by `clock`.
     runtime_columns: Arc<Columns>,
     administration_columns: Columns,
+    audit_columns: Columns,
     clock: Arc<dyn Clock>,
     /// One writer to the administration database at a time in this
-    /// process — the audit keeper or an administration write — so a
-    /// record's index entries are replaced by the write that replaces it.
+    /// process, so a record's index entries are replaced by the write
+    /// that replaces it.
     administering: Mutex<()>,
+    /// One audit keeper at a time in this process: the audit database's
+    /// one writer.
+    keeping: Mutex<()>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// The node's databases over `runtime` and `administration`, each
-    /// sealed under its own data key wrapped by `keys` under `kek`.
+    /// The node's databases over `runtime`, `administration` and `audit`,
+    /// each sealed under its own data key wrapped by `keys` under `kek`.
     ///
     /// # Errors
     ///
-    /// Where either store does not open — its key does not unwrap, its
-    /// engine refuses — or the writer cannot start.
+    /// Where a store does not open — its key does not unwrap, its engine
+    /// refuses — or the writer cannot start.
     pub fn open(
         runtime: R,
         administration: A,
+        audit: A,
         keys: &dyn KeyStore,
         kek: &KekName,
     ) -> Result<Self, PersistError> {
         Self::over(
             EncryptedStore::open(runtime, keys, kek)?,
             EncryptedStore::open(administration, keys, kek)?,
+            EncryptedStore::open(audit, keys, kek)?,
             Arc::new(SystemClock),
         )
     }
 
-    /// The node over two stores already open, telling time by `clock`.
+    /// The node over three stores already open, telling time by `clock`.
     ///
     /// # Errors
     ///
@@ -85,6 +96,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     pub fn over(
         runtime: EncryptedStore<R>,
         administration: EncryptedStore<A>,
+        audit: EncryptedStore<A>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, PersistError> {
         let runtime = Arc::new(runtime);
@@ -97,11 +109,14 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         Ok(Self {
             runtime_columns,
             administration_columns: Columns::of(Database::Administration),
+            audit_columns: Columns::of(Database::Audit),
             runtime,
             administration,
+            audit,
             committer,
             clock,
             administering: Mutex::new(()),
+            keeping: Mutex::new(()),
         })
     }
 
@@ -116,6 +131,12 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     #[must_use]
     pub fn administration(&self) -> &EncryptedStore<A> {
         &self.administration
+    }
+
+    /// The audit database's store, likewise.
+    #[must_use]
+    pub fn audit(&self) -> &EncryptedStore<A> {
+        &self.audit
     }
 
     fn written(&self, op: Op) -> Result<(), PersistError> {
@@ -150,15 +171,18 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .transpose()
     }
 
-    /// `changes` written to the administration database as one write, each
-    /// searchable record stamped and its index entries with it; the caller
-    /// holds `administering`.
-    fn administered(&self, changes: Vec<RecordChange<'_>>) -> Result<(), PersistError> {
+    /// `changes` written to `store`, whose tables `columns` are, as one
+    /// write, each searchable record stamped and its index entries with
+    /// it; the caller holds the store's one lock, `administering` or
+    /// `keeping`.
+    fn indexed(
+        &self,
+        (store, columns): (&EncryptedStore<A>, &Columns),
+        changes: Vec<RecordChange<'_>>,
+    ) -> Result<(), PersistError> {
         let now = row::nanos(self.clock.unix_timestamp_nanos());
-        let (changes, entries) =
-            self.administration_columns
-                .written(&self.administration, changes, now)?;
-        self.administration.apply_indexed(&changes, &entries)
+        let (changes, entries) = columns.written(store, changes, now)?;
+        store.apply_indexed(&changes, &entries)
     }
 }
 
@@ -172,10 +196,6 @@ fn chunk_key(stream: StreamId, index: u32) -> Vec<u8> {
         &index.to_be_bytes(),
     ]
     .concat()
-}
-
-fn administration_kind(kind: AdministrationKind) -> String {
-    format!("{ADMINISTRATION}{}", kind.word())
 }
 
 impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
@@ -329,16 +349,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
-        let _one = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let kind = administration_kind(record.kind);
-        self.administered(vec![(
-            &kind,
-            record.id.to_be_bytes().to_vec(),
-            Some(record.bytes()),
-        )])
+        self.administered(record.kind, record.id, Some(record.bytes()))
     }
 
     fn read_administration(
@@ -346,10 +357,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         kind: AdministrationKind,
         id: u128,
     ) -> Result<Option<AdministrationRecord>, PersistError> {
-        self.administration
-            .get(&administration_kind(kind), &id.to_be_bytes())?
-            .map(|bytes| AdministrationRecord::from_bytes(&bytes))
-            .transpose()
+        self.administration_record(kind, id)
     }
 
     fn remove_administration(
@@ -357,12 +365,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         kind: AdministrationKind,
         id: u128,
     ) -> Result<(), PersistError> {
-        let _one = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let kind = administration_kind(kind);
-        self.administered(vec![(&kind, id.to_be_bytes().to_vec(), None)])
+        self.administered(kind, id, None)
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
@@ -381,6 +384,10 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
                 plan.range,
                 asked,
             ),
+            Database::Audit => {
+                self.audit_columns
+                    .find(&self.audit, at, &plan.equal, plan.range, asked)
+            }
         }
     }
 }
@@ -424,6 +431,7 @@ mod tests {
         let node = Embedded::over(
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("runtime"),
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
+            EncryptedStore::open(Memory::default(), &keys, &kek).expect("audit"),
             Arc::clone(&clock) as Arc<dyn Clock>,
         )
         .expect("node");
@@ -1176,7 +1184,7 @@ mod tests {
             streams: Vec::new(),
             facts: AuditFacts::default(),
         };
-        node.administration()
+        node.audit()
             .put_new(
                 KEPT_AUDIT,
                 &second.id.value().to_be_bytes(),
@@ -1199,6 +1207,12 @@ mod tests {
                 .get(AUDIT, &number.to_be_bytes())
                 .expect("read");
             assert_eq!(left, None, "record {number} left the runtime database");
+        }
+        for entry in &entries {
+            let id = entry.id.value().to_be_bytes();
+            assert!(node.audit().get(KEPT_AUDIT, &id).expect("read").is_some());
+            let elsewhere = node.administration().get(KEPT_AUDIT, &id).expect("read");
+            assert_eq!(elsewhere, None, "nothing audit in administration");
         }
     }
 }

@@ -7,8 +7,8 @@
 //! record is found by is a keyed hash, so an engine's files hold neither
 //! what is stored nor what it is stored under. The engines are technologies
 //! mounted beside this source — `rocksdb`, the runtime database, and
-//! `sqlite`, the administration database (ADR-0015, amendments 2026-09-25
-//! and 2026-10-01) — and store ciphertext only. The keys come from the key
+//! `sqlite`, the administration and the audit databases (ADR-0015,
+//! amendments 2026-09-25 and 2026-10-01) — and store ciphertext only. The keys come from the key
 //! home, `xmip-core-secret`.
 //!
 //! [`storage`] is Xmip Storage: its operations, once (`XmipStorage`), the

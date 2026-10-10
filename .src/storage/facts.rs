@@ -129,7 +129,7 @@ pub struct AuditFacts {
     pub body_length: u64,
     pub body_chunks: u32,
     pub body_digest: [u8; DIGEST],
-    /// When the audit keeper kept it in the administration database:
+    /// When the audit keeper kept it in the audit database:
     /// Xmip Storage's to set.
     pub kept_unix_nanos: u64,
 }
