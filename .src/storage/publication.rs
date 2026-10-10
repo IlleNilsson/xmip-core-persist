@@ -29,13 +29,13 @@
 
 use codec::cursor::Cursor;
 
+use super::audit_entry::AuditEntry;
 use super::claim;
 use super::commit::{Batch, JOURNEY, MESSAGE, PUBLICATION};
 use super::dead::{self, DeadMessage};
 use super::hold::{self, Hold};
 use super::record::{
-    AuditEntry, Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u64, write_byte,
-    write_u64,
+    Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u64, write_byte, write_u64,
 };
 use crate::{EncryptedStore, Engine, PersistError};
 

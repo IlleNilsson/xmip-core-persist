@@ -13,10 +13,9 @@
 use codec::cursor::Cursor;
 use codec::field;
 use codec::writer::ByteWriter;
-use xcore::{AuditId, JourneyId, MessageId, StreamId};
+use xcore::{JourneyId, MessageId, StreamId};
 
-use super::audited::Audited;
-use super::facts::{AuditFacts, JourneyFacts, MessageFacts};
+use super::facts::{JourneyFacts, MessageFacts};
 use crate::PersistError;
 
 /// A piece of a Stream: a Stream is written in chunks, never whole in
@@ -62,22 +61,6 @@ pub struct Claim {
     pub token: u128,
     /// When it lapses, in nanoseconds since the Unix epoch.
     pub until_unix_nanos: i128,
-}
-
-/// An audit record as its writer said it: written to the runtime database
-/// first and moved to the administration database by the audit keeper
-/// (ADR-0062, amendment 2026-10-01). The body is the audit capability's.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuditEntry {
-    pub id: AuditId,
-    pub body: Vec<u8>,
-    /// The Message an audited act was on, in full, and its Stream, whose
-    /// bytes the keeper keeps beside the record (ADR-0070,
-    /// `super::audited`); `None` for an act on none.
-    pub audited: Option<Audited>,
-    /// What the administration database keeps of it in columns of their
-    /// own once the keeper moved it there (`super::facts`).
-    pub facts: AuditFacts,
 }
 
 /// What the administration database keeps — what must be shared and kept
@@ -342,30 +325,6 @@ impl<T: Form> Form for Vec<T> {
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         let count = read_u32(cursor)?;
         (0..count).map(|_| T::read(cursor)).collect()
-    }
-}
-
-impl Form for AuditEntry {
-    fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.id.value());
-        write_bytes(out, &self.body);
-        write_byte(out, u8::from(self.audited.is_some()));
-        if let Some(audited) = &self.audited {
-            audited.write(out);
-        }
-        self.facts.write(out);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(Self {
-            id: AuditId::new(read_u128(cursor)?),
-            body: read_bytes(cursor)?,
-            audited: match read_byte(cursor)? {
-                0 => None,
-                _ => Some(Audited::read(cursor)?),
-            },
-            facts: AuditFacts::read(cursor)?,
-        })
     }
 }
 

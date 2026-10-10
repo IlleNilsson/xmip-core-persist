@@ -7,14 +7,15 @@ use std::time::Duration;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::super::XmipStorage;
+use super::super::audit_entry::AuditEntry;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
 use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
+use super::super::kept_audit::KeptAudit;
 use super::super::publication::Publication;
 use super::super::query::Query;
 use super::super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, JourneyRecord, MessageRecord,
-    StreamChunk,
+    AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::super::stream::StreamRecord;
 use super::super::wire::{Answer, Request};
@@ -215,9 +216,9 @@ impl XmipStorage for StorageClient {
         expected(self.ask(&Request::WriteAudit(entry.clone()))?, done)
     }
 
-    fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
+    fn keep_audit(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
         expected(
-            self.ask(&Request::KeepAudit(most))?,
+            self.ask(&Request::KeepAudit(most, chunk as u64))?,
             |answer| match answer {
                 Answer::Count(count) => Ok(count),
                 other => Err(other),
@@ -225,7 +226,7 @@ impl XmipStorage for StorageClient {
         )
     }
 
-    fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+    fn read_kept_audit(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError> {
         expected(
             self.ask(&Request::ReadKeptAudit(id))?,
             |answer| match answer {
@@ -252,13 +253,13 @@ impl XmipStorage for StorageClient {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
-        stream: StreamId,
+        stream: Option<StreamId>,
         index: u32,
-    ) -> Result<Option<StreamChunk>, PersistError> {
+    ) -> Result<Option<Vec<u8>>, PersistError> {
         expected(
             self.ask(&Request::ReadKeptAuditChunk(id, stream, index))?,
             |answer| match answer {
-                Answer::Chunk(chunk) => Ok(chunk),
+                Answer::Bytes(bytes) => Ok(bytes),
                 other => Err(other),
             },
         )

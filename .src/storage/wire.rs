@@ -16,21 +16,23 @@ use std::time::Duration;
 use codec::cursor::Cursor;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
-use super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::audit_entry::AuditEntry;
+use super::dead::Replay;
 use super::hand_on::HandOn;
-use super::hold::HeldQueue;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
-    MessageRecord, StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
-    write_byte, write_text, write_u32, write_u64, write_u128,
+    AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
+    StreamChunk, malformed, read_byte, read_u32, read_u64, read_u128, write_byte, write_u32,
+    write_u64, write_u128,
 };
 use super::stream::StreamRecord;
 use crate::PersistError;
 
+mod answer;
 mod frame;
 
+pub(crate) use answer::Answer;
 pub(crate) use frame::{receive, send};
 
 /// One operation asked of Xmip Storage, with its fields.
@@ -47,7 +49,7 @@ pub(crate) enum Request {
     Release(Claim),
     HandOn(HandOn),
     WriteAudit(AuditEntry),
-    KeepAudit(u32),
+    KeepAudit(u32, u64),
     ReadKeptAudit(AuditId),
     WriteAdministration(AdministrationRecord),
     ReadAdministration(AdministrationKind, u128),
@@ -60,51 +62,8 @@ pub(crate) enum Request {
     Query(Query),
     WriteStream(StreamChunk, StreamRecord),
     ReadStream(StreamId),
-    ReadKeptAuditChunk(AuditId, StreamId, u32),
+    ReadKeptAuditChunk(AuditId, Option<StreamId>, u32),
     ReadKeptAuditStream(AuditId, StreamId),
-}
-
-/// What an operation answered.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Answer {
-    Done,
-    Chunk(Option<StreamChunk>),
-    Message(Option<Box<MessageRecord>>),
-    Journey(Option<Box<JourneyRecord>>),
-    Claim(Option<Claim>),
-    /// The claims a Publication's node holds.
-    Claims(Vec<Claim>),
-    Yes(bool),
-    Count(u32),
-    Audit(Option<Box<AuditEntry>>),
-    Administration(Option<AdministrationRecord>),
-    Held(HeldQueue),
-    DeadQueue(DeadQueue),
-    Dead(DeadEntry),
-    Replayed(Replayed),
-    /// A record failed its authentication tag: the scope and the reason,
-    /// for the caller to audit (ADR-0063, Consequences).
-    Refused(String, String),
-    /// The operation failed, in words.
-    Failed(String),
-    /// The identifiers of the records a query found.
-    Records(Vec<u128>),
-    /// A Stream's own record, or none.
-    Stream(Option<StreamRecord>),
-}
-
-fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
-    write_byte(out, u8::from(value.is_some()));
-    if let Some(value) = value {
-        value.write(out);
-    }
-}
-
-fn read_optional<T: Form>(cursor: &mut Cursor<'_>) -> Result<Option<T>, PersistError> {
-    match read_byte(cursor)? {
-        0 => Ok(None),
-        _ => T::read(cursor).map(Some),
-    }
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -128,14 +87,17 @@ impl Request {
                 write_byte(out, 24);
                 write_u128(out, id.value());
             }
-            Self::ReadKeptAuditStream(id, stream) | Self::ReadKeptAuditChunk(id, stream, _) => {
-                let chunk = matches!(self, Self::ReadKeptAuditChunk(..));
-                write_byte(out, if chunk { 25 } else { 26 });
+            Self::ReadKeptAuditChunk(id, stream, index) => {
+                write_byte(out, 25);
+                write_u128(out, id.value());
+                write_byte(out, u8::from(stream.is_some()));
+                write_u128(out, stream.map_or(0, StreamId::value));
+                write_u32(out, *index);
+            }
+            Self::ReadKeptAuditStream(id, stream) => {
+                write_byte(out, 26);
                 write_u128(out, id.value());
                 write_u128(out, stream.value());
-                if let Self::ReadKeptAuditChunk(.., index) = self {
-                    write_u32(out, *index);
-                }
             }
             _ => {}
         }
@@ -200,9 +162,10 @@ impl Form for Request {
                 write_byte(out, 11);
                 entry.write(out);
             }
-            Self::KeepAudit(most) => {
+            Self::KeepAudit(most, chunk) => {
                 write_byte(out, 12);
                 write_u32(out, *most);
+                write_u64(out, *chunk);
             }
             Self::ReadKeptAudit(id) => {
                 write_byte(out, 13);
@@ -264,7 +227,7 @@ impl Form for Request {
             9 => Self::Release(Claim::read(cursor)?),
             10 => Self::HandOn(HandOn::read(cursor)?),
             11 => Self::WriteAudit(AuditEntry::read(cursor)?),
-            12 => Self::KeepAudit(read_u32(cursor)?),
+            12 => Self::KeepAudit(read_u32(cursor)?, read_u64(cursor)?),
             13 => Self::ReadKeptAudit(AuditId::new(read_u128(cursor)?)),
             14 => Self::WriteAdministration(AdministrationRecord::read(cursor)?),
             15 => Self::ReadAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
@@ -277,123 +240,17 @@ impl Form for Request {
             22 => Self::Query(Query::read(cursor)?),
             23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
             24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
-            number @ (25 | 26) => {
-                let (id, stream) = (read_u128(cursor)?, read_u128(cursor)?);
-                let (id, stream) = (AuditId::new(id), StreamId::new(stream));
-                match number {
-                    25 => Self::ReadKeptAuditChunk(id, stream, read_u32(cursor)?),
-                    _ => Self::ReadKeptAuditStream(id, stream),
-                }
+            25 => {
+                let id = AuditId::new(read_u128(cursor)?);
+                let carried = read_byte(cursor)? != 0;
+                let stream = StreamId::new(read_u128(cursor)?);
+                Self::ReadKeptAuditChunk(id, carried.then_some(stream), read_u32(cursor)?)
+            }
+            26 => {
+                let id = AuditId::new(read_u128(cursor)?);
+                Self::ReadKeptAuditStream(id, StreamId::new(read_u128(cursor)?))
             }
             other => return Err(malformed(format!("no operation is numbered {other}"))),
-        })
-    }
-}
-
-impl Form for Answer {
-    fn write(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Done => write_byte(out, 0),
-            Self::Chunk(chunk) => {
-                write_byte(out, 1);
-                write_optional(out, chunk.as_ref());
-            }
-            Self::Message(record) => {
-                write_byte(out, 2);
-                write_optional(out, record.as_ref());
-            }
-            Self::Journey(record) => {
-                write_byte(out, 3);
-                write_optional(out, record.as_ref());
-            }
-            Self::Claim(claim) => {
-                write_byte(out, 4);
-                write_optional(out, claim.as_ref());
-            }
-            Self::Yes(yes) => {
-                write_byte(out, 5);
-                write_byte(out, u8::from(*yes));
-            }
-            Self::Count(count) => {
-                write_byte(out, 6);
-                write_u32(out, *count);
-            }
-            Self::Audit(entry) => {
-                write_byte(out, 7);
-                write_optional(out, entry.as_ref());
-            }
-            Self::Administration(record) => {
-                write_byte(out, 8);
-                write_optional(out, record.as_ref());
-            }
-            Self::Refused(scope, reason) => {
-                write_byte(out, 9);
-                write_text(out, scope);
-                write_text(out, reason);
-            }
-            Self::Failed(reason) => {
-                write_byte(out, 10);
-                write_text(out, reason);
-            }
-            Self::Held(queue) => {
-                write_byte(out, 11);
-                queue.write(out);
-            }
-            Self::DeadQueue(queue) => {
-                write_byte(out, 12);
-                queue.write(out);
-            }
-            Self::Dead(entry) => {
-                write_byte(out, 13);
-                entry.write(out);
-            }
-            Self::Replayed(replayed) => {
-                write_byte(out, 14);
-                replayed.write(out);
-            }
-            Self::Claims(held) => {
-                write_byte(out, 15);
-                held.write(out);
-            }
-            Self::Records(records) => {
-                write_byte(out, 16);
-                write_u32(out, u32::try_from(records.len()).unwrap_or(u32::MAX));
-                for record in records {
-                    write_u128(out, *record);
-                }
-            }
-            Self::Stream(stream) => {
-                write_byte(out, 17);
-                write_optional(out, stream.as_ref());
-            }
-        }
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(match read_byte(cursor)? {
-            0 => Self::Done,
-            1 => Self::Chunk(read_optional(cursor)?),
-            2 => Self::Message(read_optional(cursor)?),
-            3 => Self::Journey(read_optional(cursor)?),
-            4 => Self::Claim(read_optional(cursor)?),
-            5 => Self::Yes(read_byte(cursor)? != 0),
-            6 => Self::Count(read_u32(cursor)?),
-            7 => Self::Audit(read_optional(cursor)?),
-            8 => Self::Administration(read_optional(cursor)?),
-            9 => Self::Refused(read_text(cursor)?, read_text(cursor)?),
-            10 => Self::Failed(read_text(cursor)?),
-            11 => Self::Held(HeldQueue::read(cursor)?),
-            12 => Self::DeadQueue(DeadQueue::read(cursor)?),
-            13 => Self::Dead(DeadEntry::read(cursor)?),
-            14 => Self::Replayed(Replayed::read(cursor)?),
-            15 => Self::Claims(Vec::read(cursor)?),
-            16 => Self::Records(
-                (0..read_u32(cursor)?)
-                    .map(|_| read_u128(cursor))
-                    .collect::<Result<_, _>>()?,
-            ),
-            17 => Self::Stream(read_optional(cursor)?),
-            other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }
 }
@@ -402,6 +259,7 @@ impl Form for Answer {
 mod tests {
     use super::*;
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
+    use crate::storage::{DeadEntry, DeadQueue, HeldQueue, Replayed};
 
     #[test]
     fn a_request_and_an_answer_cross_a_frame_as_they_were() {
@@ -416,7 +274,7 @@ mod tests {
             Request::renew(vec![claim.clone(), claim.clone()], Duration::from_secs(30)),
             Request::Release(claim.clone()),
             Request::ReadChunk(StreamId::new(1), 2),
-            Request::KeepAudit(64),
+            Request::KeepAudit(64, 4096),
             Request::ReadHeld(7, 2, 64),
             Request::HandOn(HandOn {
                 claim: claim.clone(),
@@ -522,7 +380,8 @@ mod tests {
         for request in [
             Request::WriteStream(last, record),
             Request::ReadStream(StreamId::new(1)),
-            Request::ReadKeptAuditChunk(AuditId::new(2), StreamId::new(1), 3),
+            Request::ReadKeptAuditChunk(AuditId::new(2), Some(StreamId::new(1)), 3),
+            Request::ReadKeptAuditChunk(AuditId::new(2), None, 3),
             Request::ReadKeptAuditStream(AuditId::new(2), StreamId::new(1)),
             Request::WriteAudit(AuditEntry {
                 id: AuditId::new(2),
@@ -547,7 +406,7 @@ mod tests {
     #[test]
     fn a_frame_cut_short_or_numbered_for_nothing_is_refused() {
         let mut wire = Vec::new();
-        send(&mut wire, &Request::KeepAudit(1)).expect("sent");
+        send(&mut wire, &Request::KeepAudit(1, 4096)).expect("sent");
         let cut = &wire[..wire.len() - 1];
         assert!(receive::<Request>(&mut &cut[..]).is_err());
         let nothing = [0, 0, 0, 1, 99];

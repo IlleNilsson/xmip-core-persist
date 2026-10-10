@@ -212,7 +212,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
         Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
         Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
-        Request::KeepAudit(most) => storage.keep_audit(most).map(Answer::Count),
+        Request::KeepAudit(most, chunk) => storage
+            .keep_audit(most, usize::try_from(chunk).unwrap_or(usize::MAX))
+            .map(Answer::Count),
         Request::ReadKeptAudit(id) => storage
             .read_kept_audit(id)
             .map(|entry| Answer::Audit(entry.map(Box::new))),
@@ -246,7 +248,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
             .map(Answer::Stream),
         Request::ReadKeptAuditChunk(id, stream, index) => storage
             .read_kept_audit_chunk(id, stream, index)
-            .map(Answer::Chunk),
+            .map(Answer::Bytes),
     };
     answered.unwrap_or_else(|error| match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),

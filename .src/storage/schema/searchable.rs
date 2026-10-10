@@ -128,7 +128,6 @@ pub(super) const DEAD_MESSAGE_INDEXES: &[Index] =
 
 pub(super) const AUDIT: &[Column] = &[
     column("id", Kind::Identifier),
-    column("body", Kind::Bytes),
     column("occurred_at", Kind::Time),
     column("kept_at", Kind::Time),
     column("action", Kind::Text),
@@ -149,8 +148,18 @@ pub(super) const AUDIT: &[Column] = &[
     maybe("artifact_version", Kind::Text),
     maybe("node", Kind::Text),
     maybe("cluster", Kind::Text),
+    column("writer", Kind::Text),
+    column("position", Kind::Number),
+    column("previous_digest", Kind::Bytes),
+    column("digest", Kind::Bytes),
+    column("body_length", Kind::Number),
+    column("body_chunks", Kind::Count),
+    column("body_digest", Kind::Bytes),
 ];
 
+/// By when; by the Journey, the Message, the artifact; the failures; and
+/// each writer's audit chain in its order, for the walk that verifies it
+/// (ADR-0070 clause 5).
 pub(super) const AUDIT_INDEXES: &[Index] = &[
     index(11, "audit_occurred", &["occurred_at"]),
     index(12, "audit_journey", &["journey"]),
@@ -160,6 +169,7 @@ pub(super) const AUDIT_INDEXES: &[Index] = &[
         only: Some("failed"),
         ..index(15, "audit_failed", &["failed", "occurred_at"])
     },
+    index(19, "audit_chain", &["writer", "position"]),
 ];
 
 pub(super) const AUDIT_STREAM: &[Column] = &[

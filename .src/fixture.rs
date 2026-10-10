@@ -276,3 +276,45 @@ fn refuses_another_key<E: Engine>(open: &impl Fn() -> E) {
         "another key must be refused"
     );
 }
+
+/// The kept audit record `id` read back whole, as a test compares it with
+/// what was written: its row's fields and its body, read from its chunks
+/// and held to their length and digest (`ChunkReader::audit_body`), its
+/// place in its writer's chain, its body's length, chunks and digest and
+/// when it was kept — the keeper's to set — left as none, as the writer
+/// wrote it.
+///
+/// # Panics
+///
+/// Where it cannot be read, or its body is not the kept one.
+#[must_use]
+pub fn kept_as_written(
+    storage: &dyn crate::storage::XmipStorage,
+    id: xcore::AuditId,
+) -> Option<crate::storage::AuditEntry> {
+    use crate::storage::{AuditBody, AuditEntry, AuditFacts, ChunkReader, Form};
+    use std::io::Read;
+    let kept = storage.read_kept_audit(id).expect("read")?;
+    let mut body = Vec::new();
+    ChunkReader::audit_body(storage, id)
+        .expect("read")
+        .expect("its body")
+        .read_to_end(&mut body)
+        .expect("its body as kept");
+    let AuditBody { body, audited } = AuditBody::from_bytes(&body).expect("a body");
+    Some(AuditEntry {
+        id,
+        body,
+        audited,
+        facts: AuditFacts {
+            position: 0,
+            previous: [0; crate::storage::DIGEST],
+            digest: [0; crate::storage::DIGEST],
+            body_length: 0,
+            body_chunks: 0,
+            body_digest: [0; crate::storage::DIGEST],
+            kept_unix_nanos: 0,
+            ..kept.facts
+        },
+    })
+}

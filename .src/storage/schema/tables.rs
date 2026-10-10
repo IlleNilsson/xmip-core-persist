@@ -17,7 +17,7 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 16] = [
+pub const TABLES: [Table; 18] = [
     Table {
         database: Database::Runtime,
         name: "stream",
@@ -170,11 +170,41 @@ pub const TABLES: [Table; 16] = [
         database: Database::Administration,
         name: "audit",
         keeps: "audit records kept over time, each once, every single value of each in a \
-                column of its own",
+                column of its own, each in its writer's audit chain: its number there, the \
+                SHA-256 digest of the record before it and its own",
         columns: AUDIT,
         key: &["id"],
         unique: &[],
         indexes: AUDIT_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "audit_chain_head",
+        keeps: "where each writer's audit chain stands: the number of its last kept record \
+                and that record's SHA-256 digest, written with it by the audit keeper",
+        columns: &[
+            column("writer", Kind::Text),
+            column("position", Kind::Number),
+            column("digest", Kind::Bytes),
+        ],
+        key: &["writer"],
+        unique: &[],
+        indexes: &[],
+    },
+    Table {
+        database: Database::Administration,
+        name: "audit_body_chunk",
+        keeps: "the body of each kept audit record, its record and the Message it carries, \
+                in chunks by the record's identifier and their number, as a Stream is kept, \
+                written with it by the audit keeper",
+        columns: &[
+            column("audit", Kind::Identifier),
+            column("chunk", Kind::Count),
+            column("bytes", Kind::Bytes),
+        ],
+        key: &["audit", "chunk"],
+        unique: &[],
+        indexes: &[],
     },
     Table {
         database: Database::Administration,

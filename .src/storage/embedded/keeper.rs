@@ -4,25 +4,36 @@
 //! of an act on a Message with the bytes of each of its Streams kept beside
 //! it, a chunk at a time, and each Stream's row of the `audit_stream` table
 //! — its length, its chunks, its digest — in the record's own write
-//! (ADR-0070, `super::super::audited`).
+//! (ADR-0070, `super::super::audited`) — and its body, its record and the
+//! Message it carries, in chunks of its own beside its row, as a Stream is
+//! kept (ADR-0070, amendment 2026-10-10; `super::super::kept_audit`).
 
 use std::sync::PoisonError;
 
 use xcore::{AuditId, StreamId};
 
+use super::super::audit_entry::AuditEntry;
 use super::super::audited::{
     KEPT_AUDIT_STREAM, KEPT_AUDIT_STREAMS, KeptStream, chunk_key as kept_chunk_key, stream_key,
 };
+use super::super::chain::{self, carried_streams};
 use super::super::columns::KEPT_AUDIT;
 use super::super::commit::{AUDIT, CHUNK, KEPT, NEXT, Op, STREAM, sequence};
-use super::super::record::{AuditEntry, Form, StreamChunk, malformed};
-use super::super::stream::StreamRecord;
+use super::super::facts::AuditFacts;
+use super::super::kept_audit::{KEPT_AUDIT_BODY, KeptAudit, body_key};
+use super::super::record::{Form, StreamChunk, malformed};
+use super::super::stream::{StreamDigest, StreamRecord};
 use super::{Embedded, chunk_key};
 use crate::{Engine, PersistError, RecordChange};
 
+/// The `audit_stream` rows of the Streams a record carries, and their
+/// records.
+type Kept = (Vec<RecordChange<'static>>, Vec<StreamRecord>);
+
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// Move up to `most` audit records, oldest first: `keep_audit`.
-    pub(super) fn keep(&self, most: u32) -> Result<u32, PersistError> {
+    /// Move up to `most` audit records, oldest first, each body in chunks
+    /// of `chunk` bytes: `keep_audit`.
+    pub(super) fn keep(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
         let _keeping = self
             .administering
             .lock()
@@ -37,10 +48,19 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             // Kept by its identifier, once, with its index entries: a
             // record already there — this move cut short before, or the
             // same record written twice — is not kept again.
+            // Chained as it is kept, after the last record of its writer's
+            // chain, the chain's head moved in the same write (`chain`).
             let id = entry.id.value().to_be_bytes();
             if self.administration.get(KEPT_AUDIT, &id)?.is_none() {
-                let mut changes = self.streams_kept(&entry)?;
-                changes.push((KEPT_AUDIT, id.to_vec(), Some(entry.bytes())));
+                let (mut changes, streams) = self.streams_kept(&entry)?;
+                let mut kept = KeptAudit {
+                    id: entry.id,
+                    streams: carried_streams(&entry),
+                    facts: entry.facts.clone(),
+                };
+                self.body_kept(&entry, chunk, &mut kept.facts)?;
+                changes.push(chain::link(&self.administration, &mut kept, &streams)?);
+                changes.push((KEPT_AUDIT, id.to_vec(), Some(kept.bytes())));
                 self.administered(changes)?;
             }
             if !self.yes(Op::Kept(number))? {
@@ -55,26 +75,19 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     /// administration database a chunk at a time, each unsynced — the
     /// record's own write, synced, after them makes them durable with it —
     /// and its `audit_stream` row, to go in that write: Xmip Storage's to
-    /// set, from the Stream's own record.
-    fn streams_kept(&self, entry: &AuditEntry) -> Result<Vec<RecordChange<'static>>, PersistError> {
-        let Some(audited) = &entry.audited else {
-            return Ok(Vec::new());
-        };
-        let mut rows = Vec::new();
-        let mut kept: Vec<StreamId> = Vec::new();
-        for stream in audited.streams.iter().copied() {
-            if kept.contains(&stream) {
-                continue;
-            }
-            kept.push(stream);
+    /// set, from the Stream's own record — with those records, in order.
+    fn streams_kept(&self, entry: &AuditEntry) -> Result<Kept, PersistError> {
+        let (mut rows, mut records) = (Vec::new(), Vec::new());
+        for stream in carried_streams(entry) {
             let row = KeptStream {
                 audit: entry.id,
                 stream: self.stream_kept(entry.id, stream)?,
             };
             let key = stream_key(entry.id, stream);
             rows.push((KEPT_AUDIT_STREAMS, key, Some(row.bytes())));
+            records.push(row.stream);
         }
-        Ok(rows)
+        Ok((rows, records))
     }
 
     /// The Stream `stream` the audit record `id` carries, its chunks kept
@@ -99,12 +112,48 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         Ok(record)
     }
 
+    /// The body of `entry` kept beside it in chunks of `chunk` bytes, each
+    /// unsynced as a Stream's copy is — the record's own write, synced,
+    /// makes them durable with it — and its length, its chunks and the
+    /// SHA-256 of its bytes, taken as they pass, set in `facts`.
+    fn body_kept(
+        &self,
+        entry: &AuditEntry,
+        chunk: usize,
+        facts: &mut AuditFacts,
+    ) -> Result<(), PersistError> {
+        let body = entry.body_bytes();
+        let mut digest = StreamDigest::default();
+        let mut index = 0;
+        for piece in body.chunks(chunk.max(1)) {
+            digest.update(piece);
+            let key = body_key(entry.id, index);
+            self.administration
+                .apply_deferred(&[(KEPT_AUDIT_BODY, key, Some(piece.to_vec()))])?;
+            index += 1;
+        }
+        facts.body_length = body.len() as u64;
+        facts.body_chunks = index;
+        facts.body_digest = digest.finish();
+        Ok(())
+    }
+
     /// An audit record the keeper moved: `read_kept_audit`.
-    pub(super) fn kept(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+    pub(super) fn kept(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError> {
         self.administration
             .get(KEPT_AUDIT, &id.value().to_be_bytes())?
-            .map(|bytes| AuditEntry::from_bytes(&bytes))
+            .map(|bytes| KeptAudit::from_bytes(&bytes))
             .transpose()
+    }
+
+    /// A chunk of a kept record's body: `read_kept_audit_body_chunk`.
+    pub(super) fn kept_body_chunk(
+        &self,
+        id: AuditId,
+        index: u32,
+    ) -> Result<Option<Vec<u8>>, PersistError> {
+        self.administration
+            .get(KEPT_AUDIT_BODY, &body_key(id, index))
     }
 
     /// A Stream a kept record carries: `read_kept_audit_stream`.
@@ -201,8 +250,8 @@ mod tests {
             facts: AuditFacts::default(),
         };
         node.write_audit(&entry).expect("written");
-        node.keep_audit(10).expect("kept");
-        node.read_kept_audit(entry.id).expect("read").expect("kept")
+        node.keep_audit(10, 4096).expect("kept");
+        crate::fixture::kept_as_written(node, entry.id).expect("kept")
     }
 
     fn content(length: usize, seed: usize) -> Vec<u8> {
@@ -245,9 +294,9 @@ mod tests {
             assert_eq!(row.expect("read"), ledger, "its own row, in the clear");
             assert_eq!(verified(&node, &kept, stream), *bytes);
         }
-        let third = node.read_kept_audit_chunk(kept.id, StreamId::new(7), 2);
-        assert_eq!(third.expect("read").expect("there").bytes, first[8192..]);
-        let past = node.read_kept_audit_chunk(kept.id, StreamId::new(8), 2);
+        let third = node.read_kept_audit_chunk(kept.id, Some(StreamId::new(7)), 2);
+        assert_eq!(third.expect("read").expect("there"), first[8192..]);
+        let past = node.read_kept_audit_chunk(kept.id, Some(StreamId::new(8)), 2);
         assert_eq!(past.expect("read"), None);
     }
 
@@ -275,7 +324,7 @@ mod tests {
         let row = node.read_kept_audit_stream(kept.id, StreamId::new(8));
         let row = row.expect("read").expect("its row");
         assert_eq!(digest.finish(), row.digest);
-        let last = node.read_kept_audit_chunk(kept.id, StreamId::new(8), 40);
+        let last = node.read_kept_audit_chunk(kept.id, Some(StreamId::new(8)), 40);
         assert!(last.expect("read").is_some(), "41 chunks of their own");
     }
 
@@ -323,8 +372,52 @@ mod tests {
             facts: AuditFacts::default(),
         };
         node.write_audit(&entry).expect("written");
-        let failed = node.keep_audit(10).expect_err("no Stream");
+        let failed = node.keep_audit(10, 4096).expect_err("no Stream");
         assert!(failed.to_string().contains("holds no record"), "{failed}");
         assert_eq!(node.read_kept_audit(AuditId::new(5)).expect("read"), None);
+    }
+
+    #[test]
+    fn a_kept_body_is_in_chunks_of_its_own_read_one_at_a_time_and_held_to_its_digest() {
+        let node = node();
+        let entry = AuditEntry {
+            id: AuditId::new(6),
+            body: content(700, 3),
+            audited: Some(Audited {
+                message: content(900, 5),
+                streams: Vec::new(),
+            }),
+            facts: AuditFacts::default(),
+        };
+        node.write_audit(&entry).expect("written");
+        assert_eq!(node.keep_audit(10, 256).expect("kept"), 1);
+
+        let row = node.read_kept_audit(entry.id).expect("read").expect("kept");
+        let length = entry.body_bytes().len() as u64;
+        assert_eq!(row.facts.body_length, length);
+        assert_eq!(u64::from(row.facts.body_chunks), length.div_ceil(256));
+        let whole = crate::fixture::kept_as_written(&node, entry.id);
+        assert_eq!(
+            whole,
+            Some(entry.clone()),
+            "the body read back from its chunks"
+        );
+
+        let key = body_key(entry.id, 2);
+        let mut changed = node
+            .kept_body_chunk(entry.id, 2)
+            .expect("read")
+            .expect("there");
+        changed[0] ^= 1;
+        node.administration()
+            .put(KEPT_AUDIT_BODY, &key, &changed)
+            .expect("changed");
+        let mut read = Vec::new();
+        let refused = ChunkReader::audit_body(&node, entry.id)
+            .expect("read")
+            .expect("kept")
+            .read_to_end(&mut read)
+            .expect_err("not the audited body");
+        assert!(refused.to_string().starts_with("REFUSED: "), "{refused}");
     }
 }

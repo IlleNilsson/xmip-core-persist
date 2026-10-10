@@ -46,7 +46,9 @@
 //! so no TLS — and every other node calls a [`StorageClient`]; both are the
 //! same trait, so nothing above them knows which it has.
 
+mod audit_entry;
 mod audited;
+mod chain;
 mod claim;
 pub mod client;
 mod columns;
@@ -57,6 +59,7 @@ mod embedded;
 mod facts;
 mod hand_on;
 mod hold;
+mod kept_audit;
 mod publication;
 mod query;
 mod queue;
@@ -67,7 +70,9 @@ mod server;
 mod stream;
 mod wire;
 
+pub use audit_entry::{AuditBody, AuditEntry};
 pub use audited::{Audited, KeptStream};
+pub use chain::{canonical_form, carried_streams, chain_digest};
 pub use client::StorageClient;
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
@@ -76,11 +81,12 @@ pub use embedded::Embedded;
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use hand_on::HandOn;
 pub use hold::{Held, HeldQueue, Hold, named};
+pub use kept_audit::KeptAudit;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
 pub use record::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Form, JourneyRecord,
-    MessageRecord, StreamChunk,
+    AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
+    StreamChunk,
 };
 pub use server::{ALPN, StorageServer};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
@@ -286,25 +292,24 @@ pub trait XmipStorage: Send + Sync {
     /// system's log then (ADR-0062 clause 3).
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError>;
 
-    /// The audit keeper: move up to `most` audit records, oldest first,
-    /// from the runtime database to the administration database. Each is
-    /// kept exactly once — a move cut short is finished by the next, and a
-    /// record written twice is kept once, by its identifier — and a record
-    /// that carries a Message keeps the bytes of each of its Streams beside
-    /// it, in chunks of their own, with each Stream's own record — its
-    /// digest and its length (ADR-0070, `audited`). How many moved.
+    /// The audit keeper: move up to `most` audit records, oldest first, to
+    /// the administration database, each once by its identifier, its body
+    /// in chunks of `chunk` bytes — the size the runtime writes a Stream in
+    /// — and each Stream it carries in chunks beside it with the Stream's
+    /// record (ADR-0070; `audited`, `kept_audit`), chained in its writer's
+    /// audit chain (`chain`). How many moved.
     ///
     /// # Errors
     ///
     /// When either database cannot be read or written.
-    fn keep_audit(&self, most: u32) -> Result<u32, PersistError>;
+    fn keep_audit(&self, most: u32, chunk: usize) -> Result<u32, PersistError>;
 
-    /// An audit record the keeper moved, or `None`.
+    /// An audit record the keeper moved, its body in chunks beside it.
     ///
     /// # Errors
     ///
     /// When it cannot be read, or fails its tag.
-    fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError>;
+    fn read_kept_audit(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError>;
 
     /// The Stream `stream` a kept audit record carries, as the keeper kept
     /// it — its length, its chunks, its digest — or `None` where it carries
@@ -319,10 +324,11 @@ pub trait XmipStorage: Send + Sync {
         stream: StreamId,
     ) -> Result<Option<StreamRecord>, PersistError>;
 
-    /// A chunk of the Stream `stream` a kept audit record carries, by its
-    /// number, or `None` past its last: what the keeper kept beside the
-    /// record (ADR-0070). Read them through [`ChunkReader::audited`], which
-    /// holds them to the length and digest the record keeps of the Stream.
+    /// A chunk of what the keeper kept beside a record in chunks — its body
+    /// where `stream` is `None`, else the Stream it carries — by its number,
+    /// or `None` past its last (ADR-0070). Read them through
+    /// [`ChunkReader::audit_body`] and [`ChunkReader::audited`], which hold
+    /// them to the length and digest the record keeps.
     ///
     /// # Errors
     ///
@@ -330,9 +336,9 @@ pub trait XmipStorage: Send + Sync {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
-        stream: StreamId,
+        stream: Option<StreamId>,
         index: u32,
-    ) -> Result<Option<StreamChunk>, PersistError>;
+    ) -> Result<Option<Vec<u8>>, PersistError>;
 
     /// Write an administration record, replacing the last of its kind and
     /// identifier.
