@@ -169,7 +169,7 @@ and 9).
   Storage node calls its `Embedded` in process instead: both are
   `XmipStorage`, so nothing above knows which it has.
 - **`database`** and **`schema`** — what each data domain's database is
-  kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql` or `sqlserver`,
+  kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql` or `mssql`,
   as each domain's own table in the configuration names it in `storage`
   (the owner, 2026-10-10: *i would do it like runtime, storage, connection
   string*) — and a database server Xmip Storage is in front of (option A):
