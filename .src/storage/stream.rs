@@ -128,6 +128,13 @@ pub enum Chunked {
 /// Stream. An audit record's copy is held to its digest too, at its end,
 /// so a reader takes nothing it read as the audited Stream until the read
 /// has ended without an error.
+///
+/// A read that fails says which of two things went wrong by its error's
+/// kind: [`io::ErrorKind::InvalidData`] where the bytes are not the ones
+/// kept — a chunk missing, failing its tag, or the whole not of its length
+/// or digest — which is evidence; any other kind where Xmip Storage could
+/// not be asked, which is no verdict at all. The [`PersistError`] it came
+/// from is the error's inner one.
 pub struct ChunkReader<'a> {
     storage: &'a dyn XmipStorage,
     from: Chunked,
@@ -218,11 +225,14 @@ impl<'a> ChunkReader<'a> {
         let (read, chunks, length) = (self.read, self.next, self.length);
         let (what, said) = match self.from {
             Chunked::Ledger(stream) if read != length => {
-                return Err(io::Error::other(format!(
-                    "the Stream {stream} holds {read} bytes in {chunks} chunk(s) in the Ledger, \
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the Stream {stream} holds {read} bytes in {chunks} chunk(s) in the Ledger, \
                      and its record says {length}: a chunk was lost or damaged after it was \
                      published"
-                )));
+                    ),
+                ));
             }
             Chunked::Ledger(_) => {
                 self.ended = true;
@@ -238,23 +248,40 @@ impl<'a> ChunkReader<'a> {
         };
         // A kept copy, held to its length and to its digest.
         if read != length {
-            return Err(io::Error::other(format!(
-                "REFUSED: {what} is {read} bytes in {chunks} chunk(s), and its record says \
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "REFUSED: {what} is {read} bytes in {chunks} chunk(s), and its record says \
                  {length}: it is not the audited one"
-            )));
+                ),
+            ));
         }
         let digest = self.digest.take().unwrap_or_default().finish();
         if digest != said {
-            return Err(io::Error::other(format!(
-                "REFUSED: {what} is not the audited one: its bytes' SHA-256 is {}, and the \
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "REFUSED: {what} is not the audited one: its bytes' SHA-256 is {}, and the \
                  record says {}",
-                hex::encode(&digest),
-                hex::encode(&said)
-            )));
+                    hex::encode(&digest),
+                    hex::encode(&said)
+                ),
+            ));
         }
         self.ended = true;
         Ok(())
     }
+}
+
+/// A chunk's read that failed, as [`ChunkReader`] says it: a chunk that
+/// failed its tag or would not decode is not the one kept; anything else is
+/// Xmip Storage not answering.
+fn unread(error: PersistError) -> io::Error {
+    let kind = match error {
+        PersistError::Refused { .. } | PersistError::Record { .. } => io::ErrorKind::InvalidData,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, error)
 }
 
 impl Read for ChunkReader<'_> {
@@ -263,7 +290,7 @@ impl Read for ChunkReader<'_> {
             if self.ended {
                 return Ok(0);
             }
-            let Some(chunk) = self.chunk().map_err(io::Error::other)? else {
+            let Some(chunk) = self.chunk().map_err(unread)? else {
                 self.end()?;
                 return Ok(0);
             };
@@ -284,6 +311,25 @@ impl Read for ChunkReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chunk_not_as_kept_is_evidence_and_storage_not_answering_is_not() {
+        let refused = PersistError::Refused {
+            scope: "chunk".to_string(),
+            reason: "its tag".to_string(),
+        };
+        assert_eq!(unread(refused).kind(), io::ErrorKind::InvalidData);
+        let unreachable = PersistError::Unreachable {
+            reason: "no Storage node answered".to_string(),
+        };
+        let error = unread(unreachable);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let inner = error.into_inner().expect("its cause");
+        assert!(matches!(
+            inner.downcast::<PersistError>().as_deref(),
+            Ok(PersistError::Unreachable { .. })
+        ));
+    }
 
     #[test]
     fn a_stream_s_record_comes_back_from_its_bytes_as_it_was() {
