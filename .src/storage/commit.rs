@@ -192,6 +192,15 @@ pub(crate) struct Batch<'a> {
 }
 
 impl Batch<'_> {
+    /// A batch with nothing in it yet, over what is written.
+    pub(crate) fn empty() -> Batch<'static> {
+        Batch {
+            below: None,
+            written: HashMap::new(),
+            changes: Vec::new(),
+        }
+    }
+
     /// One operation's stage over this batch.
     fn staged(&self) -> Batch<'_> {
         Batch {
@@ -244,11 +253,7 @@ impl<R: Engine> Writer<R> {
     fn commit(&mut self, group: Vec<(Op, Reply)>) {
         let now = self.clock.unix_timestamp_nanos();
         let before = self.next;
-        let mut batch = Batch {
-            below: None,
-            written: HashMap::new(),
-            changes: Vec::new(),
-        };
+        let mut batch = Batch::empty();
         let mut decided = Vec::with_capacity(group.len());
         for (op, reply) in group {
             // Each operation decided on a stage of its own: all of it

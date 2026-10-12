@@ -31,16 +31,20 @@ use super::schema::Database;
 
 /// The kinds of database server Xmip Storage can be in front of: PostgreSQL
 /// first (the owner, 2026-10-01: *Don't leave out the elephant, Postgres*),
-/// SQL Server after it (`deployment-model.md` section 7).
+/// SQL Server after it (`deployment-model.md` section 7), and MariaDB beside
+/// them (the owner, 2026-10-12: *Can MariaDB be a contender to PostgreSQL
+/// and MSSQL so make it a provider for Storage nodes and create scripts for
+/// it*; ADR-0070, amendment 2026-10-12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Server {
     PostgreSql,
     SqlServer,
+    MariaDb,
 }
 
 impl Server {
     /// Every kind.
-    pub const ALL: [Self; 2] = [Self::PostgreSql, Self::SqlServer];
+    pub const ALL: [Self; 3] = [Self::PostgreSql, Self::SqlServer, Self::MariaDb];
 
     /// The word `storage` names it by, and the folder under
     /// `deploy/database` its operators' guide and scripts are in.
@@ -49,6 +53,7 @@ impl Server {
         match self {
             Self::PostgreSql => "postgresql",
             Self::SqlServer => "mssql",
+            Self::MariaDb => "mariadb",
         }
     }
 
@@ -58,6 +63,7 @@ impl Server {
         match self {
             Self::PostgreSql => 5432,
             Self::SqlServer => 1433,
+            Self::MariaDb => 3306,
         }
     }
 }
@@ -76,11 +82,12 @@ pub enum Technology {
 
 impl Technology {
     /// Every one, in the order a refusal names them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::RocksDb,
         Self::Sqlite,
         Self::Server(Server::PostgreSql),
         Self::Server(Server::SqlServer),
+        Self::Server(Server::MariaDb),
     ];
 
     /// The word `storage` names it by.
@@ -129,8 +136,10 @@ pub struct Connection {
 impl Connection {
     /// The connection `text` says, in `server`'s own form: PostgreSQL's
     /// keyword and value pairs, `host=<host> [port=<port>] dbname=<database>
-    /// [user=<login>]`, and SQL Server's, `Server=[tcp:]<host>[,<port>];
-    /// Database=<database>[;User Id=<login>]`. Nothing else is read: no
+    /// [user=<login>]`, SQL Server's, `Server=[tcp:]<host>[,<port>];
+    /// Database=<database>[;User Id=<login>]`, and MariaDB's, the keywords
+    /// of its Connector/ODBC, `Server=<host>[;Port=<port>];
+    /// Database=<database>[;User=<login>]`. Nothing else is read: no
     /// password, no option.
     ///
     /// # Errors
@@ -140,11 +149,12 @@ impl Connection {
         let form = match server {
             Server::PostgreSql => "host=<host> [port=<port>] dbname=<database> [user=<login>]",
             Server::SqlServer => "Server=<host>[,<port>];Database=<database>[;User Id=<login>]",
+            Server::MariaDb => "Server=<host>[;Port=<port>];Database=<database>[;User=<login>]",
         };
         let refused = |why: String| format!("'{text}' {why}; write {form}");
         let pairs: Vec<&str> = match server {
             Server::PostgreSql => text.split_whitespace().collect(),
-            Server::SqlServer => text.split(';').map(str::trim).collect(),
+            Server::SqlServer | Server::MariaDb => text.split(';').map(str::trim).collect(),
         };
         let (mut host, mut port, mut database, mut login) = (None, None, None, None);
         for pair in pairs.into_iter().filter(|pair| !pair.is_empty()) {
@@ -156,12 +166,15 @@ impl Connection {
                 return Err(refused(format!("leaves '{key}' empty or spaced")));
             }
             match (server, key.as_str()) {
-                (Server::PostgreSql, "host") => host = Some(value.to_string()),
-                (Server::PostgreSql, "port") => port = Some(value),
-                (Server::PostgreSql, "dbname") | (Server::SqlServer, "database") => {
+                (Server::PostgreSql, "host") | (Server::MariaDb, "server") => {
+                    host = Some(value.to_string());
+                }
+                (Server::PostgreSql | Server::MariaDb, "port") => port = Some(value),
+                (Server::PostgreSql, "dbname")
+                | (Server::SqlServer | Server::MariaDb, "database") => {
                     database = Some(value.to_string());
                 }
-                (Server::PostgreSql, "user") | (Server::SqlServer, "user id") => {
+                (Server::PostgreSql | Server::MariaDb, "user") | (Server::SqlServer, "user id") => {
                     login = Some(value.to_string());
                 }
                 (Server::SqlServer, "server") => {
@@ -211,6 +224,12 @@ impl fmt::Display for Connection {
                 self.login
                     .as_ref()
                     .map_or(Ok(()), |login| write!(f, ";User Id={login}"))
+            }
+            Server::MariaDb => {
+                write!(f, "Server={host};Port={port};Database={database}")?;
+                self.login
+                    .as_ref()
+                    .map_or(Ok(()), |login| write!(f, ";User={login}"))
             }
         }
     }
@@ -320,6 +339,19 @@ mod tests {
         assert_eq!(named.login.as_deref(), Some("xmip_storage"));
         let plain = Connection::read(Server::SqlServer, "Server=sql-1;Database=xmip_audit");
         assert_eq!(plain.expect("reads").port, 1433);
+        let maria = Connection::read(
+            Server::MariaDb,
+            "Server=maria-1.example;Database=xmip_audit;User=xmip_storage",
+        );
+        let maria = maria.expect("reads");
+        assert_eq!(
+            (maria.port, maria.login.as_deref()),
+            (3306, Some("xmip_storage"))
+        );
+        assert_eq!(
+            maria.to_string(),
+            "Server=maria-1.example;Port=3306;Database=xmip_audit;User=xmip_storage"
+        );
     }
 
     #[test]
@@ -342,6 +374,11 @@ mod tests {
                 Server::SqlServer,
                 "Server=h;Database=d;Encrypt=false",
                 "'encrypt'",
+            ),
+            (
+                Server::MariaDb,
+                "Server=h;Database=d;SslMode=none",
+                "'sslmode'",
             ),
         ] {
             let refused = Connection::read(server, connection).expect_err(connection);
@@ -368,8 +405,8 @@ mod tests {
             named(Database::Administration, "mssql", "Server=sql-1;Database=a"),
             named(
                 Database::Audit,
-                "sqlite",
-                "D:/Xmip/data/storage/audit.sqlite",
+                "mariadb",
+                "Server=maria-1;Database=xmip_audit",
             ),
         ];
         assert!(problems(&apart, Some("p")).is_empty());
@@ -397,12 +434,12 @@ mod tests {
     fn an_unknown_storage_or_another_embedded_engine_is_refused_in_words() {
         let wrong = [
             named(Database::Runtime, "sqlite", "runtime.sqlite"),
-            named(Database::Administration, "mysql", "x"),
+            named(Database::Administration, "mongodb", "x"),
             named(Database::Audit, "sqlite", " "),
         ];
         let refused = problems(&wrong, None);
         assert!(refused[0].contains("kept on rocksdb"), "{refused:?}");
-        assert!(refused[1].contains("rocksdb, sqlite, postgresql, mssql"));
+        assert!(refused[1].contains("rocksdb, sqlite, postgresql, mssql, mariadb"));
         assert!(refused[2].starts_with("[audit] connection names no path"));
     }
 }
