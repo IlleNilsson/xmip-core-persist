@@ -169,18 +169,19 @@ and 9).
   Storage node calls its `Embedded` in process instead: both are
   `XmipStorage`, so nothing above knows which it has.
 - **`database`** and **`schema`** — what each data domain's database is
-  kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql` or `mssql`,
-  as each domain's own table in the configuration names it in `storage`
-  (the owner, 2026-10-10: *i would do it like runtime, storage, connection
-  string*) — and a database server Xmip Storage is in front of (option A):
-  the one reading of a connection, in the server's own form
+  kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
+  `mariadb`, as each domain's own table in the configuration names it in
+  `storage` (the owner, 2026-10-10: *i would do it like runtime, storage,
+  connection string*) — and a database server Xmip Storage is in front of
+  (option A): the one reading of a connection, in the server's own form
   (`host=… port=… dbname=… user=…` for PostgreSQL,
-  `Server=…,<port>;Database=…;User Id=…` for SQL Server), and every
+  `Server=…,<port>;Database=…;User Id=…` for SQL Server,
+  `Server=…;Port=…;Database=…;User=…` for MariaDB), and every
   table the three databases — runtime, administration, audit — keep there,
   its searchable columns and its indexes (`schema/searchable.rs`, each
   index numbered once for the embedded engines), with the scripts IT runs
-  for each server, per data domain so each may be on a server of its own
-  (`scripts`: `01-roles.sql`, then `02-<domain>-database.sql` and
+  for each server in its dialect (`schema/dialect.rs`), per data domain
+  so each may be on a server of its own (`scripts`: `01-roles.sql`, then `02-<domain>-database.sql` and
   `03-<domain>-schema.sql`), which `deploy/database/<server>/` holds and
   the estate root's `cargo test --test database` holds to it. The backends themselves follow
   as technologies of this crate, `xmip-core-persist-postgresql` first.
@@ -206,8 +207,9 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 `Engine::apply` writes a batch whole or not at all, durable on return: a
 `WriteBatch` under one sync in RocksDB, a transaction in SQLite.
 `Engine::apply_deferred` writes one whole and unsynced, durable with the next
-synced write: RocksDB's write-ahead log without a sync, and any other engine
-as `apply`. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
+synced write: RocksDB's write-ahead log without a sync, and SQLite's
+write-ahead log committed under `synchronous = NORMAL`, synced with its next
+`FULL` commit. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
 a receive cycle costs one sync, its Publication's. A chunk is its Stream and its
 number in it, nothing more: a Stream ends where it has no further chunk. A
 Stream is a record of its own (`StreamRecord`, `write_stream` with its last
