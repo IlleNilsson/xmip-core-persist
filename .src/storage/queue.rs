@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(sequences(&entries), [0]);
         assert_eq!(counted.reads(), 2, "its places and its one entry");
         let (_, entries) = page(&store, KINDS, QUEUE, 1, 10).expect("the next");
-        assert!(entries.is_empty());
+        assert_eq!(entries, [] as [Vec<u8>; 0]);
         assert_eq!(counted.reads(), 1, "its places alone");
     }
 
@@ -367,7 +367,7 @@ mod tests {
         let (_, entries) = page(&store, KINDS, QUEUE, 1, 10).expect("the next");
         assert_eq!(sequences(&entries), [500]);
         let (_, entries) = page(&store, KINDS, QUEUE, 501, 10).expect("past it");
-        assert!(entries.is_empty());
+        assert_eq!(entries, [] as [Vec<u8>; 0]);
         let mut batch = Batch::empty();
         take_out(&store, &mut batch, KINDS, QUEUE, 0).expect("taken");
         let left = places(&store, &batch, KINDS, QUEUE).expect("places");

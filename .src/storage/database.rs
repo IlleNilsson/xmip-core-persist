@@ -409,7 +409,7 @@ mod tests {
                 "Server=maria-1;Database=xmip_audit",
             ),
         ];
-        assert!(problems(&apart, Some("p")).is_empty());
+        assert_eq!(problems(&apart, Some("p")), [] as [String; 0]);
         let same = [
             named(Database::Administration, "postgresql", "host=h dbname=xmip"),
             named(
