@@ -38,6 +38,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use super::XmipStorage;
 use super::server::ALPN;
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
@@ -244,6 +245,14 @@ impl StorageClient {
     }
 }
 
+/// `storage` for one statement: a receive cycle's chunks, its Publication
+/// and its Journeys asked of one Storage node, so the Publication's one
+/// sync covers the chunks before it ([`XmipStorage::write_chunk`]).
+#[must_use]
+pub fn statement(storage: &Arc<dyn XmipStorage>) -> Arc<dyn XmipStorage> {
+    storage.pinned().unwrap_or_else(|| Arc::clone(storage))
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
@@ -258,8 +267,8 @@ mod tests {
     use crate::fixture::Memory;
     use crate::storage::{
         AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue,
-        Embedded, HandOn, HeldQueue, Hold, JourneyRecord, MessageRecord, Publication, Replay,
-        Replayed, StorageServer, StreamChunk, XmipStorage,
+        Embedded, FailedQueue, HandOn, HeldQueue, Hold, JourneyRecord, MessageRecord, Publication,
+        Replay, Replayed, StorageServer, StreamChunk, XmipStorage,
     };
 
     /// A cluster's certificate authority, and identities it issues.
@@ -491,6 +500,10 @@ mod tests {
             self.beneath.read_dead(queue, from, most)
         }
 
+        fn read_failed(&self, q: u128, f: u64, m: u32) -> Result<FailedQueue, PersistError> {
+            self.beneath.read_failed(q, f, m)
+        }
+
         fn read_dead_message(&self, q: u128, m: MessageId) -> Result<DeadEntry, PersistError> {
             self.beneath.read_dead_message(q, m)
         }
@@ -597,6 +610,9 @@ mod tests {
                 leaves: vec![queue],
                 queued: Vec::new(),
                 requeued: Vec::new(),
+                failed: None,
+                cleared: Vec::new(),
+                waits: None,
                 kept_for_nanos: None,
             };
             assert!(storage.hand_on(&hand_on).expect("sent"));

@@ -108,6 +108,8 @@ pub(super) const HELD: &[Column] = &[
     column("journey", Kind::Identifier),
     column("body", Kind::Bytes),
     column("held_at", Kind::Time),
+    column("failed", Kind::Flag),
+    maybe("due_at", Kind::Time),
 ];
 
 pub(super) const HELD_INDEXES: &[Index] = &[index(9, "held_time", &["queue", "held_at"])];

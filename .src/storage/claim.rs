@@ -5,8 +5,8 @@
 
 use super::commit::{Batch, CLAIM, JOURNEY, MESSAGE};
 use super::hand_on::HandOn;
-use super::hold;
 use super::record::{Claim, Form, malformed, read_byte};
+use super::{failed, hold};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where a claim stands: held, or ended one of two ways, each kept as it
@@ -116,7 +116,8 @@ pub(crate) fn stored<R: Engine>(
 
 /// `hand_on` decided in `batch` at `now`: its result, what it made and what
 /// follows written, the places it leaves let go of and the ones it takes
-/// kept, and its claim ended handed on — or kept, where the step waits —
+/// kept, its Journey entered in or taken out of a queue's index of failed
+/// Journeys, and its claim ended handed on — or kept, where the step waits —
 /// `true`, where the claim is its holder's; `true` and nothing written
 /// where it was handed on already under its token, an answer that was
 /// lost; `false` otherwise.
@@ -154,6 +155,16 @@ pub(crate) fn hand_on<R: Engine>(
     }
     for queue in &hand_on.requeued {
         hold::to_the_end(store, batch, *queue, hand_on.claim.journey)?;
+    }
+    if let Some(failure) = &hand_on.failed {
+        failed::enter(store, batch, hand_on.claim.journey, failure, now)?;
+    }
+    for queue in &hand_on.cleared {
+        failed::clear(store, batch, *queue, hand_on.claim.journey)?;
+    }
+    if let Some(wait) = &hand_on.waits {
+        let due = now.saturating_add(i128::from(wait.after_nanos));
+        hold::wait(store, batch, (wait.queue, hand_on.claim.journey), due)?;
     }
     match hand_on.kept_for_nanos {
         Some(nanos) => {

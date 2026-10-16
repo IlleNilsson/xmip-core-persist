@@ -17,7 +17,7 @@ const fn column(name: &'static str, kind: Kind) -> Column {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 18] = [
+pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "stream",
@@ -80,6 +80,39 @@ pub const TABLES: [Table; 18] = [
             column("first_place", Kind::Number),
             column("next_place", Kind::Number),
             column("held", Kind::Number),
+        ],
+        key: &["queue"],
+        unique: &[],
+        indexes: &[],
+    },
+    Table {
+        database: Database::Runtime,
+        name: "failed_journey",
+        keeps: "the Journeys that failed waiting in each Send Port's queue for an operator, \
+                in the order they failed, each once, with its place in the queue and why, \
+                written with the failure and taken out with the operator's act",
+        columns: &[
+            column("queue", Kind::Identifier),
+            column("sequence", Kind::Number),
+            column("journey", Kind::Identifier),
+            column("place", Kind::Number),
+            column("reason", Kind::LongText),
+            column("failed_at", Kind::Time),
+        ],
+        key: &["queue", "sequence"],
+        unique: &["queue", "journey"],
+        indexes: &[],
+    },
+    Table {
+        database: Database::Runtime,
+        name: "failed_journey_places",
+        keeps: "each queue's index of failed Journeys: its first place, its next and how \
+                many failed Journeys wait in the queue",
+        columns: &[
+            column("queue", Kind::Identifier),
+            column("first_place", Kind::Number),
+            column("next_place", Kind::Number),
+            column("failed", Kind::Number),
         ],
         key: &["queue"],
         unique: &[],

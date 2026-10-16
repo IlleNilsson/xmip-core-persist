@@ -134,6 +134,8 @@ impl Columned for Held {
         vec![
             ("queue", Some(Value::Id(self.hold.queue))),
             ("held_at", Some(time(self.held_unix_nanos))),
+            ("failed", Some(Value::Flag(self.failed))),
+            ("due_at", self.due_unix_nanos.map(|due| time(nanos(due)))),
         ]
     }
 }

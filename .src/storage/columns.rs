@@ -325,6 +325,8 @@ mod tests {
                 body: Vec::new(),
             },
             held_unix_nanos: 0,
+            failed: false,
+            due_unix_nanos: None,
         };
         let dead = Dead {
             sequence: 0,

@@ -37,7 +37,10 @@ use xcore::JourneyId;
 
 use super::commit::{Batch, HELD, HELD_JOURNEY, PLACES};
 use super::queue::{self, Kinds};
-use super::record::{Form, read_bytes, read_u64, read_u128, write_bytes, write_u64, write_u128};
+use super::record::{
+    Form, read_byte, read_bytes, read_i128, read_u64, read_u128, write_byte, write_bytes,
+    write_i128, write_u64, write_u128,
+};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// A Journey to hold: which queue, which Journey, and what the holder
@@ -60,6 +63,17 @@ pub struct Held {
     /// When Xmip Storage held it, in nanoseconds since the Unix epoch:
     /// Xmip Storage's to set.
     pub held_unix_nanos: u64,
+    /// Whether the Journey failed here and waits for an operator: Xmip
+    /// Storage's to set, in the write that enters it in its queue's index
+    /// of failed Journeys or takes it out (`super::failed`), so a reader of
+    /// the queue passes over what failed without reading its Journey.
+    pub failed: bool,
+    /// When the Journey here is due again, where it waits for a retry: in
+    /// nanoseconds since the Unix epoch on Xmip Storage's clock, Xmip
+    /// Storage's to set in the hand-on that leaves it waiting
+    /// (`super::HandOn::waits`). Read against the clock of the same read
+    /// ([`HeldQueue::due_in`]), never a node's own.
+    pub due_unix_nanos: Option<i128>,
 }
 
 /// A queue as read: where it starts and ends, how many it holds, and the
@@ -74,6 +88,21 @@ pub struct HeldQueue {
     pub count: u64,
     /// The ones read, oldest first.
     pub held: Vec<Held>,
+    /// Xmip Storage's clock as it read them, in nanoseconds since the Unix
+    /// epoch: what a due time is told by.
+    pub read_unix_nanos: i128,
+}
+
+impl HeldQueue {
+    /// How long `held`, one of those read, still waits for its due time as
+    /// this read found it — a duration, so no two clocks are compared — or
+    /// `None` where it is due, or waits for none.
+    #[must_use]
+    pub fn due_in(&self, held: &Held) -> Option<std::time::Duration> {
+        let left = held.due_unix_nanos? - self.read_unix_nanos;
+        let left = u64::try_from(left).ok().filter(|left| *left > 0)?;
+        Some(std::time::Duration::from_nanos(left))
+    }
 }
 
 /// The URL namespace of RFC 9562 section 6.6, which an `xmip://` URI is
@@ -121,10 +150,56 @@ pub(crate) fn keep<R: Engine>(
             sequence,
             hold: kept.clone(),
             held_unix_nanos: 0,
+            failed: false,
+            due_unix_nanos: None,
         }
         .bytes()
     })
     .map(drop)
+}
+
+/// `journey`, held in `queue`, due again at `due` on Xmip Storage's clock,
+/// in `batch`: it waits there for a retry, claimed by nobody. Nothing where
+/// it holds no place there.
+pub(crate) fn wait<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    (queue, journey): (u128, JourneyId),
+    due: i128,
+) -> Result<(), PersistError> {
+    let queue::Placed::At(sequence) = queue::placed(store, batch, KINDS, (queue, journey.value()))?
+    else {
+        return Ok(());
+    };
+    let key = queue::entry_key(queue, sequence);
+    let Some(bytes) = batch.read(store, KINDS.entry, &key)? else {
+        return Ok(());
+    };
+    let mut held = Held::from_bytes(&bytes)?;
+    held.due_unix_nanos = Some(due);
+    batch.put(KINDS.entry, key, Some(held.bytes()));
+    Ok(())
+}
+
+/// The Journey held at `sequence` in `queue` marked `failed`, or not, in
+/// `batch`; nothing where none is held there or it is marked so already.
+pub(crate) fn mark<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    queue: u128,
+    sequence: u64,
+    failed: bool,
+) -> Result<(), PersistError> {
+    let key = queue::entry_key(queue, sequence);
+    let Some(bytes) = batch.read(store, KINDS.entry, &key)? else {
+        return Ok(());
+    };
+    let mut held = Held::from_bytes(&bytes)?;
+    if held.failed != failed {
+        held.failed = failed;
+        batch.put(KINDS.entry, key, Some(held.bytes()));
+    }
+    Ok(())
 }
 
 /// The Journey held at `sequence` in `queue` let go of, in `batch`: its
@@ -188,8 +263,8 @@ pub(crate) fn to_the_end<R: Engine>(
 pub(crate) fn read<R: Engine>(
     store: &EncryptedStore<R>,
     queue: u128,
-    from: u64,
-    most: u32,
+    (from, most): (u64, u32),
+    now: i128,
 ) -> Result<HeldQueue, PersistError> {
     let (places, entries) = queue::page(store, KINDS, queue, from, most)?;
     Ok(HeldQueue {
@@ -200,6 +275,7 @@ pub(crate) fn read<R: Engine>(
             .iter()
             .map(|bytes| Held::from_bytes(bytes))
             .collect::<Result<_, _>>()?,
+        read_unix_nanos: now,
     })
 }
 
@@ -224,6 +300,9 @@ impl Form for Held {
         write_u64(out, self.sequence);
         self.hold.write(out);
         write_u64(out, self.held_unix_nanos);
+        write_byte(out, u8::from(self.failed));
+        write_byte(out, u8::from(self.due_unix_nanos.is_some()));
+        write_i128(out, self.due_unix_nanos.unwrap_or_default());
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -231,6 +310,12 @@ impl Form for Held {
             sequence: read_u64(cursor)?,
             hold: Hold::read(cursor)?,
             held_unix_nanos: read_u64(cursor)?,
+            failed: read_byte(cursor)? != 0,
+            due_unix_nanos: {
+                let waits = read_byte(cursor)? != 0;
+                let due = read_i128(cursor)?;
+                waits.then_some(due)
+            },
         })
     }
 }
@@ -241,6 +326,7 @@ impl Form for HeldQueue {
         write_u64(out, self.next);
         write_u64(out, self.count);
         self.held.write(out);
+        write_i128(out, self.read_unix_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -249,6 +335,7 @@ impl Form for HeldQueue {
             next: read_u64(cursor)?,
             count: read_u64(cursor)?,
             held: Vec::read(cursor)?,
+            read_unix_nanos: read_i128(cursor)?,
         })
     }
 }
@@ -339,6 +426,9 @@ mod tests {
             leaves: Vec::new(),
             queued: Vec::new(),
             requeued: vec![queue, 99],
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: None,
         };
         assert!(node.hand_on(&retried).expect("handed on"));
@@ -364,8 +454,18 @@ mod tests {
                     body: b"facts".to_vec(),
                 },
                 held_unix_nanos: 6,
+                failed: true,
+                due_unix_nanos: Some(9),
             }],
+            read_unix_nanos: 4,
         };
         assert_eq!(HeldQueue::from_bytes(&queue.bytes()).expect("read"), queue);
+        let held = &queue.held[0];
+        assert_eq!(queue.due_in(held), Some(std::time::Duration::from_nanos(5)));
+        let later = HeldQueue {
+            read_unix_nanos: 9,
+            ..queue.clone()
+        };
+        assert_eq!(later.due_in(held), None, "due at its time");
     }
 }

@@ -58,6 +58,7 @@ pub mod database;
 mod dead;
 mod embedded;
 mod facts;
+mod failed;
 mod hand_on;
 mod hold;
 mod kept_audit;
@@ -74,13 +75,14 @@ mod wire;
 pub use audit_entry::{AuditBody, AuditEntry};
 pub use audited::{Audited, KeptStream};
 pub use chain::{canonical_form, carried_streams, chain_digest};
-pub use client::StorageClient;
+pub use client::{StorageClient, statement};
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
 pub use embedded::Embedded;
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
-pub use hand_on::HandOn;
+pub use failed::{Failed, FailedQueue, Failure};
+pub use hand_on::{HandOn, Wait};
 pub use hold::{Held, HeldQueue, Hold, named};
 pub use kept_audit::KeptAudit;
 pub use publication::Publication;
@@ -200,6 +202,12 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag: the caller tries again,
     /// and takes nothing past what it could not read.
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError>;
+
+    /// `queue`'s index of failed Journeys ([`Failed`]), read as `read_held` reads a queue.
+    ///
+    /// # Errors
+    /// When it cannot be read, or fails its tag.
+    fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError>;
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place
@@ -389,12 +397,4 @@ pub trait XmipStorage: Send + Sync {
     fn pinned(&self) -> Option<Arc<dyn XmipStorage>> {
         None
     }
-}
-
-/// `storage` for one statement: a receive cycle's chunks, its Publication
-/// and its Journeys asked of one Storage node, so the Publication's one
-/// sync covers the chunks before it ([`XmipStorage::write_chunk`]).
-#[must_use]
-pub fn statement(storage: &Arc<dyn XmipStorage>) -> Arc<dyn XmipStorage> {
-    storage.pinned().unwrap_or_else(|| Arc::clone(storage))
 }
