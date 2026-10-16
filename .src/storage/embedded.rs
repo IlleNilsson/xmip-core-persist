@@ -19,7 +19,6 @@ use std::time::Duration;
 use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
-use super::XmipStorage;
 use super::audit_entry::AuditEntry;
 use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
@@ -36,10 +35,12 @@ use super::record::{
 use super::row;
 use super::schema::Database;
 use super::stream::StreamRecord;
+use super::{FailedQueue, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 mod administration;
 mod keeper;
+mod submitted;
 
 /// The embedded Storage node's three databases, and the one writer to the
 /// first. The audit database is on the administration database's engine,
@@ -139,31 +140,6 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         &self.audit
     }
 
-    fn written(&self, op: Op) -> Result<(), PersistError> {
-        self.committer.submit(op).map(drop)
-    }
-
-    fn claimed(&self, op: Op) -> Result<Option<Claim>, PersistError> {
-        match self.committer.submit(op)? {
-            Done::Claim(claim) => Ok(claim),
-            _ => Err(super::record::malformed("the writer answered no claim")),
-        }
-    }
-
-    fn held(&self, op: Op) -> Result<Vec<Claim>, PersistError> {
-        match self.committer.submit(op)? {
-            Done::Claims(held) => Ok(held),
-            _ => Err(super::record::malformed("the writer answered no claims")),
-        }
-    }
-
-    fn yes(&self, op: Op) -> Result<bool, PersistError> {
-        match self.committer.submit(op)? {
-            Done::Yes(yes) => Ok(yes),
-            _ => Err(super::record::malformed("the writer answered no verdict")),
-        }
-    }
-
     fn read<T: Form>(&self, kind: &str, key: &[u8]) -> Result<Option<T>, PersistError> {
         self.runtime
             .get(kind, key)?
@@ -257,7 +233,16 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
-        hold::read(&self.runtime, queue, from, most)
+        hold::read(
+            &self.runtime,
+            queue,
+            (from, most),
+            self.clock.unix_timestamp_nanos(),
+        )
+    }
+
+    fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
+        super::failed::read(&self.runtime, queue, from, most)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
@@ -557,6 +542,9 @@ mod tests {
             leaves: Vec::new(),
             queued: Vec::new(),
             requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: None,
         };
         assert!(!node.hand_on(&late).expect("hand-on"));
@@ -589,6 +577,9 @@ mod tests {
             leaves: Vec::new(),
             queued: Vec::new(),
             requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: Some(300_000_000_000),
         };
         assert!(node.hand_on(&kept).expect("kept to its due time"));
@@ -627,6 +618,9 @@ mod tests {
             leaves: Vec::new(),
             queued: Vec::new(),
             requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: None,
         };
         assert!(node.hand_on(&hand_on).expect("handed on"));
@@ -988,6 +982,9 @@ mod tests {
             leaves: vec![queue],
             queued: Vec::new(),
             requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: None,
         }
     }
@@ -1155,6 +1152,9 @@ mod tests {
             leaves: Vec::new(),
             queued: Vec::new(),
             requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
             kept_for_nanos: None,
         };
         assert!(!node.hand_on(&hand_on).expect("hand-on"), "only released");

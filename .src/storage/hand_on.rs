@@ -4,6 +4,7 @@
 
 use codec::cursor::Cursor;
 
+use super::failed::Failure;
 use super::hold::Hold;
 use super::record::{
     Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u32, read_u64, read_u128,
@@ -35,12 +36,34 @@ pub struct HandOn {
     /// taken up again after everything that waits there now. A queue it
     /// holds no place in is passed over.
     pub requeued: Vec<u128>,
-    /// Where the step waits rather than ends — a retry's backoff — the
-    /// claim kept for this many nanoseconds from now instead of released:
-    /// the due time is in the Ledger, and no thread holds it
-    /// (`runtime-model.md` section 10). A holder that dies meanwhile lets
-    /// it lapse at that time, and another node takes it up.
+    /// Where the step leaves the claimed Journey Failed, waiting in its
+    /// queue for an operator: that queue and why, the Journey entered in
+    /// the queue's index of failed Journeys and counted there, in this one
+    /// write ([`super::failed`]).
+    pub failed: Option<Failure>,
+    /// The queues whose index of failed Journeys the claimed Journey leaves:
+    /// an operator's Retry or Dismiss of it.
+    pub cleared: Vec<u128>,
+    /// Where the step leaves the claimed Journey waiting for a retry: the
+    /// queue it waits in and how long, its due time — Xmip Storage's now and
+    /// that long — kept at its place there in this one write, its claim
+    /// released with the rest, so nothing holds it until a scan finds it due
+    /// (`runtime-model.md` section 10; open problem 43).
+    pub waits: Option<Wait>,
+    /// Where the holder goes on with the Journey at once — a held Journey
+    /// moved to the queue of a Send Port its node sends — the claim kept for
+    /// this many nanoseconds from now instead of released. A holder that
+    /// dies meanwhile lets it lapse at that time, and another node takes it
+    /// up.
     pub kept_for_nanos: Option<u64>,
+}
+
+/// Where a Journey waits for a retry: its queue, and how long from Xmip
+/// Storage's now it is due again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wait {
+    pub queue: u128,
+    pub after_nanos: u64,
 }
 
 impl Form for HandOn {
@@ -49,14 +72,18 @@ impl Form for HandOn {
         self.result.write(out);
         self.messages.write(out);
         self.next.write(out);
-        write_u32(out, u32::try_from(self.leaves.len()).unwrap_or(u32::MAX));
-        for queue in &self.leaves {
-            write_u128(out, *queue);
-        }
+        write_queues(out, &self.leaves);
         self.queued.write(out);
-        write_u32(out, u32::try_from(self.requeued.len()).unwrap_or(u32::MAX));
-        for queue in &self.requeued {
-            write_u128(out, *queue);
+        write_queues(out, &self.requeued);
+        write_byte(out, u8::from(self.failed.is_some()));
+        if let Some(failure) = &self.failed {
+            failure.write(out);
+        }
+        write_queues(out, &self.cleared);
+        write_byte(out, u8::from(self.waits.is_some()));
+        if let Some(wait) = &self.waits {
+            write_u128(out, wait.queue);
+            write_u64(out, wait.after_nanos);
         }
         write_byte(out, u8::from(self.kept_for_nanos.is_some()));
         if let Some(nanos) = self.kept_for_nanos {
@@ -70,19 +97,38 @@ impl Form for HandOn {
             result: JourneyRecord::read(cursor)?,
             messages: Vec::read(cursor)?,
             next: Vec::read(cursor)?,
-            leaves: (0..read_u32(cursor)?)
-                .map(|_| read_u128(cursor))
-                .collect::<Result<_, _>>()?,
+            leaves: read_queues(cursor)?,
             queued: Vec::read(cursor)?,
-            requeued: (0..read_u32(cursor)?)
-                .map(|_| read_u128(cursor))
-                .collect::<Result<_, _>>()?,
+            requeued: read_queues(cursor)?,
+            failed: match read_byte(cursor)? {
+                0 => None,
+                _ => Some(Failure::read(cursor)?),
+            },
+            cleared: read_queues(cursor)?,
+            waits: match read_byte(cursor)? {
+                0 => None,
+                _ => Some(Wait {
+                    queue: read_u128(cursor)?,
+                    after_nanos: read_u64(cursor)?,
+                }),
+            },
             kept_for_nanos: match read_byte(cursor)? {
                 0 => None,
                 _ => Some(read_u64(cursor)?),
             },
         })
     }
+}
+
+fn write_queues(out: &mut Vec<u8>, queues: &[u128]) {
+    write_u32(out, u32::try_from(queues.len()).unwrap_or(u32::MAX));
+    for queue in queues {
+        write_u128(out, *queue);
+    }
+}
+
+fn read_queues(cursor: &mut Cursor<'_>) -> Result<Vec<u128>, PersistError> {
+    (0..read_u32(cursor)?).map(|_| read_u128(cursor)).collect()
 }
 
 #[cfg(test)]
@@ -119,6 +165,15 @@ mod tests {
                 body: b"facts".to_vec(),
             }],
             requeued: vec![10],
+            failed: Some(Failure {
+                queue: 9,
+                reason: "refused".to_string(),
+            }),
+            cleared: vec![11],
+            waits: Some(Wait {
+                queue: 9,
+                after_nanos: 20_000_000,
+            }),
             kept_for_nanos: Some(5_000_000_000),
         };
         assert_eq!(
@@ -127,6 +182,8 @@ mod tests {
         );
         let waits_not = HandOn {
             kept_for_nanos: None,
+            failed: None,
+            waits: None,
             ..hand_on
         };
         assert_eq!(

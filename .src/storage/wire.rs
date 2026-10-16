@@ -64,6 +64,7 @@ pub(crate) enum Request {
     ReadStream(StreamId),
     ReadKeptAuditChunk(AuditId, Option<StreamId>, u32),
     ReadKeptAuditStream(AuditId, StreamId),
+    ReadFailed(u128, u64, u32),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -98,6 +99,12 @@ impl Request {
                 write_byte(out, 26);
                 write_u128(out, id.value());
                 write_u128(out, stream.value());
+            }
+            Self::ReadFailed(queue, from, most) => {
+                write_byte(out, 27);
+                write_u128(out, *queue);
+                write_u64(out, *from);
+                write_u32(out, *most);
             }
             _ => {}
         }
@@ -210,7 +217,8 @@ impl Form for Request {
             | Self::WriteStream(..)
             | Self::ReadStream(_)
             | Self::ReadKeptAuditChunk(..)
-            | Self::ReadKeptAuditStream(..) => self.write_late(out),
+            | Self::ReadKeptAuditStream(..)
+            | Self::ReadFailed(..) => self.write_late(out),
         }
     }
 
@@ -250,6 +258,7 @@ impl Form for Request {
                 let id = AuditId::new(read_u128(cursor)?);
                 Self::ReadKeptAuditStream(id, StreamId::new(read_u128(cursor)?))
             }
+            27 => Self::ReadFailed(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -259,7 +268,31 @@ impl Form for Request {
 mod tests {
     use super::*;
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
-    use crate::storage::{DeadEntry, DeadQueue, HeldQueue, Replayed};
+    use crate::storage::{DeadEntry, DeadQueue, FailedQueue, HeldQueue, Replayed};
+
+    /// The hand-on of a send of the Journey `claim` names, delivered.
+    fn delivered(claim: &Claim) -> HandOn {
+        HandOn {
+            claim: claim.clone(),
+            result: JourneyRecord {
+                journey: claim.journey,
+                body: b"delivered".to_vec(),
+                facts: JourneyFacts::default(),
+            },
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: vec![7],
+            queued: Vec::new(),
+            requeued: Vec::new(),
+            failed: None,
+            cleared: vec![7],
+            waits: Some(super::super::Wait {
+                queue: 7,
+                after_nanos: 1,
+            }),
+            kept_for_nanos: None,
+        }
+    }
 
     #[test]
     fn a_request_and_an_answer_cross_a_frame_as_they_were() {
@@ -276,20 +309,8 @@ mod tests {
             Request::ReadChunk(StreamId::new(1), 2),
             Request::KeepAudit(64, 4096),
             Request::ReadHeld(7, 2, 64),
-            Request::HandOn(HandOn {
-                claim: claim.clone(),
-                result: JourneyRecord {
-                    journey: JourneyId::new(5),
-                    body: b"delivered".to_vec(),
-                    facts: JourneyFacts::default(),
-                },
-                messages: Vec::new(),
-                next: Vec::new(),
-                leaves: vec![7],
-                queued: Vec::new(),
-                requeued: Vec::new(),
-                kept_for_nanos: None,
-            }),
+            Request::ReadFailed(7, 2, 64),
+            Request::HandOn(delivered(&claim)),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
             Request::Publish(Box::new(Publication {
                 message: MessageRecord {
@@ -352,8 +373,10 @@ mod tests {
                 next: 2,
                 count: 1,
                 held: Vec::new(),
+                read_unix_nanos: 3,
             }),
             Answer::DeadQueue(DeadQueue::default()),
+            Answer::FailedQueue(FailedQueue::default()),
             Answer::Dead(DeadEntry::Replayed),
             Answer::Replayed(Replayed::Before),
             Answer::Records(vec![1, 2, 3]),

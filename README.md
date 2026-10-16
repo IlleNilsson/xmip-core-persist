@@ -62,13 +62,17 @@ and 9).
   Subscription's decline) and its audit record — as one atomic write, once
   by its Message, answering the claims its node holds of those it asked
   for; read
-  a queue — a Subscription's, a Send Port's — oldest first (`read_held`);
-  read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
+  a queue — a Subscription's, a Send Port's — oldest first (`read_held`),
+  each place marked where its Journey failed there (`Held::failed`); read a
+  Send Port queue's index of failed Journeys (`read_failed`, a page at a
+  time, in the order they failed, its count one read of its places,
+  `FailedQueue`; the `failed_journey` and `failed_journey_places` tables;
+  open problem 34, 2026-10-16); read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
   time; `read_dead_message`, one entry) and `replay` an entry — the
   Journeys a routing against the Subscriptions of now opened, the ones held,
   its audit record and the entry taken out, as one write, done once: asked
-  again after a lost answer it is `Replayed::Before` and writes nothing. Both
-  kinds of queue are numbered as written and kept by one set of mechanics
+  again after a lost answer it is `Replayed::Before` and writes nothing. Every
+  kind of queue is numbered as written and kept by one set of mechanics
   (`queue.rs`); claim a
   Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
@@ -76,9 +80,17 @@ and 9).
   Journeys that follow, the queues the Journey leaves (`HandOn::leaves`)
   and the places it takes (`HandOn::queued`), the queues it moves to the
   end of keeping what its place kept (`HandOn::requeued`, an Operator's
-  Retry, built 2026-10-04), and the claim released, or
-  kept to a due time where the step waits (`HandOn::kept_for_nanos`, a
-  retry's backoff, holding no thread), as one atomic write; write an
+  Retry, built 2026-10-04), the queue it waits in Failed and why, entered
+  in that queue's index of failed Journeys (`HandOn::failed`), the queues
+  whose index it leaves (`HandOn::cleared`, an Operator's Retry or
+  Dismiss), the queue it waits in for a retry and how long, its due time
+  kept at its place there on the Storage node's clock (`HandOn::waits`,
+  `Held::due_unix_nanos`; a read answers with that clock beside the
+  entries, `HeldQueue::read_unix_nanos`, and `HeldQueue::due_in` says how
+  long one still waits, so no two clocks are compared; open problem 43),
+  and the claim released, or kept for a holder that goes on at once
+  (`HandOn::kept_for_nanos`, a held Journey moved to a Port its node
+  sends), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,
   moving each to the audit database exactly once, by its
   identifier — a record of an act on a Message, which carries the Message
