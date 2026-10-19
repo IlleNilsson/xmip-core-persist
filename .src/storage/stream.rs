@@ -28,6 +28,7 @@
 //! Stream (ADR-0070 clause 4).
 
 use std::io::{self, Read};
+use std::sync::Arc;
 
 use codec::cursor::Cursor;
 use codec::hex;
@@ -135,8 +136,13 @@ pub enum Chunked {
 /// or digest — which is evidence; any other kind where Xmip Storage could
 /// not be asked, which is no verdict at all. The [`PersistError`] it came
 /// from is the error's inner one.
+///
+/// A chunk is taken whole by [`ChunkReader::next_chunk`], as kept, or a
+/// piece at a time as a [`Read`]; a reader over Xmip Storage it shares
+/// ([`ChunkReader::shared`]) outlives the call that made it, as one
+/// Stream's read lent to several readers does.
 pub struct ChunkReader<'a> {
-    storage: &'a dyn XmipStorage,
+    storage: Asking<'a>,
     from: Chunked,
     length: u64,
     next: u32,
@@ -148,10 +154,39 @@ pub struct ChunkReader<'a> {
     digest: Option<StreamDigest>,
 }
 
+/// Where a [`ChunkReader`] asks Xmip Storage: lent for the reader's life,
+/// or shared with it.
+enum Asking<'a> {
+    Lent(&'a dyn XmipStorage),
+    Shared(Arc<dyn XmipStorage>),
+}
+
+impl Asking<'_> {
+    fn storage(&self) -> &dyn XmipStorage {
+        match self {
+            Self::Lent(storage) => *storage,
+            Self::Shared(storage) => storage.as_ref(),
+        }
+    }
+}
+
+impl ChunkReader<'static> {
+    /// The chunks `from` names behind `storage`, which the reader shares,
+    /// `length` bytes together.
+    #[must_use]
+    pub fn shared(storage: Arc<dyn XmipStorage>, from: Chunked, length: u64) -> Self {
+        Self::asking(Asking::Shared(storage), from, length)
+    }
+}
+
 impl<'a> ChunkReader<'a> {
     /// The chunks `from` names behind `storage`, `length` bytes together.
     #[must_use]
     pub fn new(storage: &'a dyn XmipStorage, from: Chunked, length: u64) -> Self {
+        Self::asking(Asking::Lent(storage), from, length)
+    }
+
+    fn asking(storage: Asking<'a>, from: Chunked, length: u64) -> Self {
         Self {
             storage,
             from,
@@ -204,17 +239,45 @@ impl<'a> ChunkReader<'a> {
         }))
     }
 
+    /// The next chunk whole, as kept — what a [`Read`] took part of, the
+    /// rest of it — and `None` at the Stream's end, held to its length, and
+    /// an audit record's copy to its digest, as a read is: what a reader
+    /// lending each chunk to others takes, rather than a copy of it.
+    ///
+    /// # Errors
+    ///
+    /// As a read fails, and of the same kind.
+    pub fn next_chunk(&mut self) -> io::Result<Option<Vec<u8>>> {
+        if self.at < self.held.len() {
+            let rest = self.held.split_off(self.at);
+            (self.held, self.at) = (Vec::new(), 0);
+            return Ok(Some(rest));
+        }
+        if self.ended {
+            return Ok(None);
+        }
+        let Some(chunk) = self.chunk().map_err(unread)? else {
+            self.end()?;
+            return Ok(None);
+        };
+        self.read += chunk.len() as u64;
+        if let Some(digest) = self.digest.as_mut() {
+            digest.update(&chunk);
+        }
+        self.next += 1;
+        (self.held, self.at) = (Vec::new(), 0);
+        Ok(Some(chunk))
+    }
+
     fn chunk(&self) -> Result<Option<Vec<u8>>, PersistError> {
         let chunk = |chunk: Option<StreamChunk>| chunk.map(|chunk| chunk.bytes);
+        let storage = self.storage.storage();
         match self.from {
-            Chunked::Ledger(stream) => self.storage.read_chunk(stream, self.next).map(chunk),
+            Chunked::Ledger(stream) => storage.read_chunk(stream, self.next).map(chunk),
             Chunked::Audit(audit, stream, _) => {
-                self.storage
-                    .read_kept_audit_chunk(audit, Some(stream), self.next)
+                storage.read_kept_audit_chunk(audit, Some(stream), self.next)
             }
-            Chunked::AuditBody(audit, _) => {
-                self.storage.read_kept_audit_chunk(audit, None, self.next)
-            }
+            Chunked::AuditBody(audit, _) => storage.read_kept_audit_chunk(audit, None, self.next),
         }
     }
 
@@ -287,19 +350,10 @@ fn unread(error: PersistError) -> io::Error {
 impl Read for ChunkReader<'_> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         while self.at == self.held.len() {
-            if self.ended {
-                return Ok(0);
-            }
-            let Some(chunk) = self.chunk().map_err(unread)? else {
-                self.end()?;
+            let Some(chunk) = self.next_chunk()? else {
                 return Ok(0);
             };
-            self.read += chunk.len() as u64;
-            if let Some(digest) = self.digest.as_mut() {
-                digest.update(&chunk);
-            }
             (self.held, self.at) = (chunk, 0);
-            self.next += 1;
         }
         let taken = out.len().min(self.held.len() - self.at);
         out[..taken].copy_from_slice(&self.held[self.at..self.at + taken]);
