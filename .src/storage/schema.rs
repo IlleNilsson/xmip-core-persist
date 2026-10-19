@@ -221,7 +221,14 @@ fn tables(server: Server, database: Database) -> String {
             lines.join(",\n"),
             dialect::ended(server, true)
         );
-        for index in table.indexes {
+        // An index on the key is the primary key itself: a server keeps it
+        // ordered already, so a second would be written with every row and
+        // read by nothing (open problem 40).
+        for index in table
+            .indexes
+            .iter()
+            .filter(|index| index.columns != table.key)
+        {
             let only = match (server, index.only) {
                 (Server::MariaDb, _) | (_, None) => String::new(),
                 (Server::PostgreSql, Some(flag)) => format!(" WHERE {flag}"),
@@ -300,6 +307,26 @@ mod tests {
                     .map(|(name, _)| name.as_str())
                     .collect();
                 assert_eq!(making, [format!("02-{}-database.sql", database.word())]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_queue_is_indexed_on_its_place_and_on_a_server_that_index_is_its_key() {
+        let queues = ["held", "dead_message", "failed_journey"];
+        for name in queues {
+            let table = TABLES.iter().find(|table| table.name == name);
+            let table = table.expect("a queue's table");
+            assert_eq!(table.key, ["queue", "sequence"], "{name}");
+            let placed = table.indexes.iter().find(|i| i.columns == table.key);
+            let placed = placed.expect("an index on its place");
+            for server in Server::ALL {
+                let made = format!("CREATE INDEX {}", dialect::quoted(server, placed.name));
+                let scripts = scripts(server);
+                assert!(
+                    scripts.iter().all(|(_, script)| !script.contains(&made)),
+                    "{server:?} {name}: its key is the index"
+                );
             }
         }
     }

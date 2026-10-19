@@ -134,6 +134,8 @@ pub(crate) const KINDS: Kinds = Kinds {
     entry: HELD,
     by: HELD_JOURNEY,
     places: PLACES,
+    table: "held",
+    index: "held_place",
 };
 
 /// `kept` kept at the end of its queue, in `batch`: the place it takes is

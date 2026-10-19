@@ -3,8 +3,9 @@
 
 use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
-    AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY,
-    JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES, STREAM,
+    AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_JOURNEY,
+    FAILED_JOURNEY_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
+    STREAM,
 };
 use super::{Column, Database, Kind, Table};
 
@@ -91,17 +92,10 @@ pub const TABLES: [Table; 20] = [
         keeps: "the Journeys that failed waiting in each Send Port's queue for an operator, \
                 in the order they failed, each once, with its place in the queue and why, \
                 written with the failure and taken out with the operator's act",
-        columns: &[
-            column("queue", Kind::Identifier),
-            column("sequence", Kind::Number),
-            column("journey", Kind::Identifier),
-            column("place", Kind::Number),
-            column("reason", Kind::LongText),
-            column("failed_at", Kind::Time),
-        ],
+        columns: FAILED_JOURNEY,
         key: &["queue", "sequence"],
         unique: &["queue", "journey"],
-        indexes: &[],
+        indexes: FAILED_JOURNEY_INDEXES,
     },
     Table {
         database: Database::Runtime,

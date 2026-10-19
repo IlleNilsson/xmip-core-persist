@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
 use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::dead::Dead;
+use super::failed::{FAILED, Failed};
 use super::hold::Held;
 use super::kept_audit::KeptAudit;
 use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
@@ -51,6 +52,7 @@ enum Searched {
     Message,
     Held,
     Dead,
+    Failed,
     Audit,
     AuditStream,
     Administration,
@@ -64,6 +66,7 @@ impl Searched {
             (Database::Runtime, MESSAGE) => Self::Message,
             (Database::Runtime, HELD) => Self::Held,
             (Database::Runtime, DEAD) => Self::Dead,
+            (Database::Runtime, FAILED) => Self::Failed,
             (Database::Audit, KEPT_AUDIT) => Self::Audit,
             (Database::Audit, KEPT_AUDIT_STREAMS) => Self::AuditStream,
             (Database::Administration, kind) if kind.starts_with(ADMINISTRATION) => {
@@ -79,6 +82,7 @@ impl Searched {
             Self::Message => "message",
             Self::Held => "held",
             Self::Dead => "dead_message",
+            Self::Failed => "failed_journey",
             Self::Audit => "audit",
             Self::AuditStream => "audit_stream",
             Self::Administration => "administration",
@@ -93,6 +97,7 @@ impl Searched {
             Self::Message => row::<MessageRecord>(bytes),
             Self::Held => row::<Held>(bytes),
             Self::Dead => row::<Dead>(bytes),
+            Self::Failed => row::<Failed>(bytes),
             Self::Audit => row::<KeptAudit>(bytes),
             Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
@@ -112,6 +117,7 @@ impl Searched {
             Self::Message => stamp::<MessageRecord>(bytes, before, now),
             Self::Held => stamp::<Held>(bytes, before, now),
             Self::Dead => stamp::<Dead>(bytes, before, now),
+            Self::Failed => stamp::<Failed>(bytes, before, now),
             Self::Audit => stamp::<KeptAudit>(bytes, before, now),
             Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
@@ -237,11 +243,68 @@ impl Columns {
     pub(crate) fn find<E: Engine>(
         &self,
         store: &EncryptedStore<E>,
-        (table, index): (&str, &str),
+        at: (&str, &str),
         equal: &[Value],
         range: Option<(u64, u64)>,
         (most, reverse): (u32, bool),
     ) -> Result<Vec<u128>, PersistError> {
+        let (_, Some((first, last))) = self.range(at, equal, range)? else {
+            return Ok(Vec::new());
+        };
+        let most = usize::try_from(most).unwrap_or(usize::MAX);
+        store.scan_index(&first, &last, most, reverse)
+    }
+
+    /// The records `index` of `table` finds whose first columns are
+    /// `equal` and whose last — a place, a count or a time — is `from` or
+    /// later: up to `most`, in the index's order, each with that last
+    /// value as its entry's key holds it, so where each is in that order is
+    /// known without reading it. One range of the engine.
+    ///
+    /// # Errors
+    ///
+    /// Where the index is not one whose last column follows `equal`, or an
+    /// entry fails its tag.
+    pub(crate) fn find_from<E: Engine>(
+        &self,
+        store: &EncryptedStore<E>,
+        at: (&str, &str),
+        equal: &[Value],
+        from: u64,
+        most: usize,
+    ) -> Result<Vec<(u64, u128)>, PersistError> {
+        let (index, range) = self.range(at, equal, Some((from, u64::MAX)))?;
+        let not_last = || super::record::malformed(format!("{}: not its last", index.name));
+        if equal.len() + 1 != index.columns.len() {
+            return Err(not_last());
+        }
+        let Some((first, last)) = range else {
+            return Ok(Vec::new());
+        };
+        let entries = store.scan_index_keyed(&first, &last, most, false)?;
+        entries
+            .into_iter()
+            .map(|(key, id)| {
+                // The key ends in the last value, eight bytes, and the
+                // record's identifier, sixteen.
+                let end = key.len().checked_sub(16).ok_or_else(not_last)?;
+                let value = key.get(end.saturating_sub(8)..end).ok_or_else(not_last)?;
+                let value: [u8; 8] = value.try_into().map_err(|_| not_last())?;
+                Ok((u64::from_be_bytes(value), id))
+            })
+            .collect()
+    }
+
+    /// `index` of `table`, and the first and last keys of the range its
+    /// entries whose first columns are `equal` — and whose next, where
+    /// `range` says, is from one value to another, both included — are
+    /// kept in; no range where it holds none.
+    fn range(
+        &self,
+        (table, index): (&str, &str),
+        equal: &[Value],
+        range: Option<(u64, u64)>,
+    ) -> Result<(&'static Index, Option<Range>), PersistError> {
         let missing = || super::record::malformed(format!("no index {table}.{index}"));
         let table = self::table(self.database, table).ok_or_else(missing)?;
         let index: &Index = table
@@ -253,18 +316,20 @@ impl Columns {
         for value in equal.iter().take(index.columns.len()) {
             prefix.extend(encoded(value));
         }
-        let (first, last) = match range {
-            Some((from, to)) if from > to => return Ok(Vec::new()),
-            Some((from, to)) => (
+        let keys = match range {
+            Some((from, to)) if from > to => None,
+            Some((from, to)) => Some((
                 [prefix.as_slice(), &from.to_be_bytes()].concat(),
                 [prefix.as_slice(), &to.to_be_bytes(), &[0xFF; 17]].concat(),
-            ),
-            None => (prefix.clone(), [prefix.as_slice(), &[0xFF; 64]].concat()),
+            )),
+            None => Some((prefix.clone(), [prefix.as_slice(), &[0xFF; 64]].concat())),
         };
-        let most = usize::try_from(most).unwrap_or(usize::MAX);
-        store.scan_index(&first, &last, most, reverse)
+        Ok((index, keys))
     }
 }
+
+/// The first and last keys of a range of an index's entries, both included.
+type Range = (Vec<u8>, Vec<u8>);
 
 /// `value` as an entry's key keeps it, in the clear: an identifier as
 /// its sixteen bytes, words as their length and their UTF-8, bytes as their
@@ -332,6 +397,14 @@ mod tests {
             sequence: 0,
             message: DeadMessage::default(),
         };
+        let failed = Failed {
+            queue: 3,
+            sequence: 0,
+            journey: JourneyId::new(1),
+            place: 0,
+            reason: "refused".to_string(),
+            failed_unix_nanos: 0,
+        };
         let audit = KeptAudit {
             id: AuditId::new(4),
             streams: Vec::new(),
@@ -358,6 +431,7 @@ mod tests {
             ("message", message.row()),
             ("held", held.row()),
             ("dead_message", dead.row()),
+            ("failed_journey", failed.row()),
             ("audit", audit.row()),
             ("audit_stream", kept_stream.row()),
             ("administration", administration.row()),

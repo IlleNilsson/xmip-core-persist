@@ -5,6 +5,7 @@
 
 use super::audited::KeptStream;
 use super::dead::Dead;
+use super::failed::Failed;
 use super::hold::Held;
 use super::kept_audit::KeptAudit;
 use super::record::{AdministrationRecord, Form, JourneyRecord, MessageRecord};
@@ -133,6 +134,7 @@ impl Columned for Held {
     fn row(&self) -> Row {
         vec![
             ("queue", Some(Value::Id(self.hold.queue))),
+            ("sequence", Some(count(self.sequence))),
             ("held_at", Some(time(self.held_unix_nanos))),
             ("failed", Some(Value::Flag(self.failed))),
             ("due_at", self.due_unix_nanos.map(|due| time(nanos(due)))),
@@ -152,10 +154,30 @@ impl Columned for Dead {
         let entry = &self.message;
         vec![
             ("queue", Some(Value::Id(entry.queue))),
+            ("sequence", Some(count(self.sequence))),
             ("stream", Some(Value::Id(entry.stream.value()))),
             ("node", Some(text(&entry.node))),
             ("receive_location", Some(text(&entry.location))),
             ("queued_at", Some(time(nanos(entry.received_unix_nanos)))),
+        ]
+    }
+}
+
+impl Columned for Failed {
+    fn id(&self) -> u128 {
+        self.journey.value()
+    }
+
+    /// Nothing: its time is set as it fails, in the hand-on's write.
+    fn stamp(&mut self, _: u64, _: Option<&Self>) {}
+
+    fn row(&self) -> Row {
+        vec![
+            ("queue", Some(Value::Id(self.queue))),
+            ("sequence", Some(count(self.sequence))),
+            ("place", Some(count(self.place))),
+            ("reason", Some(text(&self.reason))),
+            ("failed_at", Some(time(nanos(self.failed_unix_nanos)))),
         ]
     }
 }

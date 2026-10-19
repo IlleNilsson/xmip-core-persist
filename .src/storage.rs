@@ -193,9 +193,9 @@ pub trait XmipStorage: Send + Sync {
     /// another Publication; nothing of it is written then.
     fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError>;
 
-    /// What `queue` holds: its places, how many it holds, and up to `most`
-    /// of them from the place `from` on, oldest first. `most` zero reads
-    /// the places alone.
+    /// What `queue` holds: its places, how many, and up to `most` of them
+    /// from the place `from` on, oldest first, one range of its index by
+    /// place. `most` zero reads no entry: its places and its first.
     ///
     /// # Errors
     ///
@@ -211,7 +211,7 @@ pub trait XmipStorage: Send + Sync {
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place
-    /// `from` on, oldest first. `most` zero reads the places alone.
+    /// `from` on, oldest first, as [`XmipStorage::read_held`] reads a queue.
     ///
     /// # Errors
     ///
