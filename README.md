@@ -229,7 +229,11 @@ chunk, in the same unsynced write), written once and never changed: the one
 home of its length, its chunks and the SHA-256 digest its writer took of its
 bytes as they passed once (`StreamDigest`; ADR-0070), which every Message
 referring to it refers to by its identifier (the owner, 2026-10-09). A Stream
-is read back a chunk at a time by `ChunkReader`, held to its length.
+is read back a chunk at a time by `ChunkReader`, held to its length: as a
+reader, or a whole chunk as kept at a time (`ChunkReader::next_chunk`), and
+over Xmip Storage it shares (`ChunkReader::shared`) a reader outlives the
+call that made it — what the runtime lends one read of a Stream to every
+departure of it through (open problem 38, 2026-10-19).
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves

@@ -435,6 +435,37 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_reader_takes_each_chunk_whole_and_holds_the_stream_to_its_length() {
+        use super::super::{ChunkReader, Chunked};
+        use std::io::Read as _;
+        let (node, _) = node();
+        let stream = StreamId::new(12);
+        for (index, bytes) in [(0, &b"ISA*00*"[..]), (1, &b"GS*IN"[..])] {
+            node.write_chunk(&StreamChunk {
+                stream,
+                index,
+                bytes: bytes.to_vec(),
+            })
+            .expect("chunk");
+        }
+        let node: Arc<dyn XmipStorage> = Arc::new(node);
+        let mut whole = ChunkReader::shared(Arc::clone(&node), Chunked::Ledger(stream), 12);
+        assert_eq!(
+            whole.next_chunk().expect("first"),
+            Some(b"ISA*00*".to_vec())
+        );
+        assert_eq!(whole.next_chunk().expect("second"), Some(b"GS*IN".to_vec()));
+        assert_eq!(whole.next_chunk().expect("its end"), None);
+        let mut short = ChunkReader::shared(node, Chunked::Ledger(stream), 13);
+        let mut piece = [0u8; 4];
+        short.read_exact(&mut piece).expect("a piece");
+        assert_eq!(short.next_chunk().expect("the rest"), Some(b"00*".to_vec()));
+        assert_eq!(short.next_chunk().expect("second"), Some(b"GS*IN".to_vec()));
+        let refused = short.next_chunk().expect_err("13 kept, 12 there");
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn what_is_written_is_read_back_and_what_is_not_is_none() {
         let (node, _) = node();
         let chunk = StreamChunk {
