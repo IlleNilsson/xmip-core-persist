@@ -36,6 +36,8 @@ pub(crate) const KINDS: Kinds = Kinds {
     entry: DEAD,
     by: DEAD_MESSAGE,
     places: DEAD_PLACES,
+    table: "dead_message",
+    index: "dead_message_place",
 };
 
 /// The identifier of the Dead Message Queue of the node at `node`

@@ -17,6 +17,13 @@
 //! **Numbered once.** An index's number names it to the embedded engines,
 //! which have no columns and keep each index as entries of its own
 //! (`super::super::columns`); a number is never reused.
+//!
+//! **A queue's order is an index too** (open problem 40; the owner,
+//! 2026-10-19). Each queue's entries — held Journeys, Dead Message Queue
+//! entries, failed Journeys — are indexed on their queue and place, so a
+//! page of a queue is one range from its place. On a server that index is
+//! the table's primary key, and its scripts make no second one
+//! (`super::scripts`).
 
 use super::{Column, Index, Kind};
 
@@ -112,7 +119,12 @@ pub(super) const HELD: &[Column] = &[
     maybe("due_at", Kind::Time),
 ];
 
-pub(super) const HELD_INDEXES: &[Index] = &[index(9, "held_time", &["queue", "held_at"])];
+/// By when it was held; and by its place, the queue's order, which a page
+/// of the queue reads from its place in one range (open problem 40).
+pub(super) const HELD_INDEXES: &[Index] = &[
+    index(9, "held_time", &["queue", "held_at"]),
+    index(20, "held_place", &["queue", "sequence"]),
+];
 
 pub(super) const DEAD_MESSAGE: &[Column] = &[
     column("queue", Kind::Identifier),
@@ -125,8 +137,24 @@ pub(super) const DEAD_MESSAGE: &[Column] = &[
     column("queued_at", Kind::Time),
 ];
 
-pub(super) const DEAD_MESSAGE_INDEXES: &[Index] =
-    &[index(10, "dead_message_time", &["queue", "queued_at"])];
+/// By when it was queued; and by its place, as a held Journey is.
+pub(super) const DEAD_MESSAGE_INDEXES: &[Index] = &[
+    index(10, "dead_message_time", &["queue", "queued_at"]),
+    index(21, "dead_message_place", &["queue", "sequence"]),
+];
+
+pub(super) const FAILED_JOURNEY: &[Column] = &[
+    column("queue", Kind::Identifier),
+    column("sequence", Kind::Number),
+    column("journey", Kind::Identifier),
+    column("place", Kind::Number),
+    column("reason", Kind::LongText),
+    column("failed_at", Kind::Time),
+];
+
+/// By its place in the index of failed Journeys, numbered as every queue is.
+pub(super) const FAILED_JOURNEY_INDEXES: &[Index] =
+    &[index(22, "failed_journey_place", &["queue", "sequence"])];
 
 pub(super) const AUDIT: &[Column] = &[
     column("id", Kind::Identifier),

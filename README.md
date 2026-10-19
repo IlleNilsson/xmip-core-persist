@@ -73,7 +73,14 @@ and 9).
   its audit record and the entry taken out, as one write, done once: asked
   again after a lost answer it is `Replayed::Before` and writes nothing. Every
   kind of queue is numbered as written and kept by one set of mechanics
-  (`queue.rs`); claim a
+  (`queue.rs`), and read in its order by an index on its queue and place
+  (`held_place`, `dead_message_place`, `failed_journey_place`; on a server,
+  the table's primary key), written and taken out with each entry: a page
+  is one ordered range from its place, a gap never read, and the queue's
+  first place is found by the read that asks for it, never by the writer
+  walking a gap (open problem 40; ADR-0013, amendment 2026-10-19; an
+  embedded store made before it lacks the index, and nothing migrates it
+  before the first release); claim a
   Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
@@ -245,7 +252,8 @@ second way, for one engine (ADR-0063 clause 2). A device build leaves
 Not runtime orchestration, which is `xmip-core-runtime`'s. Not a range scan
 by a record's key: a keyed hash does not keep the order of what it hashes, so
 the chronological scans `doc/record-identifier.md` describes for UUIDv7 keys
-are the searchable columns' indexes, by a time column, not the lookup key.
+are the searchable columns' indexes, by a time column, not the lookup key,
+and a queue's order is its index by place.
 Not a pattern search: a name is found by equality alone. Not rotation: one
 data key per store until the key home designs it.
 

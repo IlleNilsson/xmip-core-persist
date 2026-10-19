@@ -41,6 +41,8 @@ pub struct Failure {
 /// A Journey that failed, at its place in its queue's index of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
+    /// The queue it failed in: what its index is kept by, with its place.
+    pub queue: u128,
     /// Its place in the index, given as it failed: oldest lowest.
     pub sequence: u64,
     pub journey: JourneyId,
@@ -70,10 +72,15 @@ pub struct FailedQueue {
 /// Where a queue's index of failed Journeys keeps what it keeps: its
 /// entries, each one's place by its Journey, and its places.
 pub(crate) const KINDS: Kinds = Kinds {
-    entry: "failed-journey",
+    entry: FAILED,
     by: "failed-journey-by-journey",
     places: "failed-journey-places",
+    table: "failed_journey",
+    index: "failed_journey_place",
 };
+
+/// Where a queue's index of failed Journeys keeps its entries.
+pub(crate) const FAILED: &str = "failed-journey";
 
 /// `journey`, left Failed by its hand-on at `now` as `failure` says,
 /// entered at the end of its queue's index and its place there marked
@@ -93,6 +100,7 @@ pub(crate) fn enter<R: Engine>(
     hold::mark(store, batch, failure.queue, place, true)?;
     queue::place(store, batch, KINDS, about, |sequence| {
         Failed {
+            queue: failure.queue,
             sequence,
             journey,
             place,
@@ -161,6 +169,7 @@ impl Form for Failure {
 
 impl Form for Failed {
     fn write(&self, out: &mut Vec<u8>) {
+        write_u128(out, self.queue);
         write_u64(out, self.sequence);
         write_u128(out, self.journey.value());
         write_u64(out, self.place);
@@ -170,6 +179,7 @@ impl Form for Failed {
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
+            queue: read_u128(cursor)?,
             sequence: read_u64(cursor)?,
             journey: JourneyId::new(read_u128(cursor)?),
             place: read_u64(cursor)?,
@@ -436,6 +446,7 @@ mod tests {
             next: 5,
             count: 1,
             failed: vec![Failed {
+                queue: 7,
                 sequence: 3,
                 journey: JourneyId::new(4),
                 place: 9,

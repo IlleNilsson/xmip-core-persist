@@ -193,17 +193,36 @@ impl<E: Engine> EncryptedStore<E> {
         most: usize,
         reverse: bool,
     ) -> Result<Vec<u128>, PersistError> {
+        let entries = self.scan_index_keyed(first, last, most, reverse)?;
+        Ok(entries.into_iter().map(|(_, record)| record).collect())
+    }
+
+    /// As [`EncryptedStore::scan_index`], each record with its entry's key
+    /// after the index mark: the values the entry was kept by, in the
+    /// clear, authenticated with it.
+    ///
+    /// # Errors
+    ///
+    /// As [`EncryptedStore::scan_index`].
+    pub fn scan_index_keyed(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, u128)>, PersistError> {
         let (first, last) = ([INDEX, first].concat(), [INDEX, last].concat());
         let entries = self.engine.scan(&first, &last, most, reverse)?;
         entries
-            .iter()
+            .into_iter()
             .map(|(key, stored)| {
-                let record = self.opened(key, stored, "index entry")?;
+                let record = self.opened(&key, &stored, "index entry")?;
                 let record: [u8; 16] = record.try_into().map_err(|_| PersistError::Refused {
                     scope: format!("{} index entry", self.engine.engine()),
                     reason: "not a record's identifier".to_string(),
                 })?;
-                Ok(u128::from_be_bytes(record))
+                let key = key.get(INDEX.len()..).unwrap_or_default().to_vec();
+                Ok((key, u128::from_be_bytes(record)))
             })
             .collect()
     }
@@ -345,6 +364,13 @@ mod tests {
         assert_eq!(
             store.scan_index(b"a", b"a\xFF", 1, true).expect("read"),
             [8]
+        );
+        assert_eq!(
+            store
+                .scan_index_keyed(b"a", b"a\xFF", 1, false)
+                .expect("read"),
+            [(b"a1".to_vec(), 7)],
+            "the key it was kept by"
         );
         let entry = store
             .engine
