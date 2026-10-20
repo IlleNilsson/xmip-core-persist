@@ -23,6 +23,7 @@ use super::audit_entry::AuditEntry;
 use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
+use super::durable::Durable;
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
 use super::kept_audit::KeptAudit;
@@ -228,8 +229,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.read(JOURNEY, &journey.value().to_be_bytes())
     }
 
-    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
-        self.held(Op::Publish(Box::new(publication.clone())))
+    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+        self.held_ahead(Op::Publish(Box::new(publication.clone())))
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
@@ -1111,7 +1112,7 @@ mod tests {
     fn a_publication_asked_again_after_its_journey_was_completed_writes_nothing() {
         let (node, clock) = node();
         let publication = claiming(7, 1, 11);
-        let first = node.publish(&publication).expect("published");
+        let first = node.publish(&publication).expect("published").0;
         assert_eq!(first.len(), 1, "its node holds what it claimed");
         // Its answer lost, its claim lapses; another node sends the Journey
         // and takes it out of its queue.
@@ -1121,7 +1122,7 @@ mod tests {
                 .expect("sent")
         );
 
-        let again = node.publish(&publication).expect("asked again");
+        let again = node.publish(&publication).expect("asked again").0;
 
         assert_eq!(again, Vec::new(), "no claim taken again");
         let read = node.read_journey(JourneyId::new(1)).expect("read");
@@ -1136,14 +1137,29 @@ mod tests {
     }
 
     #[test]
+    fn a_publication_is_answered_readable_and_told_durable_once_synced() {
+        let (node, _) = node();
+        let (held, durable) = node.publish(&claiming(7, 1, 11)).expect("published");
+        assert_eq!(held.len(), 1, "its claim decided");
+        // Readable as answered, whether or not the sync is over.
+        assert!(
+            node.read_journey(JourneyId::new(1))
+                .expect("read")
+                .is_some()
+        );
+        durable.wait().expect("durable");
+        assert_eq!(durable.told(), Some(true));
+    }
+
+    #[test]
     fn a_publication_asked_again_while_its_claims_hold_answers_them_as_they_are() {
         let (node, _) = node();
         let publication = Publication {
             lease_nanos: u64::try_from(LEASE.as_nanos()).expect("a lease"),
             ..claiming(7, 1, 11)
         };
-        let first = node.publish(&publication).expect("published");
-        let again = node.publish(&publication).expect("asked again");
+        let first = node.publish(&publication).expect("published").0;
+        let again = node.publish(&publication).expect("asked again").0;
         assert_eq!(again, first, "the outcome it had");
         assert_eq!(node.read_held(7, 0, 10).expect("read").count, 1);
     }

@@ -1,8 +1,10 @@
 //! What the embedded Storage node's one writer answered, as each operation
 //! that submits to it reads the answer (`super::super::commit`): written,
-//! a claim, the claims a Publication's node holds, or a verdict.
+//! a claim, the claims a Publication's node holds — answered before its
+//! sync, with when it is durable — or a verdict.
 
 use super::super::commit::{Done, Op};
+use super::super::durable::Durable;
 use super::super::record::{Claim, malformed};
 use super::Embedded;
 use crate::{Engine, PersistError};
@@ -22,6 +24,15 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     pub(super) fn held(&self, op: Op) -> Result<Vec<Claim>, PersistError> {
         match self.committer.submit(op)? {
             Done::Claims(held) => Ok(held),
+            _ => Err(malformed("the writer answered no claims")),
+        }
+    }
+
+    /// The claims a Publication's node holds, answered before its batch
+    /// is synced, and when it is durable.
+    pub(super) fn held_ahead(&self, op: Op) -> Result<(Vec<Claim>, Durable), PersistError> {
+        match self.committer.ahead(op)? {
+            (Done::Claims(held), durable) => Ok((held, durable)),
             _ => Err(malformed("the writer answered no claims")),
         }
     }
