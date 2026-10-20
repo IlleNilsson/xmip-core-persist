@@ -22,6 +22,7 @@ use std::fmt::Write as _;
 use sql::Dialect;
 
 use super::super::database::Server;
+use super::version::VERSIONS;
 use super::{Database, Kind, LOGIN, OWNER, SCHEMA};
 
 /// The SQL `server` speaks.
@@ -191,6 +192,68 @@ pub(super) fn schema(server: Server, database: Database) -> String {
              CREATE SCHEMA {SCHEMA} AUTHORIZATION {OWNER};\nGO\n\n"
         ),
         Server::MariaDb => format!("USE {name};\n\n"),
+    }
+}
+
+/// What opens an upgrade of `database`, after its head: the schema's owner
+/// taken on, or the database used.
+pub(super) fn opened(server: Server, database: Database) -> String {
+    let name = quoted(server, database.name());
+    match server {
+        Server::PostgreSql => format!("SET ROLE {OWNER};\n\n"),
+        Server::SqlServer => format!("USE {name};\nGO\n\n"),
+        Server::MariaDb => format!("USE {name};\n\n"),
+    }
+}
+
+/// Each of `versions` recorded in the database's `schema_version` table,
+/// at the server's own time in UTC: the version a schema script made, or
+/// each an upgrade reached.
+pub(super) fn recorded(server: Server, versions: std::ops::RangeInclusive<u32>) -> String {
+    let now = match server {
+        Server::PostgreSql => "now()",
+        Server::SqlServer => "SYSUTCDATETIME()",
+        Server::MariaDb => "UTC_TIMESTAMP(6)",
+    };
+    let mut text = String::from("-- The schema version it holds now.\n");
+    for version in versions {
+        let _ = write!(
+            text,
+            "INSERT INTO {} ({}, {}) VALUES ({version}, {now}){}",
+            table(server, VERSIONS),
+            quoted(server, "version"),
+            quoted(server, "recorded_at"),
+            ended(server, false)
+        );
+    }
+    text.push('\n');
+    text
+}
+
+/// `column`, as a column says itself, added to the table `name`.
+pub(super) fn added(server: Server, name: &str, column: &str) -> String {
+    let add = match server {
+        Server::PostgreSql | Server::MariaDb => "ADD COLUMN",
+        Server::SqlServer => "ADD",
+    };
+    format!(
+        "ALTER TABLE {} {add} {column}{}",
+        table(server, name),
+        ended(server, false)
+    )
+}
+
+/// What closes an upgrade: on PostgreSQL the login's rights granted again,
+/// so a table the upgrade made is read and written as every other —
+/// SQL Server's and MariaDB's grants are on the schema and the database,
+/// and hold for a table made after them — and the owner's role left.
+pub(super) fn regranted(server: Server) -> String {
+    match server {
+        Server::PostgreSql => format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {SCHEMA} TO {LOGIN};\n\
+             RESET ROLE;\n"
+        ),
+        Server::SqlServer | Server::MariaDb => String::new(),
     }
 }
 

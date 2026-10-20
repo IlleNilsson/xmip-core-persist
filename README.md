@@ -208,6 +208,21 @@ and 9).
   `03-<domain>-schema.sql`), which `deploy/database/<server>/` holds and
   the estate root's `cargo test --test database` holds to it. The backends themselves follow
   as technologies of this crate, `xmip-core-persist-postgresql` first.
+- **`schema::version`** and **`schema::upgrade`** — the schema version
+  each database holds (open problem 41; ADR-0015, amendment 2026-10-20).
+  Every database records it in a table of its own, `schema_version`, a
+  row for each version it has held with when; it holds the highest. Every
+  table, column and index says the version that added it (`since`), so
+  the schema at a version is what was added at it or before, and
+  `upgrade(server, from, to)` writes `04-<domain>-upgrade-<from>-<to>.sql`
+  for each database, the difference between two releases: tables made,
+  columns added, indexes made, and each version reached recorded — never
+  a drop or a rename, which the definition cannot say. `schema::VERSION`
+  is this build's, `1` until the first release, which records its
+  fingerprint in `RELEASED` so a released schema cannot change again. The
+  embedded Storage node brings each database to `VERSION` as it opens
+  (`Embedded::versions`) and refuses one that holds a newer version, in
+  words naming both (`PersistError::Schema`).
 
 ## A record that fails its tag
 

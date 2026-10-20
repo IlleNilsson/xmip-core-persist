@@ -32,6 +32,7 @@ const fn column(name: &'static str, kind: Kind) -> Column {
         name,
         kind,
         null: false,
+        since: 1,
     }
 }
 
@@ -41,6 +42,7 @@ const fn maybe(name: &'static str, kind: Kind) -> Column {
         name,
         kind,
         null: true,
+        since: 1,
     }
 }
 
@@ -50,6 +52,7 @@ const fn index(number: u8, name: &'static str, columns: &'static [&'static str])
         name,
         columns,
         only: None,
+        since: 1,
     }
 }
 
