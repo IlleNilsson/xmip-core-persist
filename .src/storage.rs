@@ -30,10 +30,9 @@
 //! **Every write counts only once the database has it durably** (the owner,
 //! 2026-10-01: *Safe way*): an operation returns once its write is on disk —
 //! synced on an embedded Storage node, committed behind a database server.
-//! One write counts later, and says so: a Stream chunk is durable with the
-//! next durable write, its Publication's, since nothing is acknowledged
-//! before that commits ([`XmipStorage::write_chunk`]), so a receive cycle is
-//! one statement, asked of one Storage node ([`statement`]).
+//! Two count later, and say so: a Stream chunk is durable with its
+//! Publication ([`XmipStorage::write_chunk`]), and a Publication once its
+//! [`Durable`] says, so a receive cycle is one statement ([`statement`]).
 //!
 //! **An operation is all or nothing.** Where one fails half-way — a record
 //! it reads cannot be read, or fails its tag — nothing of it is written,
@@ -56,6 +55,7 @@ mod columns;
 mod commit;
 pub mod database;
 mod dead;
+mod durable;
 mod embedded;
 mod facts;
 mod failed;
@@ -79,6 +79,7 @@ pub use client::{StorageClient, statement};
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
+pub use durable::Durable;
 pub use embedded::Embedded;
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
@@ -182,16 +183,15 @@ pub trait XmipStorage: Send + Sync {
     /// Write a Publication as one atomic write: its Message, its Journeys,
     /// the ones held, the claims its node takes on them and its audit
     /// record, together, or nothing — once, by its Message. The claims its
-    /// node holds of those it asked for. Asked again after a lost answer,
-    /// it writes nothing — no Journey another node has moved on since is
-    /// written back or queued again — and answers the claims of it its node
-    /// still holds under their tokens.
-    ///
+    /// node holds of those it asked for, **answered once decided and
+    /// readable, before its sync**, and when it is durable ([`Durable`]):
+    /// nothing is acknowledged, and no far end sees a Journey of it, before
+    /// that. Asked again after a lost answer, it writes nothing and answers
+    /// the claims of it its node still holds under their tokens.
     /// # Errors
-    ///
     /// When it cannot be written, or its Message was published before as
     /// another Publication; nothing of it is written then.
-    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError>;
+    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError>;
 
     /// What `queue` holds: its places, how many, and up to `most` of them
     /// from the place `from` on, oldest first, one range of its index by

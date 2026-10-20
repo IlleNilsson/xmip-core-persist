@@ -9,6 +9,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 use super::super::XmipStorage;
 use super::super::audit_entry::AuditEntry;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::super::durable::Durable;
 use super::super::failed::FailedQueue;
 use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
@@ -124,11 +125,13 @@ impl XmipStorage for StorageClient {
         expected(self.ask(&Request::WriteJourney(journey.clone()))?, done)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
-        expected(
+    /// Answered by the Storage node once durable there.
+    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+        let held = expected(
             self.ask(&Request::Publish(Box::new(publication.clone())))?,
             held,
-        )
+        )?;
+        Ok((held, Durable::kept()))
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {

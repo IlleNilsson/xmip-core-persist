@@ -227,7 +227,10 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::RemoveAdministration(kind, id) => storage
             .remove_administration(kind, id)
             .map(|()| Answer::Done),
-        Request::Publish(publication) => storage.publish(&publication).map(Answer::Claims),
+        // Answered once durable here: the client's caller acknowledges on it.
+        Request::Publish(publication) => storage
+            .publish(&publication)
+            .and_then(|(held, durable)| durable.wait().map(|()| Answer::Claims(held))),
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)
         }

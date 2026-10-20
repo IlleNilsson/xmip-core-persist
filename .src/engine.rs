@@ -80,6 +80,19 @@ pub trait Engine: Send + Sync {
         self.apply(batch)
     }
 
+    /// Every write made before now durable, as one sync: what
+    /// [`Engine::apply_deferred`] wrote, made durable on its own rather than
+    /// by a later durable write. Nothing to do for an engine whose every
+    /// write is synced, which is what this does unless an engine says
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot sync.
+    fn sync(&self) -> Result<(), PersistError> {
+        Ok(())
+    }
+
     /// Up to `most` keys and their values from `first` to `last`, both
     /// included, in the order of their bytes — or the reverse, the last
     /// first, where `reverse`.
@@ -139,6 +152,10 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
         (**self).apply_deferred(batch)
     }
 
+    fn sync(&self) -> Result<(), PersistError> {
+        (**self).sync()
+    }
+
     fn scan(
         &self,
         first: &[u8],
@@ -179,6 +196,10 @@ impl<E: Engine + ?Sized> Engine for &E {
 
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
         (**self).apply_deferred(batch)
+    }
+
+    fn sync(&self) -> Result<(), PersistError> {
+        (**self).sync()
     }
 
     fn scan(

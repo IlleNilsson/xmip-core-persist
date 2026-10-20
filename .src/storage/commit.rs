@@ -12,8 +12,18 @@
 //! if one node fails another one should be able to pick up*;
 //! `deployment-model.md` section 7, *A claim … the same condition, in
 //! `RocksDB` on the one node*).
+//!
+//! **A batch is answered once written, and synced after.** Each write is
+//! answered with the batch's [`Durable`] as soon as the batch is in the
+//! engine — decided and readable — and the batch is synced then: a caller
+//! waiting for its write to be durable waits on it ([`Committer::submit`]),
+//! and a Publication's send is prepared meanwhile ([`Committer::ahead`];
+//! ADR-0018, amendment 2026-10-20).
 
-use std::collections::HashMap;
+mod batch;
+
+pub(crate) use batch::Batch;
+
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread::JoinHandle;
@@ -24,11 +34,12 @@ use super::audit_entry::AuditEntry;
 use super::claim::{self, Standing, Stored, end, hold};
 use super::columns::Columns;
 use super::dead::{self, Replay, Replayed};
+use super::durable::Durable;
 use super::hand_on::HandOn;
 use super::publication::{self, Decided, Publication};
 use super::record::{Claim, Form, malformed};
 use super::row;
-use crate::{EncryptedStore, Engine, PersistError, RecordChange};
+use crate::{EncryptedStore, Engine, PersistError};
 
 /// The record kinds of the runtime database.
 pub(crate) const CHUNK: &str = "chunk";
@@ -94,7 +105,7 @@ pub(crate) enum Done {
     Replayed(Replayed),
 }
 
-type Reply = SyncSender<Result<Done, PersistError>>;
+type Reply = SyncSender<Result<(Done, Durable), PersistError>>;
 
 /// The writer's thread, and the way to it.
 pub(crate) struct Committer {
@@ -137,8 +148,20 @@ impl Committer {
     ///
     /// # Errors
     ///
-    /// The write's own, or the writer having stopped.
+    /// The write's own, its sync's, or the writer having stopped.
     pub(crate) fn submit(&self, op: Op) -> Result<Done, PersistError> {
+        let (done, durable) = self.ahead(op)?;
+        durable.wait()?;
+        Ok(done)
+    }
+
+    /// `op` decided and written, or refused, answered before its batch is
+    /// synced: what it decided, and when it is durable.
+    ///
+    /// # Errors
+    ///
+    /// The write's own, or the writer having stopped.
+    pub(crate) fn ahead(&self, op: Op) -> Result<(Done, Durable), PersistError> {
         let (reply, answer) = mpsc::sync_channel(1);
         let stopped = || PersistError::engine("xmip-storage", "the writer has stopped");
         self.work
@@ -178,62 +201,6 @@ struct Writer<R> {
     clock: Arc<dyn Clock>,
     next: u64,
     columns: Arc<Columns>,
-}
-
-/// One batch being decided: what it has written so far, by place — or one
-/// operation's part of it, staged over the batch below, which takes it only
-/// once the whole operation has been decided. An operation that fails
-/// half-way is dropped with its stage, so nothing of it is written, while
-/// the others in its batch are.
-pub(crate) struct Batch<'a> {
-    below: Option<&'a Batch<'a>>,
-    written: HashMap<(&'static str, Vec<u8>), Option<Vec<u8>>>,
-    changes: Vec<RecordChange<'static>>,
-}
-
-impl Batch<'_> {
-    /// A batch with nothing in it yet, over what is written.
-    pub(crate) fn empty() -> Batch<'static> {
-        Batch {
-            below: None,
-            written: HashMap::new(),
-            changes: Vec::new(),
-        }
-    }
-
-    /// One operation's stage over this batch.
-    fn staged(&self) -> Batch<'_> {
-        Batch {
-            below: Some(self),
-            written: HashMap::new(),
-            changes: Vec::new(),
-        }
-    }
-
-    /// The value `kind` `key` holds in `store`, as this batch, and every
-    /// batch below it, has left it.
-    pub(crate) fn read<R: Engine>(
-        &self,
-        store: &EncryptedStore<R>,
-        kind: &'static str,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>, PersistError> {
-        match (self.written.get(&(kind, key.to_vec())), self.below) {
-            (Some(value), _) => Ok(value.clone()),
-            (None, Some(below)) => below.read(store, kind, key),
-            (None, None) => store.get(kind, key),
-        }
-    }
-
-    pub(crate) fn put(&mut self, kind: &'static str, key: Vec<u8>, value: Option<Vec<u8>>) {
-        self.written.insert((kind, key.clone()), value.clone());
-        self.changes.push((kind, key, value));
-    }
-
-    /// `record` under its identifier `id`, replacing the last.
-    pub(crate) fn record(&mut self, kind: &'static str, id: u128, record: &impl Form) {
-        self.put(kind, id.to_be_bytes().to_vec(), Some(record.bytes()));
-    }
 }
 
 impl<R: Engine> Writer<R> {
@@ -279,24 +246,36 @@ impl<R: Engine> Writer<R> {
                 Some(self.next.to_be_bytes().to_vec()),
             );
         }
-        let written = if batch.changes.is_empty() {
+        let empty = batch.changes.is_empty();
+        let written = if empty {
             Ok(())
         } else {
             // Each searchable record stamped on this clock, and its index
-            // entries in the same write (`super::columns`).
+            // entries in the same write (`super::columns`), unsynced: it
+            // is answered first, and synced after.
             self.columns
                 .written(&self.store, batch.changes, row::nanos(now))
-                .and_then(|(changes, entries)| self.store.apply_indexed(&changes, &entries))
+                .and_then(|(changes, entries)| {
+                    self.store.apply_indexed_deferred(&changes, &entries)
+                })
         };
         if written.is_err() {
             self.next = before;
         }
+        let durable = if empty || written.is_err() {
+            Durable::kept()
+        } else {
+            Durable::pending()
+        };
         for (reply, done) in decided {
             let answer = match (&written, done) {
-                (Ok(()), done) => done,
+                (Ok(()), done) => done.map(|done| (done, durable.clone())),
                 (Err(error), _) => Err(again(error)),
             };
             let _ = reply.send(answer);
+        }
+        if durable.told().is_none() {
+            durable.tell(self.store.sync().map_err(|failed| failed.to_string()));
         }
     }
 

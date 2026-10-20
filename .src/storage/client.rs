@@ -266,7 +266,7 @@ mod tests {
     use super::*;
     use crate::fixture::Memory;
     use crate::storage::{
-        AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue,
+        AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, Durable,
         Embedded, FailedQueue, HandOn, HeldQueue, Hold, JourneyRecord, MessageRecord, Publication,
         Replay, Replayed, StorageServer, StreamChunk, XmipStorage,
     };
@@ -442,7 +442,10 @@ mod tests {
     }
 
     impl XmipStorage for LosesAnswer {
-        fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+        fn publish(
+            &self,
+            publication: &Publication,
+        ) -> Result<(Vec<Claim>, Durable), PersistError> {
             let held = self.beneath.publish(publication)?;
             let meanwhile = self.meanwhile.lock().expect("meanwhile").take();
             let Some(meanwhile) = meanwhile else {
@@ -651,9 +654,14 @@ mod tests {
             lease_nanos: 0,
         };
 
-        let answered = client.publish(&publication).expect("asked again, answered");
+        let (answered, durable) = client.publish(&publication).expect("asked again, answered");
 
         assert_eq!(answered, Vec::new());
+        assert_eq!(
+            durable.told(),
+            Some(true),
+            "durable once answered over the wire"
+        );
         assert_eq!(
             behind.read_journey(id).expect("read").map(|r| r.body),
             Some(b"completed".to_vec()),

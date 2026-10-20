@@ -170,6 +170,10 @@ and 9).
   2026-10-10), so it may be on other storage than the other two. Every runtime write goes
   through one writer, which takes every write waiting into one batch under
   one sync: group commit, and the one place a claim's condition is decided.
+  A batch is written, answered, then synced: every write but a Publication
+  is waited on until durable, and a Publication is answered with its claims
+  and its durability (`storage::Durable`), so its sends are prepared while
+  the log syncs (ADR-0018, amendment 2026-10-20).
   Each operation is decided on a stage of its own over the batch, and the
   batch takes the stage only once the whole operation has been decided.
 - **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
@@ -228,7 +232,9 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 `Engine::apply_deferred` writes one whole and unsynced, durable with the next
 synced write: RocksDB's write-ahead log without a sync, and SQLite's
 write-ahead log committed under `synchronous = NORMAL`, synced with its next
-`FULL` commit. It is how `XmipStorage::write_chunk` writes a Stream's chunks, so
+`FULL` commit. `Engine::sync` makes everything written before it durable on
+its own: RocksDB's `flush_wal`, a full checkpoint of SQLite's log. It is how
+`XmipStorage::write_chunk` writes a Stream's chunks, so
 a receive cycle costs one sync, its Publication's. A chunk is its Stream and its
 number in it, nothing more: a Stream ends where it has no further chunk. A
 Stream is a record of its own (`StreamRecord`, `write_stream` with its last

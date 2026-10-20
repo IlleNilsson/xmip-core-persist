@@ -167,6 +167,41 @@ impl<E: Engine> EncryptedStore<E> {
         changes: &[RecordChange<'_>],
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
+        self.engine.apply(&self.indexed(changes, entries)?)
+    }
+
+    /// As [`EncryptedStore::apply_indexed`], through the engine's
+    /// [`Engine::apply_deferred`]: durable with the next write durable on
+    /// return, or the next [`EncryptedStore::sync`], not on its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`EncryptedStore::apply`]; nothing is written then.
+    pub fn apply_indexed_deferred(
+        &self,
+        changes: &[RecordChange<'_>],
+        entries: &[IndexEntry],
+    ) -> Result<(), PersistError> {
+        self.engine.apply_deferred(&self.indexed(changes, entries)?)
+    }
+
+    /// Every write before now durable, as the engine syncs
+    /// ([`Engine::sync`]).
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot sync.
+    pub fn sync(&self) -> Result<(), PersistError> {
+        self.engine.sync()
+    }
+
+    /// `changes` sealed, and every index entry of `entries` sealed with
+    /// its whole key as associated data: one batch for the engine.
+    fn indexed(
+        &self,
+        changes: &[RecordChange<'_>],
+        entries: &[IndexEntry],
+    ) -> Result<Vec<Change>, PersistError> {
         let mut batch = self.sealed(changes)?;
         for (key, record) in entries {
             let key = [INDEX, key.as_slice()].concat();
@@ -175,7 +210,7 @@ impl<E: Engine> EncryptedStore<E> {
                 .transpose()?;
             batch.push((key, sealed));
         }
-        self.engine.apply(&batch)
+        Ok(batch)
     }
 
     /// The records the index entries from `first` to `last` find, both
