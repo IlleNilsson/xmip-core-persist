@@ -240,7 +240,11 @@ is read back a chunk at a time by `ChunkReader`, held to its length: as a
 reader, or a whole chunk as kept at a time (`ChunkReader::next_chunk`), and
 over Xmip Storage it shares (`ChunkReader::shared`) a reader outlives the
 call that made it — what the runtime lends one read of a Stream to every
-departure of it through (open problem 38, 2026-10-19).
+departure of it through (open problem 38, 2026-10-19). A Ledger Stream's
+read starts at a chunk where the reader took those before it
+(`ChunkReader::shared_from`, the bytes it took given, so the length is
+still held): what a departure fallen behind that one read asks for, the
+chunks it missed and never one it took (2026-10-20).
 
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves
