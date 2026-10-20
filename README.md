@@ -230,7 +230,10 @@ Each a technology mounted beside `.src` (ADR-0049, ADR-0015 amendment
 `Engine::apply` writes a batch whole or not at all, durable on return: a
 `WriteBatch` under one sync in RocksDB, a transaction in SQLite.
 `Engine::apply_deferred` writes one whole and unsynced, durable with the next
-synced write: RocksDB's write-ahead log without a sync, and SQLite's
+synced write: RocksDB's write-ahead log without a sync — kept in RocksDB's
+own buffer of the log until a sync writes it (`manual_wal_flush`), so it
+never waits while another thread syncs the log, and goes with the process
+until then — and SQLite's
 write-ahead log committed under `synchronous = NORMAL`, synced with its next
 `FULL` commit. `Engine::sync` makes everything written before it durable on
 its own: RocksDB's `flush_wal`, a full checkpoint of SQLite's log. It is how
