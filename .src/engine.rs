@@ -61,9 +61,11 @@ pub trait Engine: Send + Sync {
     /// Every change of `batch` as one write, all or none, in order with
     /// every other write and **not synced on return**: it is durable once
     /// a later [`Engine::apply`] — or any write durable on return — has
-    /// returned, since that sync covers everything written before it. What
-    /// a write is worth before then is what an operating system keeps of a
-    /// process that died. An engine without a cheaper write syncs it as
+    /// returned, since that sync covers everything written before it.
+    /// Before then a write is worth nothing once its process dies — at most
+    /// what the operating system keeps, nothing where the engine keeps it
+    /// in a buffer of its own until the sync. An engine without a cheaper
+    /// write syncs it as
     /// [`Engine::apply`] does, which is what this does unless an engine
     /// says otherwise.
     ///

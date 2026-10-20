@@ -52,7 +52,7 @@ impl Durable {
     /// # Errors
     ///
     /// [`PersistError::Engine`] where the sync failed: what was written is
-    /// worth what an operating system keeps of a process that died.
+    /// lost with the process, or with the machine.
     pub fn wait(&self) -> Result<(), PersistError> {
         let told = self.0.told.lock().unwrap_or_else(PoisonError::into_inner);
         let told = self
