@@ -177,6 +177,25 @@ impl ChunkReader<'static> {
     pub fn shared(storage: Arc<dyn XmipStorage>, from: Chunked, length: u64) -> Self {
         Self::asking(Asking::Shared(storage), from, length)
     }
+
+    /// The Ledger's Stream `stream` behind `storage`, `length` bytes
+    /// together, read on from its chunk `chunk`, the chunks before it —
+    /// `before` bytes — already taken: what a reader fallen behind a shared
+    /// read of the Stream reads on from, asking Xmip Storage for the chunks
+    /// it missed and never for one it took (open problem 38, 2026-10-20).
+    /// Held to its length as a read from the start is: `before` and the
+    /// chunks read on make the whole Stream, or it is refused.
+    #[must_use]
+    pub fn shared_from(
+        storage: Arc<dyn XmipStorage>,
+        stream: StreamId,
+        length: u64,
+        (chunk, before): (u32, u64),
+    ) -> Self {
+        let mut reader = Self::shared(storage, Chunked::Ledger(stream), length);
+        (reader.next, reader.read) = (chunk, before);
+        reader
+    }
 }
 
 impl<'a> ChunkReader<'a> {
