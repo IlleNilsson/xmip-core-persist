@@ -34,7 +34,7 @@ use super::record::{
     StreamChunk,
 };
 use super::row;
-use super::schema::Database;
+use super::schema::{Database, DatabaseVersion};
 use super::stream::StreamRecord;
 use super::{FailedQueue, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
@@ -42,6 +42,7 @@ use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 mod administration;
 mod keeper;
 mod submitted;
+mod versioned;
 
 /// The embedded Storage node's three databases, and the one writer to the
 /// first. The audit database is on the administration database's engine,
@@ -65,6 +66,9 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     /// One audit keeper at a time in this process: the audit database's
     /// one writer.
     keeping: Mutex<()>,
+    /// The schema version each database holds, brought to this build's as
+    /// it opened (`versioned`).
+    versions: [DatabaseVersion; 3],
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
@@ -90,17 +94,22 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         )
     }
 
-    /// The node over three stores already open, telling time by `clock`.
+    /// The node over three stores already open, telling time by `clock`,
+    /// each brought to this build's schema version first.
     ///
     /// # Errors
     ///
-    /// Where the writer cannot start.
+    /// Where a database holds a schema version newer than this build's
+    /// ([`PersistError::Schema`]), a store cannot record its version, or
+    /// the writer cannot start.
     pub fn over(
         runtime: EncryptedStore<R>,
         administration: EncryptedStore<A>,
         audit: EncryptedStore<A>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, PersistError> {
+        let now = row::nanos(clock.unix_timestamp_nanos());
+        let versions = versioned::each((&runtime, &administration, &audit), now)?;
         let runtime = Arc::new(runtime);
         let runtime_columns = Arc::new(Columns::of(Database::Runtime));
         let committer = Committer::start(
@@ -119,6 +128,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             clock,
             administering: Mutex::new(()),
             keeping: Mutex::new(()),
+            versions,
         })
     }
 
@@ -139,6 +149,14 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     #[must_use]
     pub fn audit(&self) -> &EncryptedStore<A> {
         &self.audit
+    }
+
+    /// The schema version each database holds — runtime, administration,
+    /// audit — brought to this build's as it opened: what the node
+    /// keeping them publishes.
+    #[must_use]
+    pub const fn versions(&self) -> &[DatabaseVersion; 3] {
+        &self.versions
     }
 
     fn read<T: Form>(&self, kind: &str, key: &[u8]) -> Result<Option<T>, PersistError> {

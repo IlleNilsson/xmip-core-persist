@@ -7,6 +7,7 @@ use super::searchable::{
     FAILED_JOURNEY_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
     STREAM,
 };
+use super::version::VERSIONS;
 use super::{Column, Database, Kind, Table};
 
 const fn column(name: &'static str, kind: Kind) -> Column {
@@ -14,14 +15,39 @@ const fn column(name: &'static str, kind: Kind) -> Column {
         name,
         kind,
         null: false,
+        since: 1,
+    }
+}
+
+/// A schema version, and when a database recorded it.
+const VERSION_COLUMNS: &[Column] = &[
+    column("version", Kind::Count),
+    column("recorded_at", Kind::Time),
+];
+
+/// The table each database records the schema versions it held in, with
+/// when ([`super::version`]).
+const fn versions(database: Database) -> Table {
+    Table {
+        database,
+        name: VERSIONS,
+        since: 1,
+        keeps: "each schema version the database has held, the one it was made at and each \
+                an upgrade reached, with when; the version it holds is the highest",
+        columns: VERSION_COLUMNS,
+        key: &["version"],
+        unique: &[],
+        indexes: &[],
     }
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 20] = [
+pub const TABLES: [Table; 23] = [
+    versions(Database::Runtime),
     Table {
         database: Database::Runtime,
         name: "stream",
+        since: 1,
         keeps: "every Stream, once, as written and never changed: its length, its chunks and \
                 the SHA-256 digest of its bytes; a chunk and every Message referring to it \
                 refer to it by its identifier",
@@ -33,6 +59,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "stream_chunk",
+        since: 1,
         keeps: "every Stream's chunks, by its identifier and their number; a Stream ends \
                 where it has no further chunk",
         columns: &[
@@ -47,6 +74,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "message",
+        since: 1,
         keeps: "every Message, as a step wrote it, every single value of it in a column of its own",
         columns: MESSAGE,
         key: &["message"],
@@ -56,6 +84,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "journey",
+        since: 1,
         keeps: "every Journey, as a step wrote it, every single value of it in a column of its own",
         columns: JOURNEY,
         key: &["journey"],
@@ -65,6 +94,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "held",
+        since: 1,
         keeps: "the Journeys a paused Subscription holds, at their place in its queue, \
                 each once",
         columns: HELD,
@@ -75,6 +105,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "held_places",
+        since: 1,
         keeps: "each queue's first place, its next and how many it holds",
         columns: &[
             column("queue", Kind::Identifier),
@@ -89,6 +120,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "failed_journey",
+        since: 1,
         keeps: "the Journeys that failed waiting in each Send Port's queue for an operator, \
                 in the order they failed, each once, with its place in the queue and why, \
                 written with the failure and taken out with the operator's act",
@@ -100,6 +132,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "failed_journey_places",
+        since: 1,
         keeps: "each queue's index of failed Journeys: its first place, its next and how \
                 many failed Journeys wait in the queue",
         columns: &[
@@ -115,6 +148,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "dead_message",
+        since: 1,
         keeps: "each node's Dead Message Queue: every Message nothing matched, at its place, \
                 with its receive context, what its gates concluded, its promoted properties \
                 and each Subscription's reason for declining, each once",
@@ -126,6 +160,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "dead_message_places",
+        since: 1,
         keeps: "each Dead Message Queue's first place, its next and how many it holds",
         columns: &[
             column("queue", Kind::Identifier),
@@ -140,6 +175,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "dead_message_replayed",
+        since: 1,
         keeps: "each Message replayed from a Dead Message Queue, so a Replay asked again \
                 writes nothing twice",
         columns: &[
@@ -153,6 +189,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "publication",
+        since: 1,
         keeps: "each Message published, with the digest of its Publication, so a Publication \
                 asked again writes nothing and resets no Journey moved on since",
         columns: &[
@@ -166,6 +203,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "claim",
+        since: 1,
         keeps: "the claim on each Journey: its holder, its token, when it lapses, and \
                 whether it was given back or its step handed on",
         columns: &[
@@ -183,6 +221,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Runtime,
         name: "audit",
+        since: 1,
         keeps: "audit records as first written, until the audit keeper moves them",
         columns: &[
             column("sequence", Kind::Sequence),
@@ -193,9 +232,11 @@ pub const TABLES: [Table; 20] = [
         unique: &[],
         indexes: &[],
     },
+    versions(Database::Audit),
     Table {
         database: Database::Audit,
         name: "audit",
+        since: 1,
         keeps: "audit records kept over time, each once, every single value of each in a \
                 column of its own, each in its writer's audit chain: its number there, the \
                 SHA-256 digest of the record before it and its own",
@@ -207,6 +248,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Audit,
         name: "audit_chain_head",
+        since: 1,
         keeps: "where each writer's audit chain stands: the number of its last kept record \
                 and that record's SHA-256 digest, written with it by the audit keeper",
         columns: &[
@@ -221,6 +263,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Audit,
         name: "audit_body_chunk",
+        since: 1,
         keeps: "the body of each kept audit record, its record and the Message it carries, \
                 in chunks by the record's identifier and their number, as a Stream is kept, \
                 written with it by the audit keeper",
@@ -236,6 +279,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Audit,
         name: "audit_stream",
+        since: 1,
         keeps: "each Stream a kept audit record carries, once: its length, its chunks, the \
                 SHA-256 digest of its bytes and when the Ledger wrote it, written with the \
                 record by the audit keeper",
@@ -247,6 +291,7 @@ pub const TABLES: [Table; 20] = [
     Table {
         database: Database::Audit,
         name: "audit_stream_chunk",
+        since: 1,
         keeps: "the bytes of each Stream a kept audit record carries, in chunks by the \
                 record's identifier, the Stream's and their number, kept with it by the \
                 audit keeper; a Stream two Sections share once",
@@ -260,9 +305,11 @@ pub const TABLES: [Table; 20] = [
         unique: &[],
         indexes: &[],
     },
+    versions(Database::Administration),
     Table {
         database: Database::Administration,
         name: "administration",
+        since: 1,
         keeps: "registration, membership, Modules, Handlers, deployment and operator state, \
                 and when each was last written",
         columns: ADMINISTRATION,

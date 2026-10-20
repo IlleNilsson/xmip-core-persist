@@ -26,8 +26,12 @@ use super::database::Server;
 mod dialect;
 mod searchable;
 mod tables;
+mod upgrade;
+pub mod version;
 
 pub use tables::TABLES;
+pub use upgrade::{RELEASED, fingerprint, upgrade};
+pub use version::{DatabaseVersion, VERSION};
 
 /// Which of the three databases, one to each data domain, a table is in.
 /// Each is made by scripts of its own, so each may be on a server of its
@@ -105,6 +109,8 @@ pub struct Column {
     pub kind: Kind,
     /// Whether a row may hold nothing there: a fact its record may lack.
     pub null: bool,
+    /// The schema version that added it ([`version`]).
+    pub since: u32,
 }
 
 /// One table.
@@ -112,6 +118,8 @@ pub struct Column {
 pub struct Table {
     pub database: Database,
     pub name: &'static str,
+    /// The schema version that added it ([`version`]).
+    pub since: u32,
     /// What it keeps, said in each script above it.
     pub keeps: &'static str,
     pub columns: &'static [Column],
@@ -136,6 +144,8 @@ pub struct Index {
     pub name: &'static str,
     pub columns: &'static [&'static str],
     pub only: Option<&'static str>,
+    /// The schema version that added it ([`version`]).
+    pub since: u32,
 }
 
 /// The schema every database keeps its tables in.
@@ -153,7 +163,10 @@ pub const LOGIN: &str = "xmip_storage";
 /// `02-<domain>-database.sql` and filled by `03-<domain>-schema.sql`. One
 /// server holding all three runs them as they sort; a server holding one
 /// domain runs the roles and that domain's two, and the domains need
-/// nothing of one another.
+/// nothing of one another. Each schema script makes the schema at
+/// [`VERSION`] and records it; a database made at an earlier release is
+/// brought up by `04-<domain>-upgrade-<from>-<to>.sql`, one for each
+/// release after the first, run in order of their versions ([`upgrade`]).
 #[must_use]
 pub fn scripts(server: Server) -> Vec<(String, String)> {
     let mut scripts = vec![("01-roles.sql".to_string(), dialect::roles(server))];
@@ -165,86 +178,114 @@ pub fn scripts(server: Server) -> Vec<(String, String)> {
         let name = format!("03-{}-schema.sql", database.word());
         scripts.push((name, tables(server, database)));
     }
+    for database in Database::ALL {
+        // Each release after the first, from the one before it.
+        for from in (1..=VERSION).filter(|from| *from < VERSION) {
+            let step = upgrade::script(&TABLES, server, database, from, from + 1);
+            scripts.push((upgrade::name(database, from, from + 1), step));
+        }
+    }
     scripts
 }
 
-fn tables(server: Server, database: Database) -> String {
-    let run = match server {
-        Server::PostgreSql => {
-            format!(
-                "Run as a superuser, connected to the {} database.",
-                database.name()
-            )
-        }
+/// Where and as whom `03-<domain>-schema.sql` and an upgrade of `database`
+/// are run.
+fn run_in(server: Server, database: Database) -> String {
+    match server {
+        Server::PostgreSql => format!(
+            "Run as a superuser, connected to the {} database.",
+            database.name()
+        ),
         Server::SqlServer | Server::MariaDb => dialect::run(server).to_string(),
-    };
+    }
+}
+
+fn tables(server: Server, database: Database) -> String {
     let what = format!("the {} database's schema", database.word());
-    let mut text = dialect::head(server, &what, &run);
+    let mut text = dialect::head(server, &what, &run_in(server, database));
     text.push_str(&dialect::schema(server, database));
     for table in TABLES.iter().filter(|table| table.database == database) {
-        let named = |names: &[&str]| -> String {
-            let quoted: Vec<String> = names
-                .iter()
-                .map(|name| dialect::quoted(server, name))
-                .collect();
-            quoted.join(", ")
-        };
-        let lines: Vec<String> = table
-            .columns
-            .iter()
-            .map(|column| {
-                let null = if column.null { "NULL" } else { "NOT NULL" };
-                format!(
-                    "    {} {} {null}",
-                    dialect::quoted(server, column.name),
-                    dialect::kind(server, column.kind)
-                )
-            })
-            .chain(std::iter::once(format!(
-                "    CONSTRAINT {}_key PRIMARY KEY ({})",
-                table.name,
-                named(table.key)
-            )))
-            .chain((!table.unique.is_empty()).then(|| {
-                format!(
-                    "    CONSTRAINT {}_unique UNIQUE ({})",
-                    table.name,
-                    named(table.unique)
-                )
-            }))
-            .collect();
-        let _ = write!(
-            text,
-            "-- {}.\nCREATE TABLE {} (\n{}\n){}\n",
-            table.keeps,
-            dialect::table(server, table.name),
-            lines.join(",\n"),
-            dialect::ended(server, true)
-        );
-        // An index on the key is the primary key itself: a server keeps it
-        // ordered already, so a second would be written with every row and
-        // read by nothing (open problem 40).
-        for index in table
-            .indexes
-            .iter()
-            .filter(|index| index.columns != table.key)
-        {
-            let only = match (server, index.only) {
-                (Server::MariaDb, _) | (_, None) => String::new(),
-                (Server::PostgreSql, Some(flag)) => format!(" WHERE {flag}"),
-                (Server::SqlServer, Some(flag)) => format!(" WHERE {flag} = 1"),
-            };
-            let _ = writeln!(
-                text,
-                "CREATE INDEX {} ON {} ({}){only}{}",
-                dialect::quoted(server, index.name),
-                dialect::table(server, table.name),
-                named(index.columns),
-                dialect::ended(server, false)
-            );
-        }
+        text.push_str(&made(server, table, VERSION));
     }
+    text.push_str(&dialect::recorded(server, VERSION..=VERSION));
     text.push_str(&dialect::granted(server, database));
+    text
+}
+
+/// `names` as `server`'s scripts list them.
+fn named(server: Server, names: &[&str]) -> String {
+    let quoted: Vec<String> = names
+        .iter()
+        .map(|name| dialect::quoted(server, name))
+        .collect();
+    quoted.join(", ")
+}
+
+/// A column as a table making it, or an upgrade adding it, says it.
+fn column(server: Server, column: &Column) -> String {
+    let null = if column.null { "NULL" } else { "NOT NULL" };
+    format!(
+        "{} {} {null}",
+        dialect::quoted(server, column.name),
+        dialect::kind(server, column.kind)
+    )
+}
+
+/// `table` made as the schema holds it at version `at`: its columns, its
+/// keys and its indexes of that version or before.
+fn made(server: Server, table: &Table, at: u32) -> String {
+    let lines: Vec<String> = table
+        .columns
+        .iter()
+        .filter(|kept| kept.since <= at)
+        .map(|kept| format!("    {}", column(server, kept)))
+        .chain(std::iter::once(format!(
+            "    CONSTRAINT {}_key PRIMARY KEY ({})",
+            table.name,
+            named(server, table.key)
+        )))
+        .chain((!table.unique.is_empty()).then(|| {
+            format!(
+                "    CONSTRAINT {}_unique UNIQUE ({})",
+                table.name,
+                named(server, table.unique)
+            )
+        }))
+        .collect();
+    let mut text = format!(
+        "-- {}.\nCREATE TABLE {} (\n{}\n){}\n",
+        table.keeps,
+        dialect::table(server, table.name),
+        lines.join(",\n"),
+        dialect::ended(server, true)
+    );
+    for index in table.indexes.iter().filter(|index| index.since <= at) {
+        text.push_str(&indexed(server, table, index));
+    }
+    text
+}
+
+/// `index` of `table` made — nothing where it is the table's key: a server
+/// keeps its primary key ordered already, so a second would be written with
+/// every row and read by nothing (open problem 40).
+fn indexed(server: Server, table: &Table, index: &Index) -> String {
+    if index.columns == table.key {
+        return String::new();
+    }
+    let only = match (server, index.only) {
+        (Server::MariaDb, _) | (_, None) => String::new(),
+        (Server::PostgreSql, Some(flag)) => format!(" WHERE {flag}"),
+        (Server::SqlServer, Some(flag)) => format!(" WHERE {flag} = 1"),
+    };
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "CREATE INDEX {} ON {} ({}){only}{}",
+        dialect::quoted(server, index.name),
+        dialect::table(server, table.name),
+        named(server, index.columns),
+        dialect::ended(server, false)
+    );
     text
 }
 
@@ -341,6 +382,7 @@ mod tests {
         assert_eq!(
             audit,
             [
+                "schema_version",
                 "audit",
                 "audit_chain_head",
                 "audit_body_chunk",
@@ -352,7 +394,7 @@ mod tests {
             .iter()
             .filter(|table| table.database == Database::Administration)
             .map(|table| table.name);
-        assert!(administration.eq(["administration"]));
+        assert!(administration.eq(["schema_version", "administration"]));
     }
 
     #[test]
@@ -395,6 +437,33 @@ mod tests {
             let tables = schema.matches("CREATE TABLE ").count();
             assert_eq!(schema.matches(") ENGINE=InnoDB;").count(), tables, "{name}");
             assert!(!schema.contains(" WHERE "), "{name}: no partial index");
+        }
+    }
+
+    #[test]
+    fn every_database_records_the_schema_version_it_is_made_at() {
+        for server in Server::ALL {
+            let scripts = scripts(server);
+            for database in Database::ALL {
+                let name = format!("03-{}-schema.sql", database.word());
+                let found = scripts.iter().find(|(named, _)| *named == name);
+                let (_, text) = found.expect("its schema");
+                let versions = dialect::table(server, version::VERSIONS);
+                assert!(
+                    text.contains(&format!("CREATE TABLE {versions} (")),
+                    "{name}"
+                );
+                assert!(
+                    text.contains(&format!("VALUES ({VERSION}, ")),
+                    "{server:?} {name}"
+                );
+            }
+            let steps = usize::try_from(VERSION - 1).expect("a few");
+            assert_eq!(
+                scripts.len(),
+                7 + 3 * steps,
+                "one upgrade per release after the first"
+            );
         }
     }
 }
