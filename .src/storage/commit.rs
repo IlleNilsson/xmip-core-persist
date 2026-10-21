@@ -15,14 +15,18 @@
 //!
 //! **A batch is answered once written, and synced after.** Each write is
 //! answered with the batch's [`Durable`] as soon as the batch is in the
-//! engine — decided and readable — and the batch is synced then: a caller
-//! waiting for its write to be durable waits on it ([`Committer::submit`]),
-//! and a Publication's send is prepared meanwhile ([`Committer::ahead`];
-//! ADR-0018, amendment 2026-10-20).
+//! engine — decided and readable — and the batch is synced then, on a
+//! thread of its own ([`syncer`]), while the writer takes the next: a
+//! caller waiting for its write to be durable waits on it
+//! ([`Committer::submit`]), and a Publication's send is prepared meanwhile
+//! ([`Committer::ahead`]; ADR-0018, amendments 2026-10-20 and 2026-10-21).
 
 mod batch;
+mod syncer;
 
 pub(crate) use batch::Batch;
+
+use syncer::Syncer;
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -127,6 +131,7 @@ impl Committer {
         columns: Arc<Columns>,
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
+        let syncer = Syncer::start(Arc::clone(&store))?;
         let (work, inbox) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("xmip-storage-commit".to_string())
@@ -136,6 +141,7 @@ impl Committer {
                     clock,
                     next,
                     columns,
+                    syncer,
                 };
                 writer.run(&inbox);
             })
@@ -203,6 +209,9 @@ struct Writer<R> {
     clock: Arc<dyn Clock>,
     next: u64,
     columns: Arc<Columns>,
+    /// Where each batch written is synced, while the next is decided; a
+    /// batch handed it is synced before the writer's thread ends.
+    syncer: Syncer,
 }
 
 impl<R: Engine> Writer<R> {
@@ -281,7 +290,7 @@ impl<R: Engine> Writer<R> {
             let _ = reply.send(answer);
         }
         if durable.told().is_none() {
-            durable.tell(self.store.sync().map_err(|failed| failed.to_string()));
+            self.syncer.written(durable);
         }
     }
 
