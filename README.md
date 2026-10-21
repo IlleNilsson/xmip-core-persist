@@ -80,7 +80,17 @@ and 9).
   first place is found by the read that asks for it, never by the writer
   walking a gap (open problem 40; ADR-0013, amendment 2026-10-19; an
   embedded store made before it lacks the index, and nothing migrates it
-  before the first release); claim a
+  before the first release); read a Send Port's queue by when each is due
+  (`read_due`, `DuePart`, `DueQueue`; `storage/due.rs`): what is due now,
+  what waits for a retry, or what failed, each a part of the index
+  `held_due` on queue, failed, due time and place, so a scan reads only
+  what is due — with how many keep a retry's due time and when the
+  earliest not yet due is, which the `held_due_places` table keeps beside
+  where each part's first is; the one writer finds each first again once a
+  batch is decided, by one range from where it was, so no read steps over
+  what `RocksDB` keeps of entries taken out (ADR-0013, amendment
+  2026-10-21); a Journey marked failed waits for no retry, its due time
+  taken out with the mark; claim a
   Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the

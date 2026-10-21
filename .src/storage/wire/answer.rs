@@ -4,6 +4,7 @@
 use codec::cursor::Cursor;
 
 use super::super::dead::{DeadEntry, DeadQueue, Replayed};
+use super::super::due::DueQueue;
 use super::super::failed::FailedQueue;
 use super::super::hold::HeldQueue;
 use super::super::kept_audit::KeptAudit;
@@ -46,6 +47,8 @@ pub(crate) enum Answer {
     Bytes(Option<Vec<u8>>),
     /// A queue's index of failed Journeys.
     FailedQueue(FailedQueue),
+    /// A part of a queue read by when each is due.
+    DueQueue(DueQueue),
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
@@ -149,6 +152,10 @@ impl Form for Answer {
                 write_byte(out, 19);
                 queue.write(out);
             }
+            Self::DueQueue(queue) => {
+                write_byte(out, 20);
+                queue.write(out);
+            }
         }
     }
 
@@ -181,6 +188,7 @@ impl Form for Answer {
                 _ => Some(read_bytes(cursor)?),
             }),
             19 => Self::FailedQueue(FailedQueue::read(cursor)?),
+            20 => Self::DueQueue(DueQueue::read(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }

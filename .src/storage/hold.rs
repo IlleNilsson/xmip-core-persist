@@ -99,9 +99,28 @@ impl HeldQueue {
     /// `None` where it is due, or waits for none.
     #[must_use]
     pub fn due_in(&self, held: &Held) -> Option<std::time::Duration> {
-        let left = held.due_unix_nanos? - self.read_unix_nanos;
+        held.due_in(self.read_unix_nanos)
+    }
+}
+
+impl Held {
+    /// How long it still waits for its due time as a read at `read`, on
+    /// Xmip Storage's clock, found it — a duration, so no two clocks are
+    /// compared — or `None` where it is due, or waits for none.
+    #[must_use]
+    pub fn due_in(&self, read: i128) -> Option<std::time::Duration> {
+        let left = self.due_unix_nanos? - read;
         let left = u64::try_from(left).ok().filter(|left| *left > 0)?;
         Some(std::time::Duration::from_nanos(left))
+    }
+
+    /// When it is due, as its queue's index of when each is due keeps it:
+    /// its retry's due time, never before the first nanosecond, or zero —
+    /// the epoch — where it is due since it was held.
+    #[must_use]
+    pub fn due_at(&self) -> u64 {
+        self.due_unix_nanos
+            .map_or(0, |due| super::row::nanos(due).max(1))
     }
 }
 
@@ -185,6 +204,8 @@ pub(crate) fn wait<R: Engine>(
 
 /// The Journey held at `sequence` in `queue` marked `failed`, or not, in
 /// `batch`; nothing where none is held there or it is marked so already.
+/// Marked failed, it waits for an operator and for no retry, so a due time
+/// it kept is gone with the mark.
 pub(crate) fn mark<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
@@ -199,6 +220,9 @@ pub(crate) fn mark<R: Engine>(
     let mut held = Held::from_bytes(&bytes)?;
     if held.failed != failed {
         held.failed = failed;
+        if failed {
+            held.due_unix_nanos = None;
+        }
         batch.put(KINDS.entry, key, Some(held.bytes()));
     }
     Ok(())

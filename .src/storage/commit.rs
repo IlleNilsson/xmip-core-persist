@@ -53,6 +53,8 @@ pub(crate) const HELD: &str = "held";
 /// A held Journey's place, found by its queue and its Journey.
 pub(crate) const HELD_JOURNEY: &str = "held-journey";
 pub(crate) const PLACES: &str = "held-places";
+/// Where a queue's first entries by when they are due are (`super::due`).
+pub(crate) const DUE_PLACES: &str = "held-due-places";
 /// A node's Dead Message Queue: its entries, each one's place by its
 /// Message, and its places.
 pub(crate) const DEAD: &str = "dead-message";
@@ -239,6 +241,8 @@ impl<R: Engine> Writer<R> {
             }
             decided.push((reply, done));
         }
+        // Each queue's first due found again, as the batch leaves it.
+        let settled = super::due::settle(&self.store, &mut batch);
         if self.next != before {
             batch.put(
                 SEQUENCE,
@@ -249,6 +253,8 @@ impl<R: Engine> Writer<R> {
         let empty = batch.changes.is_empty();
         let written = if empty {
             Ok(())
+        } else if let Err(failed) = settled {
+            Err(failed)
         } else {
             // Each searchable record stamped on this clock, and its index
             // entries in the same write (`super::columns`), unsynced: it

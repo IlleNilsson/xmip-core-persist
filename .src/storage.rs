@@ -1,50 +1,36 @@
 //! Xmip Storage: the doorway to all storage.
 //!
-//! The nodes declaring the Storage role serve every storage operation, and
-//! every other node calls those operations, never a database directly
-//! (`runtime-model.md` section 3, *The Ledger*; ADR-0056, amendment
-//! 2026-10-01, the Storage role). [`XmipStorage`] is those operations, once:
+//! The nodes of the Storage role serve every storage operation, and every
+//! other node calls them, never a database (`runtime-model.md` section 3;
+//! ADR-0056, amendment 2026-10-01). [`XmipStorage`] is those operations:
 //!
 //! - **the runtime database**, the Ledger: write and read a Stream chunk, a
 //!   Message and a Journey; write a Publication — a Message, its Journeys,
-//!   the ones a paused Subscription holds and the ones that wait in their
-//!   Send Port's queue, the claims its node takes on them, its Dead Message
-//!   Queue entry where nothing matched, and its audit record — as one; read
-//!   a queue, oldest first; read a node's Dead Message Queue, oldest first,
-//!   and replay an entry; claim a Journey, renew the claim and release it;
-//!   hand a step on, leaving a queue or waiting in one; write an audit
-//!   record as it is first written;
-//! - **a search** of any of them: the records one index of one table finds, by
-//!   the columns each record's table lays out beside its sealed body,
+//!   those held and queued, its node's claims, its Dead Message Queue entry,
+//!   its audit record — as one; read a queue oldest first, or what is due in
+//!   it; read and replay a node's Dead Message Queue; claim, renew and
+//!   release a Journey; hand a step on; write an audit record;
+//! - **a search** of any of them: the records one index of one table finds,
 //!   in the clear (`query`, proposed 2026-10-09);
-//! - **the audit keeper**, moving audit records from the runtime database to
-//!   the audit database (ADR-0062, amendment 2026-10-01; ADR-0070,
-//!   amendment 2026-10-10), a record of an act on a Message with its
-//!   Stream's bytes beside it (ADR-0070);
+//! - **the audit keeper**, moving audit records, each with its Streams'
+//!   bytes, to the audit database (ADR-0062, ADR-0070);
 //! - **the administration database**: what must be shared and kept over
-//!   time — registration, membership, Modules, Handlers, deployment state,
-//!   operator state; never configuration (`deployment-model.md` section 7);
-//! - **the audit database**: the audit kept over time, a data domain of its
-//!   own, so it may be on other storage than the other two.
+//!   time, never configuration (`deployment-model.md` section 7);
+//! - **the audit database**: the audit kept over time, on storage of its own.
 //!
 //! **Every write counts only once the database has it durably** (the owner,
-//! 2026-10-01: *Safe way*): an operation returns once its write is on disk —
-//! synced on an embedded Storage node, committed behind a database server.
-//! Two count later, and say so: a Stream chunk is durable with its
-//! Publication ([`XmipStorage::write_chunk`]), and a Publication once its
-//! [`Durable`] says, so a receive cycle is one statement ([`statement`]).
+//! 2026-10-01: *Safe way*): synced on an embedded Storage node, committed
+//! behind a database server. A Stream chunk counts with its Publication
+//! ([`XmipStorage::write_chunk`]), and a Publication once its [`Durable`]
+//! says, so a receive cycle is one statement ([`statement`]).
 //!
-//! **An operation is all or nothing.** Where one fails half-way — a record
-//! it reads cannot be read, or fails its tag — nothing of it is written,
-//! though the others sharing its write are.
+//! **An operation is all or nothing.** Where one fails half-way, nothing of
+//! it is written, though the others sharing its write are.
 //!
-//! Three things answer to the trait: [`Embedded`], the embedded Storage
-//! node's own databases; [`StorageClient`], a node reaching the Storage nodes
-//! round robin over Xmip's TLS; and whatever serves a database server
-//! (`xmip-core-persist-postgresql`, which follows). A node that declares the
-//! Storage role itself calls its [`Embedded`] in process — not a connection,
-//! so no TLS — and every other node calls a [`StorageClient`]; both are the
-//! same trait, so nothing above them knows which it has.
+//! Three things answer to the trait: [`Embedded`], in process on a node of
+//! the Storage role; [`StorageClient`], every other node's, round robin over
+//! Xmip's TLS; and whatever serves a database server, which follows. Nothing
+//! above them knows which it has.
 
 mod audit_entry;
 mod audited;
@@ -55,6 +41,7 @@ mod columns;
 mod commit;
 pub mod database;
 mod dead;
+mod due;
 mod durable;
 mod embedded;
 mod facts;
@@ -79,6 +66,7 @@ pub use client::{StorageClient, statement};
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
+pub use due::{DuePart, DueQueue};
 pub use durable::Durable;
 pub use embedded::Embedded;
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
@@ -208,6 +196,18 @@ pub trait XmipStorage: Send + Sync {
     /// # Errors
     /// When it cannot be read, or fails its tag.
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError>;
+
+    /// `part` of `queue` by when each is due ([`DueQueue`]): up to `most`
+    /// from the due time and place `from` on, a range from where its first is.
+    /// # Errors
+    /// When it cannot be read, or fails its tag.
+    fn read_due(
+        &self,
+        queue: u128,
+        part: DuePart,
+        from: (u64, u64),
+        most: u32,
+    ) -> Result<DueQueue, PersistError>;
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place

@@ -18,6 +18,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::audit_entry::AuditEntry;
 use super::dead::Replay;
+use super::due::DuePart;
 use super::hand_on::HandOn;
 use super::publication::Publication;
 use super::query::Query;
@@ -65,6 +66,7 @@ pub(crate) enum Request {
     ReadKeptAuditChunk(AuditId, Option<StreamId>, u32),
     ReadKeptAuditStream(AuditId, StreamId),
     ReadFailed(u128, u64, u32),
+    ReadDue(u128, DuePart, (u64, u64), u32),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -104,6 +106,14 @@ impl Request {
                 write_byte(out, 27);
                 write_u128(out, *queue);
                 write_u64(out, *from);
+                write_u32(out, *most);
+            }
+            Self::ReadDue(queue, part, (due, place), most) => {
+                write_byte(out, 28);
+                write_u128(out, *queue);
+                part.write(out);
+                write_u64(out, *due);
+                write_u64(out, *place);
                 write_u32(out, *most);
             }
             _ => {}
@@ -218,7 +228,8 @@ impl Form for Request {
             | Self::ReadStream(_)
             | Self::ReadKeptAuditChunk(..)
             | Self::ReadKeptAuditStream(..)
-            | Self::ReadFailed(..) => self.write_late(out),
+            | Self::ReadFailed(..)
+            | Self::ReadDue(..) => self.write_late(out),
         }
     }
 
@@ -259,6 +270,12 @@ impl Form for Request {
                 Self::ReadKeptAuditStream(id, StreamId::new(read_u128(cursor)?))
             }
             27 => Self::ReadFailed(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
+            28 => Self::ReadDue(
+                read_u128(cursor)?,
+                DuePart::read(cursor)?,
+                (read_u64(cursor)?, read_u64(cursor)?),
+                read_u32(cursor)?,
+            ),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }
@@ -310,6 +327,7 @@ mod tests {
             Request::KeepAudit(64, 4096),
             Request::ReadHeld(7, 2, 64),
             Request::ReadFailed(7, 2, 64),
+            Request::ReadDue(7, crate::storage::DuePart::Waiting, (3, 2), 64),
             Request::HandOn(delivered(&claim)),
             Request::RemoveAdministration(AdministrationKind::Operator, 3),
             Request::Publish(Box::new(Publication {
@@ -377,6 +395,12 @@ mod tests {
             }),
             Answer::DeadQueue(DeadQueue::default()),
             Answer::FailedQueue(FailedQueue::default()),
+            Answer::DueQueue(crate::storage::DueQueue {
+                retrying: 4,
+                next_due_unix_nanos: Some(9),
+                read_unix_nanos: 5,
+                ..crate::storage::DueQueue::default()
+            }),
             Answer::Dead(DeadEntry::Replayed),
             Answer::Replayed(Replayed::Before),
             Answer::Records(vec![1, 2, 3]),

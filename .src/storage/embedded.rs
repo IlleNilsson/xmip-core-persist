@@ -23,6 +23,7 @@ use super::audit_entry::AuditEntry;
 use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
+use super::due::{self, DuePart, DueQueue};
 use super::durable::Durable;
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
@@ -41,6 +42,7 @@ use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 mod administration;
 mod keeper;
+mod searched;
 mod submitted;
 mod versioned;
 
@@ -268,6 +270,17 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         dead::read(&self.runtime, queue, from, most)
     }
 
+    fn read_due(
+        &self,
+        queue: u128,
+        part: DuePart,
+        from: (u64, u64),
+        most: u32,
+    ) -> Result<DueQueue, PersistError> {
+        let now = self.clock.unix_timestamp_nanos();
+        due::read(&self.runtime, (queue, part), (from, most), now)
+    }
+
     fn read_dead_message(
         &self,
         queue: u128,
@@ -373,26 +386,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
-        let plan = query.ask.plan();
-        let asked = (query.most, query.newest_first);
-        let at = (plan.table, plan.index);
-        match plan.database {
-            Database::Runtime => {
-                self.runtime_columns
-                    .find(&self.runtime, at, &plan.equal, plan.range, asked)
-            }
-            Database::Administration => self.administration_columns.find(
-                &self.administration,
-                at,
-                &plan.equal,
-                plan.range,
-                asked,
-            ),
-            Database::Audit => {
-                self.audit_columns
-                    .find(&self.audit, at, &plan.equal, plan.range, asked)
-            }
-        }
+        self.searched(query)
     }
 }
 

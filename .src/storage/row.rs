@@ -137,7 +137,7 @@ impl Columned for Held {
             ("sequence", Some(count(self.sequence))),
             ("held_at", Some(time(self.held_unix_nanos))),
             ("failed", Some(Value::Flag(self.failed))),
-            ("due_at", self.due_unix_nanos.map(|due| time(nanos(due)))),
+            ("due_at", Some(time(self.due_at()))),
         ]
     }
 }

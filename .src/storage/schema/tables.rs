@@ -42,7 +42,7 @@ const fn versions(database: Database) -> Table {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 23] = [
+pub const TABLES: [Table; 24] = [
     versions(Database::Runtime),
     Table {
         database: Database::Runtime,
@@ -112,6 +112,24 @@ pub const TABLES: [Table; 23] = [
             column("first_place", Kind::Number),
             column("next_place", Kind::Number),
             column("held", Kind::Number),
+        ],
+        key: &["queue"],
+        unique: &[],
+        indexes: &[],
+    },
+    Table {
+        database: Database::Runtime,
+        name: "held_due_places",
+        since: 1,
+        keeps: "each queue's places in the order its Journeys are due: the place no Journey \
+                due since it was held is before, the due time and place no retry is before, \
+                and how many keep a retry's due time",
+        columns: &[
+            column("queue", Kind::Identifier),
+            column("first_due_place", Kind::Number),
+            column("first_retry_at", Kind::Time),
+            column("first_retry_place", Kind::Number),
+            column("retrying", Kind::Number),
         ],
         key: &["queue"],
         unique: &[],

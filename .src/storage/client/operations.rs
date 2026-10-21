@@ -9,6 +9,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 use super::super::XmipStorage;
 use super::super::audit_entry::AuditEntry;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
+use super::super::due::{DuePart, DueQueue};
 use super::super::durable::Durable;
 use super::super::failed::FailedQueue;
 use super::super::hand_on::HandOn;
@@ -149,6 +150,22 @@ impl XmipStorage for StorageClient {
             self.ask(&Request::ReadFailed(queue, from, most))?,
             |answer| match answer {
                 Answer::FailedQueue(queue) => Ok(queue),
+                other => Err(other),
+            },
+        )
+    }
+
+    fn read_due(
+        &self,
+        q: u128,
+        p: DuePart,
+        f: (u64, u64),
+        m: u32,
+    ) -> Result<DueQueue, PersistError> {
+        expected(
+            self.ask(&Request::ReadDue(q, p, f, m))?,
+            |answer| match answer {
+                Answer::DueQueue(queue) => Ok(queue),
                 other => Err(other),
             },
         )

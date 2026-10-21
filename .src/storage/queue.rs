@@ -269,69 +269,11 @@ impl Form for Places {
 mod tests {
     use super::super::hold::{self, Hold, KINDS};
     use super::*;
-    use crate::fixture::Memory;
-    use crate::{Change, Entry, IndexEntry, RecordChange};
+    use crate::fixture::Counted;
+    use crate::{IndexEntry, RecordChange};
     use secret::KekName;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use xcore::JourneyId;
-
-    /// An engine in memory that counts the keys it reads one at a time and
-    /// the ranges it reads.
-    #[derive(Default)]
-    struct Counted {
-        memory: Memory,
-        reads: AtomicUsize,
-        ranges: AtomicUsize,
-    }
-
-    impl Counted {
-        /// The keys and the ranges read since it was last asked.
-        fn read(&self) -> (usize, usize) {
-            (
-                self.reads.swap(0, Ordering::SeqCst),
-                self.ranges.swap(0, Ordering::SeqCst),
-            )
-        }
-    }
-
-    impl Engine for Counted {
-        fn engine(&self) -> &'static str {
-            "counted"
-        }
-
-        fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            self.memory.read(key)
-        }
-
-        fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
-            self.memory.write(key, value)
-        }
-
-        fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
-            self.memory.write_new(key, value)
-        }
-
-        fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
-            self.memory.remove(key)
-        }
-
-        fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
-            self.memory.apply(batch)
-        }
-
-        fn scan(
-            &self,
-            first: &[u8],
-            last: &[u8],
-            most: usize,
-            reverse: bool,
-        ) -> Result<Vec<Entry>, PersistError> {
-            self.ranges.fetch_add(1, Ordering::SeqCst);
-            self.memory.scan(first, last, most, reverse)
-        }
-    }
 
     const QUEUE: u128 = 7;
     /// A gap of a million places.
@@ -394,7 +336,7 @@ mod tests {
         ];
         let columns = Columns::of(Database::Runtime);
         let laid = columns.written(store, changes, 0).expect("laid out");
-        assert_eq!(laid.1.len(), 2, "its two index entries taken out with it");
+        assert_eq!(laid.1.len(), 3, "its three index entries taken out with it");
         laid
     }
 
