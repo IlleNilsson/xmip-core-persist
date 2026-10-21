@@ -10,6 +10,7 @@ use crate::{Change, EncryptedStore, Engine, Entry, IndexEntry, PersistError};
 use secret::{DataKey, Held, KekName, KeyStore, SecretError};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 /// An engine in memory: what the layer hands an engine, and what an
@@ -91,6 +92,75 @@ impl Engine for Memory {
         } else {
             range.take(most).map(copied).collect()
         })
+    }
+}
+
+/// An engine in memory that counts what it is asked to read: each key read
+/// on its own, each range, and each entry a range found.
+#[derive(Default)]
+pub struct Counted {
+    memory: Memory,
+    reads: AtomicUsize,
+    ranges: AtomicUsize,
+    found: AtomicUsize,
+}
+
+impl Counted {
+    /// The keys and the ranges read since it was last asked, counted anew.
+    pub fn read(&self) -> (usize, usize) {
+        self.found.store(0, Ordering::SeqCst);
+        (
+            self.reads.swap(0, Ordering::SeqCst),
+            self.ranges.swap(0, Ordering::SeqCst),
+        )
+    }
+
+    /// The keys read, the ranges read, and the entries the ranges found,
+    /// since it was last asked, counted anew.
+    pub fn touched(&self) -> (usize, usize, usize) {
+        let found = self.found.swap(0, Ordering::SeqCst);
+        let (reads, ranges) = self.read();
+        (reads, ranges, found)
+    }
+}
+
+impl Engine for Counted {
+    fn engine(&self) -> &'static str {
+        "counted"
+    }
+
+    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.memory.read(key)
+    }
+
+    fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
+        self.memory.write(key, value)
+    }
+
+    fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
+        self.memory.write_new(key, value)
+    }
+
+    fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
+        self.memory.remove(key)
+    }
+
+    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+        self.memory.apply(batch)
+    }
+
+    fn scan(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<Entry>, PersistError> {
+        self.ranges.fetch_add(1, Ordering::SeqCst);
+        let found = self.memory.scan(first, last, most, reverse)?;
+        self.found.fetch_add(found.len(), Ordering::SeqCst);
+        Ok(found)
     }
 }
 

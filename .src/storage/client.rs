@@ -507,6 +507,16 @@ mod tests {
             self.beneath.read_failed(q, f, m)
         }
 
+        fn read_due(
+            &self,
+            q: u128,
+            p: crate::storage::DuePart,
+            f: (u64, u64),
+            m: u32,
+        ) -> Result<crate::storage::DueQueue, PersistError> {
+            self.beneath.read_due(q, p, f, m)
+        }
+
         fn read_dead_message(&self, q: u128, m: MessageId) -> Result<DeadEntry, PersistError> {
             self.beneath.read_dead_message(q, m)
         }

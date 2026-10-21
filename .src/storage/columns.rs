@@ -24,6 +24,8 @@
 //! one it replaces, and a record removed takes its entries with it, all in
 //! its write: the record it replaces is read for them — a point read of one
 //! key, which a server's `UPDATE` makes too.
+mod ordered;
+
 use std::collections::HashMap;
 
 use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
@@ -255,56 +257,13 @@ impl Columns {
         store.scan_index(&first, &last, most, reverse)
     }
 
-    /// The records `index` of `table` finds whose first columns are
-    /// `equal` and whose last — a place, a count or a time — is `from` or
-    /// later: up to `most`, in the index's order, each with that last
-    /// value as its entry's key holds it, so where each is in that order is
-    /// known without reading it. One range of the engine.
-    ///
-    /// # Errors
-    ///
-    /// Where the index is not one whose last column follows `equal`, or an
-    /// entry fails its tag.
-    pub(crate) fn find_from<E: Engine>(
-        &self,
-        store: &EncryptedStore<E>,
-        at: (&str, &str),
-        equal: &[Value],
-        from: u64,
-        most: usize,
-    ) -> Result<Vec<(u64, u128)>, PersistError> {
-        let (index, range) = self.range(at, equal, Some((from, u64::MAX)))?;
-        let not_last = || super::record::malformed(format!("{}: not its last", index.name));
-        if equal.len() + 1 != index.columns.len() {
-            return Err(not_last());
-        }
-        let Some((first, last)) = range else {
-            return Ok(Vec::new());
-        };
-        let entries = store.scan_index_keyed(&first, &last, most, false)?;
-        entries
-            .into_iter()
-            .map(|(key, id)| {
-                // The key ends in the last value, eight bytes, and the
-                // record's identifier, sixteen.
-                let end = key.len().checked_sub(16).ok_or_else(not_last)?;
-                let value = key.get(end.saturating_sub(8)..end).ok_or_else(not_last)?;
-                let value: [u8; 8] = value.try_into().map_err(|_| not_last())?;
-                Ok((u64::from_be_bytes(value), id))
-            })
-            .collect()
-    }
-
-    /// `index` of `table`, and the first and last keys of the range its
-    /// entries whose first columns are `equal` — and whose next, where
-    /// `range` says, is from one value to another, both included — are
-    /// kept in; no range where it holds none.
-    fn range(
+    /// `index` of `table`, and the start of the keys of its entries whose
+    /// first columns are `equal`.
+    fn prefix(
         &self,
         (table, index): (&str, &str),
         equal: &[Value],
-        range: Option<(u64, u64)>,
-    ) -> Result<(&'static Index, Option<Range>), PersistError> {
+    ) -> Result<(&'static Index, Vec<u8>), PersistError> {
         let missing = || super::record::malformed(format!("no index {table}.{index}"));
         let table = self::table(self.database, table).ok_or_else(missing)?;
         let index: &Index = table
@@ -316,6 +275,20 @@ impl Columns {
         for value in equal.iter().take(index.columns.len()) {
             prefix.extend(encoded(value));
         }
+        Ok((index, prefix))
+    }
+
+    /// `index` of `table`, and the first and last keys of the range its
+    /// entries whose first columns are `equal` — and whose next, where
+    /// `range` says, is from one value to another, both included — are
+    /// kept in; no range where it holds none.
+    fn range(
+        &self,
+        at: (&str, &str),
+        equal: &[Value],
+        range: Option<(u64, u64)>,
+    ) -> Result<(&'static Index, Option<Range>), PersistError> {
+        let (index, prefix) = self.prefix(at, equal)?;
         let keys = match range {
             Some((from, to)) if from > to => None,
             Some((from, to)) => Some((

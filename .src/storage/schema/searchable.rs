@@ -24,6 +24,12 @@
 //! page of a queue is one range from its place. On a server that index is
 //! the table's primary key, and its scripts make no second one
 //! (`super::scripts`).
+//!
+//! **So is when a held Journey is due** (the owner, 2026-10-19). `held_due`
+//! orders a queue's entries by whether they failed, when each is due and
+//! its place: those due since they were held first, in their order, then
+//! each retry by its due time, so what is due now is one range of it and a
+//! scan's cost follows what is due, not what is held.
 
 use super::{Column, Index, Kind};
 
@@ -119,14 +125,19 @@ pub(super) const HELD: &[Column] = &[
     column("body", Kind::Bytes),
     column("held_at", Kind::Time),
     column("failed", Kind::Flag),
-    maybe("due_at", Kind::Time),
+    // When it is due: its retry's due time, or the epoch, before every
+    // time, for one due since it was held (the owner, 2026-10-19).
+    column("due_at", Kind::Time),
 ];
 
-/// By when it was held; and by its place, the queue's order, which a page
-/// of the queue reads from its place in one range (open problem 40).
+/// By when it was held; by its place, the queue's order, which a page of
+/// the queue reads from its place in one range (open problem 40); and by
+/// when it is due, so a scan reads only what is due, one range from where
+/// the first due is (the owner, 2026-10-19).
 pub(super) const HELD_INDEXES: &[Index] = &[
     index(9, "held_time", &["queue", "held_at"]),
     index(20, "held_place", &["queue", "sequence"]),
+    index(23, "held_due", &["queue", "failed", "due_at", "sequence"]),
 ];
 
 pub(super) const DEAD_MESSAGE: &[Column] = &[

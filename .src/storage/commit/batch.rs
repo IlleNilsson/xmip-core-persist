@@ -52,6 +52,18 @@ impl Batch<'_> {
         }
     }
 
+    /// What this batch itself has written of `kind`, by key: the value it
+    /// leaves there, or `None` where it takes it out.
+    pub(crate) fn written_of(
+        &self,
+        kind: &'static str,
+    ) -> impl Iterator<Item = (&[u8], Option<&[u8]>)> {
+        self.written
+            .iter()
+            .filter(move |((written, _), _)| *written == kind)
+            .map(|((_, key), value)| (key.as_slice(), value.as_deref()))
+    }
+
     pub(crate) fn put(&mut self, kind: &'static str, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.written.insert((kind, key.clone()), value.clone());
         self.changes.push((kind, key, value));
