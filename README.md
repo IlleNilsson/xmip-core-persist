@@ -183,7 +183,13 @@ and 9).
   A batch is written, answered, then synced: every write but a Publication
   is waited on until durable, and a Publication is answered with its claims
   and its durability (`storage::Durable`), so its sends are prepared while
-  the log syncs (ADR-0018, amendment 2026-10-20).
+  the log syncs (ADR-0018, amendment 2026-10-20). The sync is a thread of
+  its own (`xmip-storage-sync`), handed each batch once it is written, so
+  the writer decides the next batch while the last syncs and one sync makes
+  every batch written meanwhile durable together; until 2026-10-21 the
+  writer synced each batch itself, and a Publication waited out the
+  previous Message's hand-on sync before it was decided (ADR-0018,
+  amendment 2026-10-21).
   Each operation is decided on a stage of its own over the batch, and the
   batch takes the stage only once the whole operation has been decided.
 - **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
