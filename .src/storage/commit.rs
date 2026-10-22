@@ -90,6 +90,8 @@ pub(crate) enum Op {
     },
     Release(Claim),
     HandOn(Box<HandOn>),
+    /// A Work Process's turn: its hand-on with its Instances (`super::instance`).
+    Turn(Box<super::instance::Turn>),
     /// A Message, its Journeys, the ones held, its Dead Message Queue entry
     /// and its audit record, in one batch, once by its Message.
     Publish(Box<Publication>),
@@ -333,6 +335,7 @@ impl<R: Engine> Writer<R> {
                 _ => Ok(Done::Yes(false)),
             },
             Op::HandOn(hand_on) => claim::hand_on(&self.store, batch, &hand_on, now).map(Done::Yes),
+            Op::Turn(turn) => super::instance::turn(&self.store, batch, &turn, now).map(Done::Yes),
             Op::Publish(asked) => match publication::decide(&self.store, batch, &asked, now)? {
                 Decided::Before(held) => Ok(Done::Claims(held)),
                 Decided::Now(held) => self

@@ -50,7 +50,9 @@ mod facts;
 mod failed;
 mod hand_on;
 mod hold;
+mod instance;
 mod kept_audit;
+mod origin;
 mod publication;
 mod query;
 mod queue;
@@ -76,6 +78,7 @@ pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
 pub use hand_on::{HandOn, Wait};
 pub use hold::{Held, HeldQueue, Hold, named};
+pub use instance::{Correlation, InstanceRecord, InstanceWrite, Turn};
 pub use kept_audit::KeptAudit;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
@@ -296,6 +299,31 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read or written; nothing of it is written then.
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError>;
 
+    /// Hand a Work Processs turn on as one atomic write: its Journeys
+    /// hand-on, the Instances it moved and the correlation keys it set and
+    /// let go; or nothing, and `false`, where the claim is no longer its
+    /// holders or an Instance no longer stands at the turn it was read at
+    /// (`instance`).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read or written; nothing of it is written then.
+    fn turn(&self, turn: &Turn) -> Result<bool, PersistError>;
+
+    /// The Work Process Instance `instance`, where the Ledger keeps one.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read.
+    fn read_instance(&self, instance: u128) -> Result<Option<InstanceRecord>, PersistError>;
+
+    /// The Instance the correlation key `correlation` belongs to, where one
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read.
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError>;
     /// Write an audit record to the runtime database, where it is first
     /// written (ADR-0062, amendment 2026-10-01).
     ///

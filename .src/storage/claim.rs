@@ -140,11 +140,13 @@ pub(crate) fn hand_on<R: Engine>(
         Standing::Held => {}
     }
     let result = &hand_on.result;
+    super::origin::counted(store, batch, result, &hand_on.queued)?;
     batch.record(JOURNEY, result.journey.value(), result);
     for message in &hand_on.messages {
         batch.record(MESSAGE, message.message.value(), message);
     }
     for next in &hand_on.next {
+        super::origin::counted(store, batch, next, &hand_on.queued)?;
         batch.record(JOURNEY, next.journey.value(), next);
     }
     for queue in &hand_on.leaves {

@@ -14,6 +14,7 @@ use super::super::durable::Durable;
 use super::super::failed::FailedQueue;
 use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
+use super::super::instance::{InstanceRecord, Turn};
 use super::super::kept_audit::KeptAudit;
 use super::super::publication::Publication;
 use super::super::query::Query;
@@ -241,6 +242,30 @@ impl XmipStorage for StorageClient {
 
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
         expected(self.ask(&Request::HandOn(hand_on.clone()))?, yes)
+    }
+
+    fn turn(&self, turn: &Turn) -> Result<bool, PersistError> {
+        expected(self.ask(&Request::Turn(Box::new(turn.clone())))?, yes)
+    }
+
+    fn read_instance(&self, instance: u128) -> Result<Option<InstanceRecord>, PersistError> {
+        expected(
+            self.ask(&Request::ReadInstance(instance))?,
+            |answer| match answer {
+                Answer::Instance(record) => Ok(record.map(|record| *record)),
+                other => Err(other),
+            },
+        )
+    }
+
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        expected(
+            self.ask(&Request::ReadCorrelation(correlation))?,
+            |answer| match answer {
+                Answer::Records(found) => Ok(found.first().copied()),
+                other => Err(other),
+            },
+        )
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
