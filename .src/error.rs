@@ -30,6 +30,9 @@ pub enum PersistError {
     /// A database holds a schema version this build does not read: one
     /// newer than its own (`storage::schema::version`).
     Schema { reason: String },
+    /// A Storage node that is a standby serves no operation: it copies its
+    /// primary's writes, and a node asks the primary (`storage::standby`).
+    Standby { reason: String },
 }
 
 impl PersistError {
@@ -57,7 +60,7 @@ impl fmt::Display for PersistError {
             Self::Record { reason } => write!(f, "record: {reason}"),
             Self::Failed { reason } => write!(f, "a Storage node: {reason}"),
             Self::Unreachable { reason } => write!(f, "Xmip Storage: {reason}"),
-            Self::Schema { reason } => f.write_str(reason),
+            Self::Schema { reason } | Self::Standby { reason } => f.write_str(reason),
         }
     }
 }

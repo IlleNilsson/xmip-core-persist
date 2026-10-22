@@ -27,6 +27,7 @@ use super::record::{
     StreamChunk, malformed, read_byte, read_u32, read_u64, read_u128, write_byte, write_u32,
     write_u64, write_u128,
 };
+use super::standby::Follow;
 use super::stream::StreamRecord;
 use crate::PersistError;
 
@@ -67,6 +68,12 @@ pub(crate) enum Request {
     ReadKeptAuditStream(AuditId, StreamId),
     ReadFailed(u128, u64, u32),
     ReadDue(u128, DuePart, (u64, u64), u32),
+    /// What the Storage node is now: primary or standby, in which epoch
+    /// (`super::standby`).
+    Standing,
+    /// A standby asking to be handed the primary's writes from where it is;
+    /// the connection carries them from then on, frame after frame.
+    Follow(Follow),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -115,6 +122,11 @@ impl Request {
                 write_u64(out, *due);
                 write_u64(out, *place);
                 write_u32(out, *most);
+            }
+            Self::Standing => write_byte(out, 29),
+            Self::Follow(follow) => {
+                write_byte(out, 30);
+                follow.write(out);
             }
             _ => {}
         }
@@ -223,13 +235,8 @@ impl Form for Request {
                 write_byte(out, 21);
                 replay.write(out);
             }
-            Self::Query(_)
-            | Self::WriteStream(..)
-            | Self::ReadStream(_)
-            | Self::ReadKeptAuditChunk(..)
-            | Self::ReadKeptAuditStream(..)
-            | Self::ReadFailed(..)
-            | Self::ReadDue(..) => self.write_late(out),
+            // Numbered from 22 on.
+            _ => self.write_late(out),
         }
     }
 
@@ -276,6 +283,8 @@ impl Form for Request {
                 (read_u64(cursor)?, read_u64(cursor)?),
                 read_u32(cursor)?,
             ),
+            29 => Self::Standing,
+            30 => Self::Follow(Follow::read(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }

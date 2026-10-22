@@ -34,6 +34,8 @@
 
 mod audit_entry;
 mod audited;
+#[cfg(test)]
+mod authority;
 mod chain;
 mod claim;
 pub mod client;
@@ -56,13 +58,14 @@ mod record;
 mod row;
 pub mod schema;
 mod server;
+pub mod standby;
 mod stream;
 mod wire;
 
 pub use audit_entry::{AuditBody, AuditEntry};
 pub use audited::{Audited, KeptStream};
 pub use chain::{canonical_form, carried_streams, chain_digest};
-pub use client::{StorageClient, statement};
+pub use client::{Reached, StorageClient, statement};
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
 };
@@ -81,6 +84,7 @@ pub use record::{
     StreamChunk,
 };
 pub use server::{ALPN, StorageServer};
+pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
 
 use std::sync::Arc;

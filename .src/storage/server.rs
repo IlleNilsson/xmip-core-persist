@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::XmipStorage;
+use super::standby::{Standing, StorageNode};
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
@@ -60,6 +61,39 @@ impl StorageServer {
         listener: TcpListener,
         identity: &tls::Identity,
     ) -> Result<Self, PersistError> {
+        let serving = Serving {
+            storage,
+            node: None,
+        };
+        Self::serving(serving, listener, identity)
+    }
+
+    /// Serve `node`, one Storage node of several, as [`StorageServer::start`]
+    /// serves one: its operations while it is the primary, and to the other
+    /// Storage nodes what it is now and, while primary, its writes
+    /// (`super::standby`).
+    ///
+    /// # Errors
+    ///
+    /// As [`StorageServer::start`].
+    pub fn several(
+        node: &Arc<StorageNode>,
+        listener: TcpListener,
+        identity: &tls::Identity,
+    ) -> Result<Self, PersistError> {
+        let serving = Serving {
+            storage: node.served(),
+            node: Some(Arc::clone(node)),
+        };
+        Self::serving(serving, listener, identity)
+    }
+
+    fn serving(
+        serving: Serving,
+        listener: TcpListener,
+        identity: &tls::Identity,
+    ) -> Result<Self, PersistError> {
+        let storage = Arc::new(serving);
         let failed = |reason: String| PersistError::engine("xmip-storage", reason);
         let config =
             tls::alpn::selecting(identity.server().map_err(|e| failed(e.message))?, &[ALPN]);
@@ -118,9 +152,33 @@ impl Drop for StorageServer {
     }
 }
 
+/// What a server serves: Xmip Storage's operations, and the Storage node
+/// of several they are, where they are one.
+struct Serving {
+    storage: Arc<dyn XmipStorage>,
+    node: Option<Arc<StorageNode>>,
+}
+
+impl Serving {
+    /// What it is now: a Storage node of several says; one alone is the
+    /// primary of no epoch, and hands its writes to nobody.
+    fn standing(&self) -> Standing {
+        self.node.as_ref().map_or(
+            Standing {
+                process: 0,
+                primary: true,
+                epoch: 0,
+                history: 0,
+                next: [1; super::standby::DATABASES],
+            },
+            |node| node.standing(),
+        )
+    }
+}
+
 fn accept(
     listener: &TcpListener,
-    storage: &Arc<dyn XmipStorage>,
+    storage: &Arc<Serving>,
     config: &Arc<tls::ServerConfig>,
     stopping: &Arc<AtomicBool>,
     served: &Served,
@@ -131,7 +189,7 @@ fn accept(
         if stopping.load(Ordering::SeqCst) {
             return;
         }
-        let Ok((connection, _)) = accepted else {
+        let Ok((connection, peer)) = accepted else {
             continue;
         };
         let settled = connection
@@ -145,7 +203,7 @@ fn accept(
         let stopping = Arc::clone(stopping);
         let Ok(thread) = std::thread::Builder::new()
             .name("xmip-storage-connection".to_string())
-            .spawn(move || serve(connection, &config, storage.as_ref(), &stopping))
+            .spawn(move || serve((connection, peer), &config, &storage, &stopping))
         else {
             continue;
         };
@@ -157,10 +215,12 @@ fn accept(
 
 /// One connection, one request after another, until the node hangs up or
 /// the server stops.
+/// A standby asking to follow is handed the primary's writes on it until
+/// either ends it.
 fn serve(
-    connection: TcpStream,
+    (connection, peer): (TcpStream, SocketAddr),
     config: &Arc<tls::ServerConfig>,
-    storage: &dyn XmipStorage,
+    serving: &Serving,
     stopping: &AtomicBool,
 ) {
     let Ok(guarded) = tls::server(connection, Arc::clone(config)) else {
@@ -168,7 +228,20 @@ fn serve(
     };
     let mut watched = Watched { guarded, stopping };
     while let Ok(Some(request)) = wire::receive::<Request>(&mut watched) {
-        let answer = answer(storage, request);
+        let answer = match request {
+            Request::Standing => Answer::Standing(serving.standing()),
+            Request::Follow(asked) => {
+                if let Some(node) = &serving.node {
+                    let peer = peer.to_string();
+                    node.ship(&mut watched.guarded, &asked, (&peer, stopping));
+                    return;
+                }
+                Answer::Failed(
+                    "this Storage node is the only one: it hands its writes to none".into(),
+                )
+            }
+            request => answer(serving.storage.as_ref(), request),
+        };
         if wire::send(&mut watched.guarded, &answer).is_err() {
             return;
         }
@@ -249,9 +322,14 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::ReadKeptAuditChunk(id, stream, index) => storage
             .read_kept_audit_chunk(id, stream, index)
             .map(Answer::Bytes),
+        // The server's own to answer, never an operation's (`serve`).
+        Request::Standing | Request::Follow(_) => Err(PersistError::Failed {
+            reason: "a Storage node's standing is its server's to answer".to_string(),
+        }),
     };
     answered.unwrap_or_else(|error| match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),
+        PersistError::Standby { reason } => Answer::Standby(reason),
         other => Answer::Failed(other.to_string()),
     })
 }

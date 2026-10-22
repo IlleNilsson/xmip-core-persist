@@ -122,95 +122,58 @@ pub type Change = (Vec<u8>, Option<Vec<u8>>);
 /// One key and its value, as a range read finds them.
 pub type Entry = (Vec<u8>, Vec<u8>);
 
-/// An engine boxed is an engine: a program that links several opens the one
-/// its configuration names, whichever it is (ADR-0018, amendment
-/// 2026-09-30).
-impl<E: Engine + ?Sized> Engine for Box<E> {
-    fn engine(&self) -> &'static str {
-        (**self).engine()
-    }
+/// An engine behind a pointer is an engine, each the one beneath: boxed, a
+/// program that links several opens the one its configuration names,
+/// whichever it is (ADR-0018, amendment 2026-09-30); lent, a test opens the
+/// layer again over the same records without giving the engine up; shared,
+/// a standby's engines are written by its copying and, once it is
+/// promoted, by its databases (`storage::standby`).
+macro_rules! beneath {
+    ($($pointer:ty),*) => {$(
+        impl<E: Engine + ?Sized> Engine for $pointer {
+            fn engine(&self) -> &'static str {
+                (**self).engine()
+            }
 
-    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
-        (**self).read(key)
-    }
+            fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
+                (**self).read(key)
+            }
 
-    fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
-        (**self).write(key, value)
-    }
+            fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
+                (**self).write(key, value)
+            }
 
-    fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
-        (**self).write_new(key, value)
-    }
+            fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
+                (**self).write_new(key, value)
+            }
 
-    fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
-        (**self).remove(key)
-    }
+            fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
+                (**self).remove(key)
+            }
 
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
-        (**self).apply(batch)
-    }
+            fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+                (**self).apply(batch)
+            }
 
-    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
-        (**self).apply_deferred(batch)
-    }
+            fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+                (**self).apply_deferred(batch)
+            }
 
-    fn sync(&self) -> Result<(), PersistError> {
-        (**self).sync()
-    }
+            fn sync(&self) -> Result<(), PersistError> {
+                (**self).sync()
+            }
 
-    fn scan(
-        &self,
-        first: &[u8],
-        last: &[u8],
-        most: usize,
-        reverse: bool,
-    ) -> Result<Vec<Entry>, PersistError> {
-        (**self).scan(first, last, most, reverse)
-    }
+            fn scan(
+                &self,
+                first: &[u8],
+                last: &[u8],
+                most: usize,
+                reverse: bool,
+            ) -> Result<Vec<Entry>, PersistError> {
+                (**self).scan(first, last, most, reverse)
+            }
+        }
+    )*};
 }
 
-/// An engine lent is an engine: a test opens the layer again over the same
-/// records without giving the engine up.
-impl<E: Engine + ?Sized> Engine for &E {
-    fn engine(&self) -> &'static str {
-        (**self).engine()
-    }
-
-    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
-        (**self).read(key)
-    }
-
-    fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
-        (**self).write(key, value)
-    }
-
-    fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
-        (**self).write_new(key, value)
-    }
-
-    fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
-        (**self).remove(key)
-    }
-
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
-        (**self).apply(batch)
-    }
-
-    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
-        (**self).apply_deferred(batch)
-    }
-
-    fn sync(&self) -> Result<(), PersistError> {
-        (**self).sync()
-    }
-
-    fn scan(
-        &self,
-        first: &[u8],
-        last: &[u8],
-        most: usize,
-        reverse: bool,
-    ) -> Result<Vec<Entry>, PersistError> {
-        (**self).scan(first, last, most, reverse)
-    }
-}
+beneath!(Box<E>, &E, std::sync::Arc<E>);

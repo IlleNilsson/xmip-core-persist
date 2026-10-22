@@ -7,7 +7,12 @@ use secret::{DataKey, KekName, KeyStore, SecretError};
 /// Where the store's own data key is kept, wrapped, in the engine: the one
 /// engine key that is not a keyed hash. A keyed hash is thirty-two bytes,
 /// so this, at twenty-three, can never be one.
-const DATA_KEY: &[u8] = b"\0xmip-core-persist/key\0";
+pub(crate) const DATA_KEY: &[u8] = b"\0xmip-core-persist/key\0";
+
+/// What every engine key of a store's own begins with — its data key, and
+/// where a standby keeps how far it copied (`storage::standby`) — none of
+/// them a record: never copied from a primary as written.
+pub(crate) const OWN: &[u8] = b"\0xmip-core-persist/";
 
 /// The HKDF purposes the store's two keys are derived for. One wrapped key,
 /// two uses, and no key used for both.
