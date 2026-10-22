@@ -275,6 +275,13 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
             .map(Answer::Claims),
         Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
         Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
+        Request::Turn(turn) => storage.turn(&turn).map(Answer::Yes),
+        Request::ReadInstance(id) => storage
+            .read_instance(id)
+            .map(|record| Answer::Instance(record.map(Box::new))),
+        Request::ReadCorrelation(id) => storage
+            .read_correlation(id)
+            .map(|found| Answer::Records(found.into_iter().collect())),
         Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
         Request::KeepAudit(most, chunk) => storage
             .keep_audit(most, usize::try_from(chunk).unwrap_or(usize::MAX))

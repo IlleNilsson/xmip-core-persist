@@ -109,6 +109,7 @@ pub(crate) fn decide<R: Engine>(
     }
     batch.record(MESSAGE, message.message.value(), message);
     for journey in &publication.journeys {
+        super::origin::counted(store, batch, journey, &publication.held)?;
         batch.record(JOURNEY, journey.journey.value(), journey);
     }
     for kept in &publication.held {

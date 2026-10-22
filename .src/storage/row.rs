@@ -91,6 +91,8 @@ impl Columned for JourneyRecord {
             ("send_location", Some(count(facts.send_location))),
             ("attempts", Some(count(facts.attempts))),
             ("message", id(facts.message)),
+            ("origin", id(facts.origin)),
+            ("open", Some(Value::Flag(facts.open))),
         ]
     }
 }

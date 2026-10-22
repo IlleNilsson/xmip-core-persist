@@ -7,6 +7,7 @@ use super::super::dead::{DeadEntry, DeadQueue, Replayed};
 use super::super::due::DueQueue;
 use super::super::failed::FailedQueue;
 use super::super::hold::HeldQueue;
+use super::super::instance::InstanceRecord;
 use super::super::kept_audit::KeptAudit;
 use super::super::record::{
     AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord, StreamChunk, malformed,
@@ -54,6 +55,29 @@ pub(crate) enum Answer {
     Standing(Standing),
     /// The Storage node is a standby and serves no operation, in words.
     Standby(String),
+    /// A Work Process's Instance, or none (`super::super::instance`).
+    Instance(Option<Box<InstanceRecord>>),
+}
+
+impl Answer {
+    /// The answers numbered from 21 on, written as `write` writes the rest.
+    fn write_late(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Standing(standing) => {
+                write_byte(out, 21);
+                standing.write(out);
+            }
+            Self::Standby(reason) => {
+                write_byte(out, 22);
+                write_text(out, reason);
+            }
+            Self::Instance(record) => {
+                write_byte(out, 23);
+                write_optional(out, record.as_ref());
+            }
+            _ => {}
+        }
+    }
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
@@ -161,14 +185,8 @@ impl Form for Answer {
                 write_byte(out, 20);
                 queue.write(out);
             }
-            Self::Standing(standing) => {
-                write_byte(out, 21);
-                standing.write(out);
-            }
-            Self::Standby(reason) => {
-                write_byte(out, 22);
-                write_text(out, reason);
-            }
+            // Numbered from 21 on.
+            _ => self.write_late(out),
         }
     }
 
@@ -204,6 +222,7 @@ impl Form for Answer {
             20 => Self::DueQueue(DueQueue::read(cursor)?),
             21 => Self::Standing(Standing::read(cursor)?),
             22 => Self::Standby(read_text(cursor)?),
+            23 => Self::Instance(read_optional(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }

@@ -20,6 +20,7 @@ use super::audit_entry::AuditEntry;
 use super::dead::Replay;
 use super::due::DuePart;
 use super::hand_on::HandOn;
+use super::instance::Turn;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
@@ -74,6 +75,10 @@ pub(crate) enum Request {
     /// A standby asking to be handed the primary's writes from where it is;
     /// the connection carries them from then on, frame after frame.
     Follow(Follow),
+    /// A Work Process's turn handed on (`super::instance`).
+    Turn(Box<Turn>),
+    ReadInstance(u128),
+    ReadCorrelation(u128),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -127,6 +132,18 @@ impl Request {
             Self::Follow(follow) => {
                 write_byte(out, 30);
                 follow.write(out);
+            }
+            Self::Turn(turn) => {
+                write_byte(out, 31);
+                turn.write(out);
+            }
+            Self::ReadInstance(id) => {
+                write_byte(out, 32);
+                write_u128(out, *id);
+            }
+            Self::ReadCorrelation(id) => {
+                write_byte(out, 33);
+                write_u128(out, *id);
             }
             _ => {}
         }
@@ -285,6 +302,9 @@ impl Form for Request {
             ),
             29 => Self::Standing,
             30 => Self::Follow(Follow::read(cursor)?),
+            31 => Self::Turn(Box::new(Turn::read(cursor)?)),
+            32 => Self::ReadInstance(read_u128(cursor)?),
+            33 => Self::ReadCorrelation(read_u128(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }

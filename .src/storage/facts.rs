@@ -45,6 +45,11 @@ pub struct JourneyFacts {
     pub attempts: u32,
     /// The Message it holds last: the last of its Message references.
     pub message: Option<u128>,
+    /// The Message its Stream was received as, where that Stream holds a
+    /// place in a sequence end to end (`super::origin`), and whether this
+    /// Journey still keeps it there: one that is open.
+    pub origin: Option<u128>,
+    pub open: bool,
     /// When Xmip Storage first wrote it, in nanoseconds since the Unix
     /// epoch: Xmip Storage's to set.
     pub created_unix_nanos: u64,
@@ -174,6 +179,8 @@ impl Form for JourneyFacts {
         write_u32(out, self.send_location);
         write_u32(out, self.attempts);
         write_id_maybe(out, self.message);
+        write_id_maybe(out, self.origin);
+        write_byte(out, u8::from(self.open));
         write_u64(out, self.created_unix_nanos);
         write_u64(out, self.updated_unix_nanos);
     }
@@ -190,6 +197,8 @@ impl Form for JourneyFacts {
             send_location: read_u32(cursor)?,
             attempts: read_u32(cursor)?,
             message: read_id_maybe(cursor)?,
+            origin: read_id_maybe(cursor)?,
+            open: read_byte(cursor)? != 0,
             created_unix_nanos: read_u64(cursor)?,
             updated_unix_nanos: read_u64(cursor)?,
         })
@@ -317,6 +326,8 @@ mod tests {
             send_location: 1,
             attempts: 2,
             message: Some(8),
+            origin: Some(11),
+            open: true,
             created_unix_nanos: 9,
             updated_unix_nanos: 10,
         };

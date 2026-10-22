@@ -641,6 +641,21 @@ mod tests {
             self.beneath.hand_on(hand_on)
         }
 
+        fn turn(&self, turn: &crate::storage::Turn) -> Result<bool, PersistError> {
+            self.beneath.turn(turn)
+        }
+
+        fn read_instance(
+            &self,
+            instance: u128,
+        ) -> Result<Option<crate::storage::InstanceRecord>, PersistError> {
+            self.beneath.read_instance(instance)
+        }
+
+        fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+            self.beneath.read_correlation(correlation)
+        }
+
         fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
             self.beneath.write_audit(entry)
         }

@@ -85,6 +85,8 @@ pub(super) const JOURNEY: &[Column] = &[
     column("send_location", Kind::Count),
     column("attempts", Kind::Count),
     maybe("message", Kind::Identifier),
+    maybe("origin", Kind::Identifier),
+    column("open", Kind::Flag),
 ];
 
 pub(super) const JOURNEY_INDEXES: &[Index] = &[

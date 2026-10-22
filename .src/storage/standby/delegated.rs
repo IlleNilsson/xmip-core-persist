@@ -12,8 +12,9 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 use crate::PersistError;
 use crate::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
-    DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord,
-    Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, XmipStorage,
+    DueQueue, Durable, FailedQueue, HandOn, HeldQueue, InstanceRecord, JourneyRecord, KeptAudit,
+    MessageRecord, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Turn,
+    XmipStorage,
 };
 
 /// What answers now, or why nothing does.
@@ -134,6 +135,18 @@ impl XmipStorage for Delegated {
 
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
         self.now()?.storage.hand_on(hand_on)
+    }
+
+    fn turn(&self, turn: &Turn) -> Result<bool, PersistError> {
+        self.now()?.storage.turn(turn)
+    }
+
+    fn read_instance(&self, instance: u128) -> Result<Option<InstanceRecord>, PersistError> {
+        self.now()?.storage.read_instance(instance)
+    }
+
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        self.now()?.storage.read_correlation(correlation)
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {

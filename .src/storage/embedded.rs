@@ -27,6 +27,7 @@ use super::due::{self, DuePart, DueQueue};
 use super::durable::Durable;
 use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
+use super::instance::{InstanceRecord, Turn};
 use super::kept_audit::KeptAudit;
 use super::publication::Publication;
 use super::query::Query;
@@ -331,6 +332,18 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
 
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
         self.yes(Op::HandOn(Box::new(hand_on.clone())))
+    }
+
+    fn turn(&self, turn: &Turn) -> Result<bool, PersistError> {
+        self.yes(Op::Turn(Box::new(turn.clone())))
+    }
+
+    fn read_instance(&self, instance: u128) -> Result<Option<InstanceRecord>, PersistError> {
+        super::instance::read_instance(&self.runtime, instance)
+    }
+
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        super::instance::read_correlation(&self.runtime, correlation)
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
@@ -1010,6 +1023,106 @@ mod tests {
         assert!(still.is_some(), "its place kept");
         let taken = node.claim(JourneyId::new(2), &holder(1), 9, LEASE);
         assert_eq!(taken.expect("claimed"), None, "and its claim");
+    }
+
+    #[test]
+    fn a_stream_heads_its_sequence_until_the_last_journey_born_from_it_closes() {
+        let (node, _) = node();
+        let sequence = 70;
+        let open = |id: u128, origin: u128| {
+            let mut record = journey(JourneyId::new(id), b"open");
+            record.facts.origin = Some(origin);
+            record.facts.open = true;
+            record
+        };
+        for (origin, journeys) in [(100, vec![1, 2]), (200, vec![3])] {
+            let mut published = holding(7, journeys[0]);
+            published.message.message = MessageId::new(origin);
+            published.journeys = journeys.iter().map(|id| open(*id, origin)).collect();
+            published.held = journeys
+                .iter()
+                .map(|id| super::super::Hold {
+                    queue: 7,
+                    journey: JourneyId::new(*id),
+                    body: Vec::new(),
+                })
+                .chain([super::super::Hold {
+                    queue: sequence,
+                    journey: JourneyId::new(origin),
+                    body: b"OrdersIn".to_vec(),
+                }])
+                .collect();
+            node.publish(&published).expect("published");
+        }
+        let head = |node: &Node| {
+            node.read_held(sequence, 0, 1)
+                .expect("read")
+                .held
+                .first()
+                .map(|held| held.hold.journey.value())
+        };
+        assert_eq!(head(&node), Some(100));
+        let closing = |id: u128| {
+            let mut done = leaving(&node, 7, id, b"sent");
+            done.result.facts.origin = Some(if id == 3 { 200 } else { 100 });
+            done
+        };
+        assert!(node.hand_on(&closing(1)).expect("handed on"));
+        assert_eq!(head(&node), Some(100), "one of its Journeys is still open");
+        assert!(node.hand_on(&closing(2)).expect("handed on"));
+        assert_eq!(head(&node), Some(200), "the next Stream heads it now");
+        assert!(node.hand_on(&closing(3)).expect("handed on"));
+        assert_eq!(head(&node), None);
+    }
+
+    #[test]
+    fn a_turn_writes_its_instance_and_correlation_only_over_the_turn_it_read() {
+        use super::super::{Correlation, InstanceRecord, InstanceWrite, Turn};
+        let (node, _) = node();
+        node.publish(&holding(7, 1)).expect("published");
+        node.publish(&holding(7, 2)).expect("published");
+        let instance = |turns: u64| InstanceRecord {
+            instance: 40,
+            work_process: "OrderApproval".into(),
+            turns,
+            ended: false,
+            body: vec![u8::try_from(turns).unwrap_or(u8::MAX)],
+        };
+        let turn = |hand_on: HandOn, turns: u64| Turn {
+            hand_on,
+            instances: vec![InstanceWrite {
+                record: instance(turns),
+                over: turns - 1,
+            }],
+            correlations: vec![Correlation {
+                correlation: 50,
+                instance: 40,
+            }],
+            uncorrelated: Vec::new(),
+        };
+        assert!(
+            node.turn(&turn(leaving(&node, 7, 1, b"started"), 1))
+                .expect("turned")
+        );
+        assert_eq!(node.read_instance(40).expect("read"), Some(instance(1)));
+        assert_eq!(node.read_correlation(50).expect("read"), Some(40));
+        let stale = turn(leaving(&node, 7, 2, b"stale"), 1);
+        assert!(
+            !node.turn(&stale).expect("decided"),
+            "a turn over a turn taken since"
+        );
+        assert_eq!(node.read_instance(40).expect("read"), Some(instance(1)));
+        let read = node.read_journey(JourneyId::new(2)).expect("read");
+        assert_eq!(
+            read,
+            Some(journey(JourneyId::new(2), b"held")),
+            "and nothing of it"
+        );
+        let mut ended = turn(stale.hand_on.clone(), 2);
+        ended.uncorrelated = vec![50];
+        ended.correlations.clear();
+        assert!(node.turn(&ended).expect("turned"));
+        assert_eq!(node.read_correlation(50).expect("read"), None);
     }
 
     /// The Journey `id` claimed and handed on as `body`, leaving `queue`.

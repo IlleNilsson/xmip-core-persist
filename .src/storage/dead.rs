@@ -205,6 +205,7 @@ pub(crate) fn replay<R: Engine>(
     queue::take_out(store, batch, KINDS, replay.queue, sequence)?;
     queue::remember(batch, KINDS, about);
     for journey in &replay.journeys {
+        super::origin::counted(store, batch, journey, &replay.held)?;
         batch.record(JOURNEY, journey.journey.value(), journey);
     }
     for held in &replay.held {
