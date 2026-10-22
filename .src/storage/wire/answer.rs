@@ -13,6 +13,7 @@ use super::super::record::{
     read_byte, read_bytes, read_text, read_u32, read_u128, write_byte, write_bytes, write_text,
     write_u32, write_u128,
 };
+use super::super::standby::Standing;
 use super::super::stream::StreamRecord;
 use crate::PersistError;
 
@@ -49,6 +50,10 @@ pub(crate) enum Answer {
     FailedQueue(FailedQueue),
     /// A part of a queue read by when each is due.
     DueQueue(DueQueue),
+    /// What the Storage node is now (`super::super::standby`).
+    Standing(Standing),
+    /// The Storage node is a standby and serves no operation, in words.
+    Standby(String),
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
@@ -156,6 +161,14 @@ impl Form for Answer {
                 write_byte(out, 20);
                 queue.write(out);
             }
+            Self::Standing(standing) => {
+                write_byte(out, 21);
+                standing.write(out);
+            }
+            Self::Standby(reason) => {
+                write_byte(out, 22);
+                write_text(out, reason);
+            }
         }
     }
 
@@ -189,6 +202,8 @@ impl Form for Answer {
             }),
             19 => Self::FailedQueue(FailedQueue::read(cursor)?),
             20 => Self::DueQueue(DueQueue::read(cursor)?),
+            21 => Self::Standing(Standing::read(cursor)?),
+            22 => Self::Standby(read_text(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }

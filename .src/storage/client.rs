@@ -33,8 +33,17 @@
 //! only given back; an audit record written twice is kept once, by its
 //! identifier, by the audit keeper. And an operation that failed wrote
 //! nothing of itself, so asking it again starts clean.
+//!
+//! **A standby is passed over** (`super::standby`). Embedded Storage nodes
+//! of one cluster are one primary and its standbys: a standby serves no
+//! operation and says so, and is asked after every node that did not say
+//! it; a new connection first asks what its Storage node is, so a standby
+//! is not asked at all, nor a primary of an epoch before the latest one this
+//! node met. So a node asks the primary, and once the primary is gone, the
+//! standby promoted in its place. What it last came to with each is
+//! [`StorageClient::reached`], which every surface shows.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -56,13 +65,16 @@ pub const PASS_OVER: Duration = Duration::from_secs(5);
 /// storage_timeout` does not say.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// One Storage node, the connections to it no request is using, and until
-/// when it is passed over.
+/// One Storage node, the connections to it no request is using, until
+/// when it is passed over, whether it said it is a standby, and what it
+/// last came to.
 struct Node {
     address: String,
     host: String,
     idle: Mutex<Vec<Connection>>,
     passed_over: Mutex<Option<Instant>>,
+    standby: AtomicBool,
+    last: Mutex<Option<Reached>>,
 }
 
 impl Node {
@@ -74,13 +86,58 @@ impl Node {
         until.is_some_and(|until| until > now)
     }
 
-    fn answered(&self, answered: bool, pass_over: Duration) {
+    fn answered(&self, asked: &Result<Answer, Asked>, pass_over: Duration) {
+        let (answered, standby, said) = match asked {
+            Ok(_) => (true, false, "answered".to_string()),
+            Err(Asked::Standby(said)) => (false, true, said.clone()),
+            Err(Asked::Failed(said)) => (false, self.standby.load(Ordering::Relaxed), said.clone()),
+        };
+        self.standby.store(standby, Ordering::Relaxed);
         *self
             .passed_over
             .lock()
             .unwrap_or_else(PoisonError::into_inner) =
             (!answered).then(|| Instant::now() + pass_over);
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(Reached {
+            address: self.address.clone(),
+            answered,
+            standby,
+            said,
+            at: Instant::now(),
+        });
     }
+}
+
+/// Why a Storage node did not answer a request.
+enum Asked {
+    /// It is a standby, in its words.
+    Standby(String),
+    /// It could not be reached, or did not answer, in words.
+    Failed(String),
+}
+
+impl std::fmt::Display for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Standby(said) | Self::Failed(said) => f.write_str(said),
+        }
+    }
+}
+
+/// What a node last came to with one Storage node: what every surface
+/// shows of the Storage a node uses (`<node>/storage`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reached {
+    /// The Storage node, as listed.
+    pub address: String,
+    /// Whether it answered the last request asked of it.
+    pub answered: bool,
+    /// Whether it said it is a standby.
+    pub standby: bool,
+    /// What it came to, in words.
+    pub said: String,
+    /// When.
+    pub at: Instant,
 }
 
 /// Xmip Storage as a node reaches it: [`XmipStorage`] over the Storage
@@ -91,6 +148,9 @@ pub struct StorageClient {
     config: Arc<tls::ClientConfig>,
     timeout: Duration,
     pass_over: Duration,
+    /// The latest epoch a Storage node answered in: a primary of an earlier
+    /// one is not asked (`super::standby`).
+    epoch: Arc<AtomicU64>,
     /// The Storage node every operation goes to, for one statement.
     pinned: Option<usize>,
 }
@@ -130,6 +190,8 @@ impl StorageClient {
                         .to_string(),
                     idle: Mutex::new(Vec::new()),
                     passed_over: Mutex::new(None),
+                    standby: AtomicBool::new(false),
+                    last: Mutex::new(None),
                 })
             })
             .collect::<Result<Arc<[Node]>, PersistError>>()?;
@@ -142,20 +204,43 @@ impl StorageClient {
             config: Arc::new(tls::alpn::offering(config, &[ALPN])),
             timeout,
             pass_over,
+            epoch: Arc::new(AtomicU64::new(0)),
             pinned: None,
         })
     }
 
+    /// What it last came to with each Storage node listed, in the order
+    /// listed; `None` for one not asked yet.
+    #[must_use]
+    pub fn reached(&self) -> Vec<(String, Option<Reached>)> {
+        self.nodes
+            .iter()
+            .map(|node| {
+                let last = node.last.lock().unwrap_or_else(PoisonError::into_inner);
+                (node.address.clone(), last.clone())
+            })
+            .collect()
+    }
+
     /// The Storage nodes in the order a request asks them: from the next
-    /// round robin, one that did not answer lately last.
+    /// round robin, one that said it is a standby after those that did
+    /// not, and one that did not answer lately last.
     fn turn(&self) -> impl Iterator<Item = usize> {
         let first = self.next.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let count = self.nodes.len();
-        let (answering, passed): (Vec<usize>, Vec<usize>) = (0..count)
-            .map(|step| (first + step) % count)
-            .partition(|&index| !self.nodes[index].passed_over(now));
-        answering.into_iter().chain(passed)
+        let order: Vec<usize> = (0..count).map(|step| (first + step) % count).collect();
+        let rank = |index: &usize| {
+            let node = &self.nodes[*index];
+            match (node.passed_over(now), node.standby.load(Ordering::Relaxed)) {
+                (false, false) => 0,
+                (false, true) => 1,
+                (true, _) => 2,
+            }
+        };
+        let mut ranked = order;
+        ranked.sort_by_key(rank);
+        ranked.into_iter()
     }
 
     /// `request` asked of the next Storage node, and of each after it in
@@ -166,7 +251,7 @@ impl StorageClient {
         if let Some(index) = self.pinned {
             let node = &self.nodes[index];
             let asked = self.ask_node(node, request);
-            node.answered(asked.is_ok(), self.pass_over);
+            node.answered(&asked, self.pass_over);
             return asked.map_err(|failure| {
                 unreachable(format!(
                     "the statement's Storage node {} did not answer: {failure}",
@@ -177,7 +262,7 @@ impl StorageClient {
         let mut failures = Vec::new();
         for node in self.turn().map(|index| &self.nodes[index]) {
             let asked = self.ask_node(node, request);
-            node.answered(asked.is_ok(), self.pass_over);
+            node.answered(&asked, self.pass_over);
             match asked {
                 Ok(answer) => return Ok(answer),
                 Err(failure) => failures.push(format!("{}: {failure}", node.address)),
@@ -189,7 +274,7 @@ impl StorageClient {
         )))
     }
 
-    fn ask_node(&self, node: &Node, request: &Request) -> Result<Answer, String> {
+    fn ask_node(&self, node: &Node, request: &Request) -> Result<Answer, Asked> {
         let kept = node
             .idle
             .lock()
@@ -202,18 +287,53 @@ impl StorageClient {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(connection);
-            return Ok(answer);
+            return standby(answer);
         }
+        let failed = |failure: String| Asked::Failed(failure);
         let tcp = net::connect(node.address.as_str(), Some(self.timeout))
-            .map_err(|failure| failure.to_string())?;
+            .map_err(|failure| failed(failure.to_string()))?;
         let mut connection = tls::client_with(&node.host, tcp, Arc::clone(&self.config))
-            .map_err(|failure| failure.message)?;
-        let answer = exchange(&mut connection, request).map_err(|failure| failure.to_string())?;
+            .map_err(|failure| failed(failure.message))?;
+        self.standing(&mut connection)?;
+        let answer =
+            exchange(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
         node.idle
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(connection);
-        Ok(answer)
+        standby(answer)
+    }
+
+    /// A new connection's Storage node held to what it is: a standby is
+    /// not asked, nor a primary of an epoch before the latest one met.
+    fn standing(&self, connection: &mut Connection) -> Result<(), Asked> {
+        let answer = exchange(connection, &Request::Standing)
+            .map_err(|failure| Asked::Failed(failure.to_string()))?;
+        let Answer::Standing(standing) = answer else {
+            return Err(Asked::Failed(format!("answered {answer:?} to what it is")));
+        };
+        if !standing.primary {
+            return Err(Asked::Standby(format!(
+                "a standby Storage node, epoch {}",
+                standing.epoch
+            )));
+        }
+        let latest = self.epoch.fetch_max(standing.epoch, Ordering::SeqCst);
+        if standing.epoch < latest {
+            return Err(Asked::Failed(format!(
+                "a primary of epoch {}, before the epoch {latest} met: it is not asked",
+                standing.epoch
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// An answer that says its Storage node is a standby is no answer.
+fn standby(answer: Answer) -> Result<Answer, Asked> {
+    match answer {
+        Answer::Standby(said) => Err(Asked::Standby(said)),
+        answer => Ok(answer),
     }
 }
 
@@ -240,6 +360,7 @@ impl StorageClient {
             config: Arc::clone(&self.config),
             timeout: self.timeout,
             pass_over: self.pass_over,
+            epoch: Arc::clone(&self.epoch),
             pinned: Some(index),
         })
     }
@@ -271,34 +392,7 @@ mod tests {
         Replay, Replayed, StorageServer, StreamChunk, XmipStorage,
     };
 
-    /// A cluster's certificate authority, and identities it issues.
-    struct Authority(rcgen::CertifiedKey);
-
-    impl Authority {
-        fn new() -> Self {
-            let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
-            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-            let key_pair = rcgen::KeyPair::generate().expect("a key");
-            let cert = params.self_signed(&key_pair).expect("signed");
-            Self(rcgen::CertifiedKey { cert, key_pair })
-        }
-
-        /// An identity for a node at 127.0.0.1, trusting `anchors`.
-        fn issue(&self, anchors: &Self) -> tls::Identity {
-            let key = rcgen::KeyPair::generate().expect("a key");
-            let params =
-                rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("params");
-            let leaf = params
-                .signed_by(&key, &self.0.cert, &self.0.key_pair)
-                .expect("issued");
-            tls::Identity::from_pem(
-                leaf.pem().as_bytes(),
-                key.serialize_pem().as_bytes(),
-                anchors.0.cert.pem().as_bytes(),
-            )
-            .expect("identity")
-        }
-    }
+    use crate::storage::authority::Authority;
 
     fn storage() -> Arc<dyn XmipStorage> {
         let keys = Held::new(secret::fixture::Memory::default());

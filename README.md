@@ -204,9 +204,30 @@ and 9).
   default, `storage::client::TIMEOUT` and `PASS_OVER`). `storage::statement` binds
   it to one Storage node for a whole statement — a receive cycle's chunks,
   Publication and Journeys — which fails with that node rather than moving
-  on (the owner, 2026-10-03). A node that is itself the
-  Storage node calls its `Embedded` in process instead: both are
-  `XmipStorage`, so nothing above knows which it has.
+  on (the owner, 2026-10-03). A new connection first asks what its Storage
+  node is (wire operation 29): a standby is passed over, and so is a primary
+  of an epoch before the latest the client met; a standby asked anyway says
+  it is one, and the next is asked. `StorageClient::reached` says what it
+  last came to with each — what a node publishes at `<node>/storage`. A
+  node that is itself the Storage node calls its `Embedded` in process
+  instead: both are `XmipStorage`, so nothing above knows which it has.
+- **`standby`** — embedded Storage nodes as a primary and its standbys
+  (ADR-0056, amendment 2026-10-22, drafted). `StorageNode` is one of the
+  Storage nodes a cluster lists, over its three engines: it asks every one
+  listed what it is (`Standing`), follows a primary that answers, and where
+  none does the standby holding most of the latest epoch is promoted, the
+  first listed of equals. `Copied` numbers every write an engine takes, in
+  the order taken, into `Copies`, the writes kept for a standby behind; a
+  standby asks to follow (wire operation 30) and is handed them in order
+  (`Shipped`), or each database whole first where it cannot take them on,
+  with its data key handed inside the mutual TLS and wrapped under its own
+  key-encryption key (ADR-0063, amendment 2026-10-22). `StorageServer::several`
+  serves one; `StorageNode::served` refuses every operation while it is not
+  the primary (`PersistError::Standby`), and `StorageNode::reaching` is the
+  node's own Xmip Storage, its databases while primary and the primary over
+  the wire while not. A stop serves nothing more, waits for every operation
+  under way, and hands on everything written before the standbys'
+  connections end.
 - **`database`** and **`schema`** — what each data domain's database is
   kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
   `mariadb`, as each domain's own table in the configuration names it in
