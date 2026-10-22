@@ -429,7 +429,7 @@ mod tests {
             Ask::AuditFailed { occurred: span },
             Ask::AuditOfStream { stream: 8 },
             Ask::AuditChain {
-                writer: "xmip-cli".to_string(),
+                writer: "xmip".to_string(),
                 from: 1,
             },
             Ask::AdministrationUpdated {
