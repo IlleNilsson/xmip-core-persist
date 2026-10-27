@@ -114,6 +114,42 @@ pub trait Engine: Send + Sync {
         most: usize,
         reverse: bool,
     ) -> Result<Vec<Entry>, PersistError>;
+
+    /// One consistent view of the engine: every read made through it sees
+    /// the records as they stood when it was taken, whatever is written
+    /// meanwhile — an index entry and the record it finds always agree
+    /// (corrected 2026-10-27: a queue page read mid-write came back
+    /// short). `RocksDB` reads a snapshot, `SQLite` its one connection held
+    /// for the view, the engine in memory its records held.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot give one.
+    fn view(&self) -> Result<Box<dyn Reads + '_>, PersistError>;
+}
+
+/// What a store reads its engine through: one consistent view of it
+/// ([`Engine::view`]).
+pub trait Reads {
+    /// As [`Engine::read`], in the view.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot read.
+    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError>;
+
+    /// As [`Engine::scan`], in the view.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot read.
+    fn scan(
+        &self,
+        first: &[u8],
+        last: &[u8],
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<Entry>, PersistError>;
 }
 
 /// One change of a batch: a key and its new value, `None` removing it.
@@ -171,6 +207,10 @@ macro_rules! beneath {
                 reverse: bool,
             ) -> Result<Vec<Entry>, PersistError> {
                 (**self).scan(first, last, most, reverse)
+            }
+
+            fn view(&self) -> Result<Box<dyn Reads + '_>, PersistError> {
+                (**self).view()
             }
         }
     )*};

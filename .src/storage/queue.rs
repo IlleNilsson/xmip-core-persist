@@ -34,7 +34,7 @@ use super::commit::Batch;
 use super::record::{Form, read_u64, write_u64};
 use super::row::Value;
 use super::schema::Database;
-use crate::{EncryptedStore, Engine, PersistError};
+use crate::{EncryptedStore, Engine, IndexScan, PersistError};
 
 /// Where one kind of queue keeps what it keeps: its entries by queue and
 /// place, its index by queue and what an entry is about, its places by
@@ -208,8 +208,8 @@ pub(crate) fn page<R: Engine>(
     // Read in one consistent view: no write lands between the index and
     // the entries it finds, so the page never comes back short of what is
     // held (corrected 2026-10-27; a sequence's head read empty under load).
-    let _view = store.consistent();
-    let mut places = store
+    let view = store.viewed()?;
+    let mut places = view
         .get(kinds.places, &places_key(queue))?
         .map_or(Ok(Places::default()), |bytes| Places::from_bytes(&bytes))?;
     if places.count == 0 {
@@ -220,11 +220,11 @@ pub(crate) fn page<R: Engine>(
     let found = if most == 0 {
         Vec::new()
     } else {
-        placed_from(store, kinds, queue, at, most)?
+        placed_from(&view, kinds, queue, at, most)?
     };
     let first = match found.first() {
         Some(&(sequence, _)) if at == places.first => Some(sequence),
-        _ => placed_from(store, kinds, queue, places.first, 1)?
+        _ => placed_from(&view, kinds, queue, places.first, 1)?
             .first()
             .map(|&(sequence, _)| sequence),
     };
@@ -233,7 +233,7 @@ pub(crate) fn page<R: Engine>(
     for (sequence, _) in found {
         // Written and taken out with its entry, an index entry finds one;
         // one written before a read of it ended is read as it is now.
-        if let Some(bytes) = store.get(kinds.entry, &entry_key(queue, sequence))? {
+        if let Some(bytes) = view.get(kinds.entry, &entry_key(queue, sequence))? {
             entries.push(bytes);
         }
     }
@@ -242,8 +242,8 @@ pub(crate) fn page<R: Engine>(
 
 /// The places held in `queue` from `from` on, up to `most`, in order: one
 /// range of its index.
-fn placed_from<R: Engine>(
-    store: &EncryptedStore<R>,
+fn placed_from<S: IndexScan + ?Sized>(
+    store: &S,
     kinds: Kinds,
     queue: u128,
     from: u64,

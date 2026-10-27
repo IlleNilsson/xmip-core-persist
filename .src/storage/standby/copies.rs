@@ -374,6 +374,10 @@ impl<E: Engine> Engine for Copied<E> {
     ) -> Result<Vec<Entry>, PersistError> {
         self.engine.scan(first, last, most, reverse)
     }
+
+    fn view(&self) -> Result<Box<dyn crate::Reads + '_>, PersistError> {
+        self.engine.view()
+    }
 }
 
 #[cfg(test)]

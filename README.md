@@ -22,9 +22,14 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   Every error is a `PersistError`.
 - **`Engine`** — bytes under bytes: `read`, `write` (durable on return),
   `write_new` (one step, `false` when taken), `remove`, `apply` a batch whole,
-  and `scan` a range of keys in their byte order or the reverse. An engine
-  sees only a keyed hash — or an index entry's sortable key — as the key and
-  a sealed record as the value.
+  and `scan` a range of keys in their byte order or the reverse, and `view`:
+  one consistent view (`Reads`) every read through which sees the records as
+  they stood — a `RocksDB` snapshot, `SQLite`'s one connection held, the
+  engine in memory its records held — so a queue's page reads its index
+  entries and the records they find in one state, never short of what is
+  held mid-write (`EncryptedStore::viewed`, 2026-10-27). An engine sees only
+  a keyed hash — or an index entry's sortable key — as the key and a sealed
+  record as the value.
 - **`EncryptedStore<E: Engine>`** — the encryption, above every engine, once.
   Each record is AES-256-GCM under a fresh nonce with its place — its kind and
   key — as associated data, so a record copied under another key is refused.

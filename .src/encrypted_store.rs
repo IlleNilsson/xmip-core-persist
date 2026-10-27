@@ -1,10 +1,12 @@
 //! The one layer that encrypts what Xmip stores of its own (ADR-0063
 //! clause 2), whatever engine holds the bytes.
 
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+mod viewed;
 
-use crate::{Change, Engine, PersistError};
+use crate::{Change, Engine, PersistError, Reads};
 use secret::{DataKey, KekName, KeyStore, SecretError};
+use viewed::Now;
+pub use viewed::{IndexScan, Viewed};
 
 /// Where the store's own data key is kept, wrapped, in the engine: the one
 /// engine key that is not a keyed hash. A keyed hash is thirty-two bytes,
@@ -46,10 +48,6 @@ pub struct EncryptedStore<E> {
     engine: E,
     record: DataKey,
     lookup: DataKey,
-    /// Held to write, and to read one consistent view across several
-    /// reads ([`EncryptedStore::consistent`]): an index entry and the
-    /// record it finds then always agree.
-    writing: RwLock<()>,
 }
 
 impl<E: Engine> EncryptedStore<E> {
@@ -81,7 +79,6 @@ impl<E: Engine> EncryptedStore<E> {
             record: data.derive(RECORD_PURPOSE)?,
             lookup: data.derive(LOOKUP_PURPOSE)?,
             engine,
-            writing: RwLock::new(()),
         })
     }
 
@@ -94,7 +91,6 @@ impl<E: Engine> EncryptedStore<E> {
     pub fn put(&self, kind: &str, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
         let place = place(kind, key);
         let sealed = self.seal(&place, value)?;
-        let _writing = self.write_lock();
         self.engine.write(&self.lookup.keyed_hash(&place), &sealed)
     }
 
@@ -119,8 +115,32 @@ impl<E: Engine> EncryptedStore<E> {
     /// tag — the caller audits it as a failure with that scope and reason
     /// (ADR-0062) — and [`PersistError::Engine`] when the engine cannot read.
     pub fn get(&self, kind: &str, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
+        self.get_in(&Now(&self.engine), kind, key)
+    }
+
+    /// One consistent view of the store ([`Engine::view`]): the records as
+    /// they stood when it was taken, an index entry and the record it finds
+    /// always agreeing.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Engine`] when the engine cannot give one.
+    pub fn viewed(&self) -> Result<Viewed<'_, E>, PersistError> {
+        Ok(Viewed {
+            store: self,
+            reads: self.engine.view()?,
+        })
+    }
+
+    /// [`EncryptedStore::get`] through `reads`.
+    fn get_in(
+        &self,
+        reads: &dyn Reads,
+        kind: &str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, PersistError> {
         let place = place(kind, key);
-        let Some(stored) = self.engine.read(&self.lookup.keyed_hash(&place))? else {
+        let Some(stored) = reads.read(&self.lookup.keyed_hash(&place))? else {
             return Ok(None);
         };
         self.opened(&place, &stored, &format!("record of kind '{kind}'"))
@@ -163,7 +183,6 @@ impl<E: Engine> EncryptedStore<E> {
     /// As [`EncryptedStore::put`]; nothing is written then.
     pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
         let sealed = self.sealed(changes)?;
-        let _writing = self.write_lock();
         self.engine.apply(&sealed)
     }
 
@@ -183,7 +202,6 @@ impl<E: Engine> EncryptedStore<E> {
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
         let indexed = self.indexed(changes, entries)?;
-        let _writing = self.write_lock();
         self.engine.apply(&indexed)
     }
 
@@ -200,7 +218,6 @@ impl<E: Engine> EncryptedStore<E> {
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
         let indexed = self.indexed(changes, entries)?;
-        let _writing = self.write_lock();
         self.engine.apply_deferred(&indexed)
     }
 
@@ -265,8 +282,19 @@ impl<E: Engine> EncryptedStore<E> {
         most: usize,
         reverse: bool,
     ) -> Result<Vec<(Vec<u8>, u128)>, PersistError> {
+        self.scan_index_in(&Now(&self.engine), (first, last), most, reverse)
+    }
+
+    /// [`EncryptedStore::scan_index_keyed`] through `reads`.
+    fn scan_index_in(
+        &self,
+        reads: &dyn Reads,
+        (first, last): (&[u8], &[u8]),
+        most: usize,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, u128)>, PersistError> {
         let (first, last) = ([INDEX, first].concat(), [INDEX, last].concat());
-        let entries = self.engine.scan(&first, &last, most, reverse)?;
+        let entries = reads.scan(&first, &last, most, reverse)?;
         entries
             .into_iter()
             .map(|(key, stored)| {
@@ -290,20 +318,7 @@ impl<E: Engine> EncryptedStore<E> {
     /// As [`EncryptedStore::apply`].
     pub fn apply_deferred(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
         let sealed = self.sealed(changes)?;
-        let _writing = self.write_lock();
         self.engine.apply_deferred(&sealed)
-    }
-
-    /// One consistent view of the store while the guard is held: no write
-    /// lands between the reads made under it, so an index entry read and
-    /// the record it finds always agree (corrected 2026-10-27: a queue
-    /// page read mid-write came back short).
-    pub fn consistent(&self) -> RwLockReadGuard<'_, ()> {
-        self.writing.read().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn write_lock(&self) -> RwLockWriteGuard<'_, ()> {
-        self.writing.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `changes` as the engine keeps them: each place a keyed hash, each
