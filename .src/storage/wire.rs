@@ -78,7 +78,7 @@ pub(crate) enum Request {
     /// A Work Process's turn handed on (`super::instance`).
     Turn(Box<Turn>),
     ReadInstance(u128),
-    ReadCorrelation(u128),
+    ReadInstanceKey(u128),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -141,7 +141,7 @@ impl Request {
                 write_byte(out, 32);
                 write_u128(out, *id);
             }
-            Self::ReadCorrelation(id) => {
+            Self::ReadInstanceKey(id) => {
                 write_byte(out, 33);
                 write_u128(out, *id);
             }
@@ -304,7 +304,7 @@ impl Form for Request {
             30 => Self::Follow(Follow::read(cursor)?),
             31 => Self::Turn(Box::new(Turn::read(cursor)?)),
             32 => Self::ReadInstance(read_u128(cursor)?),
-            33 => Self::ReadCorrelation(read_u128(cursor)?),
+            33 => Self::ReadInstanceKey(read_u128(cursor)?),
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }

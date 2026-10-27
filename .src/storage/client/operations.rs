@@ -259,9 +259,9 @@ impl XmipStorage for StorageClient {
         )
     }
 
-    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+    fn read_instance_key(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
         expected(
-            self.ask(&Request::ReadCorrelation(correlation))?,
+            self.ask(&Request::ReadInstanceKey(correlation))?,
             |answer| match answer {
                 Answer::Records(found) => Ok(found.first().copied()),
                 other => Err(other),
