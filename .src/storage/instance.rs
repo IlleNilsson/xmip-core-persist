@@ -6,7 +6,7 @@
 //! - **Process Instance**: an Instance's state in the form
 //!   `xmip-core-process` writes, kept whole, by the Instance's identifier,
 //!   with how many turns it has taken and whether it has ended.
-//! - **Correlation**: a correlation set's key, by the identifier its
+//! - **Correlation**: a Correlation's key, by the identifier its
 //!   Work Process, set and key name, and the Instance it belongs to.
 //!
 //! Both are written in a hand-on and in nothing else, so an Instance moves
@@ -52,7 +52,7 @@ pub struct InstanceWrite {
     pub over: u64,
 }
 
-/// A correlation set's key and the Instance it belongs to.
+/// A Correlation's key and the Instance it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Correlation {
     /// The key's identifier: its Work Process, set and key, named
