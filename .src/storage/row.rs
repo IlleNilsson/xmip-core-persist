@@ -93,6 +93,8 @@ impl Columned for JourneyRecord {
             ("message", id(facts.message)),
             ("origin", id(facts.origin)),
             ("open", Some(Value::Flag(facts.open))),
+            ("group_delivery", id(facts.group_delivery)),
+            ("group_open", Some(Value::Flag(facts.group_open))),
         ]
     }
 }
