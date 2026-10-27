@@ -74,3 +74,17 @@ impl Batch<'_> {
         self.put(kind, id.to_be_bytes().to_vec(), Some(record.bytes()));
     }
 }
+
+/// A sequence number as kept, zero where none is.
+pub(crate) fn sequence<R: Engine>(
+    store: &EncryptedStore<R>,
+    which: &[u8],
+) -> Result<u64, PersistError> {
+    let Some(bytes) = store.get(super::SEQUENCE, which)? else {
+        return Ok(0);
+    };
+    let array: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| super::malformed("an audit sequence that is not eight bytes"))?;
+    Ok(u64::from_be_bytes(array))
+}

@@ -347,6 +347,7 @@ mod tests {
             holder: configure::fixture::test_cluster().node_scope(0),
             token: 9,
             until_unix_nanos: 0,
+            fence: 0,
         };
         let requests = [
             Request::claim(claim.clone(), Duration::from_secs(30)),

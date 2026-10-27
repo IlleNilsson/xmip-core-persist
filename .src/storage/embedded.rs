@@ -13,6 +13,7 @@
 //! ([`super::commit`]); an administration or audit write is its engine's
 //! own, durable on return.
 
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,6 +43,7 @@ use super::{FailedQueue, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError};
 
 mod administration;
+mod epoch;
 mod keeper;
 mod searched;
 mod submitted;
@@ -72,6 +74,9 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     /// The schema version each database holds, brought to this build's as
     /// it opened (`versioned`).
     versions: [DatabaseVersion; 3],
+    /// The Storage epoch it is the primary in: the high half of every
+    /// claim's fence ([`Embedded::in_epoch`]).
+    epoch: Arc<AtomicU64>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
@@ -115,12 +120,17 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         let versions = versioned::each((&runtime, &administration, &audit), now)?;
         let runtime = Arc::new(runtime);
         let runtime_columns = Arc::new(Columns::of(Database::Runtime));
+        let epoch = Arc::new(AtomicU64::new(0));
         let committer = Committer::start(
             Arc::clone(&runtime),
-            Arc::clone(&clock),
-            Arc::clone(&runtime_columns),
+            (
+                Arc::clone(&clock),
+                Arc::clone(&runtime_columns),
+                Arc::clone(&epoch),
+            ),
         )?;
         Ok(Self {
+            epoch,
             runtime_columns,
             administration_columns: Columns::of(Database::Administration),
             audit_columns: Columns::of(Database::Audit),
@@ -152,14 +162,6 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     #[must_use]
     pub fn audit(&self) -> &EncryptedStore<A> {
         &self.audit
-    }
-
-    /// The schema version each database holds — runtime, administration,
-    /// audit — brought to this build's as it opened: what the node
-    /// keeping them publishes.
-    #[must_use]
-    pub const fn versions(&self) -> &[DatabaseVersion; 3] {
-        &self.versions
     }
 
     fn read<T: Form>(&self, kind: &str, key: &[u8]) -> Result<Option<T>, PersistError> {
@@ -298,6 +300,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
             holder: holder.to_string(),
             token,
             until_unix_nanos: 0,
+            fence: 0,
         };
         self.claimed(Op::Claim {
             claim,
@@ -572,6 +575,8 @@ mod tests {
             .expect("claimed")
             .expect("lapsed");
         assert_eq!(new.holder, holder(1));
+        assert_eq!(old.fence, 1, "the first holder, in epoch zero");
+        assert_eq!(new.fence, 2, "the fence grows with every holder");
         assert_eq!(
             node.renew(std::slice::from_ref(&old), LEASE)
                 .expect("renew"),
@@ -598,6 +603,33 @@ mod tests {
             .claim(JOURNEY_ID, &holder(2), 3, LEASE)
             .expect("claimed");
         assert!(freed.is_some(), "a release frees it at once");
+    }
+
+    #[test]
+    fn a_new_epoch_fences_above_every_fence_before_it_and_a_stale_fence_is_refused() {
+        let (node, clock) = node();
+        let mut fences = Vec::new();
+        for (token, epoch) in [(1, 0), (2, 0), (3, 4), (4, 4), (5, 5)] {
+            node.in_epoch(epoch);
+            let held = node
+                .claim(JOURNEY_ID, &holder(0), token, LEASE)
+                .expect("claimed")
+                .expect("taken");
+            fences.push(held.fence);
+            clock.pass(31_000_000_000);
+        }
+        assert!(fences.windows(2).all(|w| w[0] < w[1]), "{fences:?}");
+        assert_eq!(fences[2] >> 32, 4, "the epoch in the high half");
+        assert_eq!(fences[2] & u64::from(u32::MAX), 3, "the third holder");
+        node.in_epoch(3);
+        let later = node
+            .claim(JOURNEY_ID, &holder(1), 6, LEASE)
+            .expect("claimed")
+            .expect("lapsed");
+        assert!(later.fence > fences[4], "an epoch never goes back");
+        let mut stale = later.clone();
+        stale.fence -= 1;
+        assert_eq!(node.renew(&[stale], LEASE).expect("renew"), []);
     }
 
     #[test]
@@ -1166,6 +1198,7 @@ mod tests {
             holder: holder(0),
             token: id,
             until_unix_nanos: 0,
+            fence: 0,
         };
         let publication = Publication {
             claims: vec![claim(1), claim(2)],
@@ -1213,6 +1246,7 @@ mod tests {
                 holder: holder(0),
                 token,
                 until_unix_nanos: 0,
+                fence: 0,
             }],
             lease_nanos: 1_000,
             ..holding(queue, id)

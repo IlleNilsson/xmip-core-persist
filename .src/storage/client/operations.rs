@@ -228,6 +228,7 @@ impl XmipStorage for StorageClient {
             holder: holder.to_string(),
             token,
             until_unix_nanos: 0,
+            fence: 0,
         };
         expected(self.ask(&Request::claim(claim, lease))?, claimed)
     }

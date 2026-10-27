@@ -54,28 +54,54 @@ impl Stored {
     }
 
     pub(crate) fn held_by(&self, claim: &Claim) -> bool {
-        self.standing == Standing::Held && self.claim.token == claim.token
+        self.standing == Standing::Held && self.claim.is(claim)
     }
+
+    /// Whether it is held by the request `asked`, asked again: its token,
+    /// the fence the request never knew.
+    pub(crate) fn asked_by(&self, asked: &Claim) -> bool {
+        self.standing == Standing::Held && self.claim.token == asked.token
+    }
+}
+
+impl Claim {
+    /// Whether `other` is this claim: the same holder's token and fence.
+    /// A write under a claim the Journey has passed from is refused by
+    /// both, the fence being the number that grows (the owner, 2026-10-27).
+    pub(crate) fn is(&self, other: &Claim) -> bool {
+        self.token == other.token && self.fence == other.fence
+    }
+}
+
+/// The fence a claim taken in `epoch` after `before` — the claim the
+/// Journey had, where it had one — carries: the epoch in the high 32 bits,
+/// the Journey's holder count, one more, in the low 32.
+#[must_use]
+pub(crate) fn fence(epoch: u64, before: Option<&Claim>) -> u64 {
+    let holders = before.map_or(0, |claim| claim.fence & u64::from(u32::MAX));
+    (epoch << 32) | (holders + 1).min(u64::from(u32::MAX))
 }
 
 /// `claim` taken in `batch` until `until`, where its Journey has no claim
 /// held at `now` — none, ended, or lapsed — or one held under its own token,
-/// a request asked again: the claim held, or `None` where another holds it
-/// (`runtime-model.md` section 3: *set the owner where the owner is empty or
-/// lapsed*).
+/// a request asked again: the claim held, its fence the next for `epoch`,
+/// or `None` where another holds it (`runtime-model.md` section 3: *set the
+/// owner where the owner is empty or lapsed*).
 pub(crate) fn take<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    claim: Claim,
-    (now, until): (i128, i128),
+    mut claim: Claim,
+    (now, until, epoch): (i128, i128, u64),
 ) -> Result<Option<Claim>, PersistError> {
-    if let Some(stored) = stored(store, batch, &claim)?
+    let before = stored(store, batch, &claim)?;
+    if let Some(stored) = &before
         && stored.standing == Standing::Held
         && stored.claim.until_unix_nanos >= now
     {
         let ours = stored.claim.token == claim.token;
-        return Ok(ours.then_some(stored.claim));
+        return Ok(ours.then(|| stored.claim.clone()));
     }
+    claim.fence = fence(epoch, before.as_ref().map(|stored| &stored.claim));
     Ok(Some(hold(batch, claim, until)))
 }
 
@@ -130,7 +156,7 @@ pub(crate) fn hand_on<R: Engine>(
     let Some(stored) = stored(store, batch, &hand_on.claim)? else {
         return Ok(false);
     };
-    let ours = stored.claim.token == hand_on.claim.token;
+    let ours = stored.claim.is(&hand_on.claim);
     match stored.standing {
         // Handed on already under this token: an answer that was lost.
         Standing::HandedOn => return Ok(ours),
