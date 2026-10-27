@@ -50,6 +50,12 @@ pub struct JourneyFacts {
     /// Journey still keeps it there: one that is open.
     pub origin: Option<u128>,
     pub open: bool,
+    /// The delivery by a Send Port Group naming a Correlation this
+    /// Journey is a member of (`super::origin`), and whether it still
+    /// keeps the delivery's place there: one not yet succeeded or failed,
+    /// or failed where the Group's set blocks.
+    pub group_delivery: Option<u128>,
+    pub group_open: bool,
     /// When Xmip Storage first wrote it, in nanoseconds since the Unix
     /// epoch: Xmip Storage's to set.
     pub created_unix_nanos: u64,
@@ -181,6 +187,8 @@ impl Form for JourneyFacts {
         write_id_maybe(out, self.message);
         write_id_maybe(out, self.origin);
         write_byte(out, u8::from(self.open));
+        write_id_maybe(out, self.group_delivery);
+        write_byte(out, u8::from(self.group_open));
         write_u64(out, self.created_unix_nanos);
         write_u64(out, self.updated_unix_nanos);
     }
@@ -199,6 +207,8 @@ impl Form for JourneyFacts {
             message: read_id_maybe(cursor)?,
             origin: read_id_maybe(cursor)?,
             open: read_byte(cursor)? != 0,
+            group_delivery: read_id_maybe(cursor)?,
+            group_open: read_byte(cursor)? != 0,
             created_unix_nanos: read_u64(cursor)?,
             updated_unix_nanos: read_u64(cursor)?,
         })
@@ -328,6 +338,8 @@ mod tests {
             message: Some(8),
             origin: Some(11),
             open: true,
+            group_delivery: Some(12),
+            group_open: true,
             created_unix_nanos: 9,
             updated_unix_nanos: 10,
         };

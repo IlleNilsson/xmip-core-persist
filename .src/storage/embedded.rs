@@ -1094,6 +1094,63 @@ mod tests {
     }
 
     #[test]
+    fn a_group_delivery_holds_its_place_until_every_member_closes_its_late_places_too() {
+        let (node, _) = node();
+        let (sequence, late) = (71, 72);
+        let member = |id: u128, delivery: u128| {
+            let mut record = journey(JourneyId::new(id), b"member");
+            record.facts.group_delivery = Some(delivery);
+            record.facts.group_open = true;
+            record
+        };
+        let place = |queue: u128, holder: u128| super::super::Hold {
+            queue,
+            journey: JourneyId::new(holder),
+            body: b"Everyone".to_vec(),
+        };
+        // Two deliveries of two members each, the first's place taken as
+        // it is published.
+        for (delivery, members, message) in [(300, [1, 2], 400), (301, [3, 4], 401)] {
+            let mut published = holding(7, members[0]);
+            published.message.message = MessageId::new(message);
+            published.journeys = members.iter().map(|id| member(*id, delivery)).collect();
+            published.held = members
+                .iter()
+                .map(|id| place(7, *id))
+                .chain([place(sequence, delivery)])
+                .collect();
+            node.publish(&published).expect("published");
+        }
+        let head = |queue: u128| {
+            node.read_held(queue, 0, 1)
+                .expect("read")
+                .held
+                .first()
+                .map(|held| held.hold.journey.value())
+        };
+        assert_eq!(head(sequence), Some(300));
+        // A member takes a place late, in another of the Group's sequences:
+        // kept with its delivery and let go with the rest.
+        let mut placing = leaving(&node, 7, 1, b"placed");
+        placing.leaves.clear();
+        placing.result.facts.group_delivery = Some(300);
+        placing.result.facts.group_open = true;
+        placing.queued = vec![place(late, 300)];
+        assert!(node.hand_on(&placing).expect("handed on"));
+        assert_eq!(head(late), Some(300));
+        let closing = |id: u128, delivery: u128| {
+            let mut done = leaving(&node, 7, id, b"sent");
+            done.result.facts.group_delivery = Some(delivery);
+            done
+        };
+        assert!(node.hand_on(&closing(1, 300)).expect("handed on"));
+        assert_eq!(head(sequence), Some(300), "one member is still open");
+        assert!(node.hand_on(&closing(2, 300)).expect("handed on"));
+        assert_eq!(head(sequence), Some(301), "the set is complete");
+        assert_eq!(head(late), None, "its late place let go with it");
+    }
+
+    #[test]
     fn a_turn_writes_its_instance_and_correlation_only_over_the_turn_it_read() {
         use super::super::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
         let (node, _) = node();
