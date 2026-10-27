@@ -95,6 +95,7 @@ impl StorageNode {
             self.keys.as_ref(),
             &self.kek,
         )?;
+        primary.in_epoch(epoch);
         self.take_up(Role::Primary(Arc::new(primary)), epoch);
         Ok(())
     }

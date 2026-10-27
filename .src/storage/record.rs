@@ -61,6 +61,12 @@ pub struct Claim {
     pub token: u128,
     /// When it lapses, in nanoseconds since the Unix epoch.
     pub until_unix_nanos: i128,
+    /// Its fencing token, Xmip Storage's to set as it takes the claim: the
+    /// Storage epoch in the high 32 bits and how many holders the Journey
+    /// has had in the low 32, so it grows with every holder and every
+    /// failover, and a write by a holder the claim has passed from is
+    /// refused (the owner, 2026-10-27). Asked for, it is zero.
+    pub fence: u64,
 }
 
 /// What the administration database keeps — what must be shared and kept
@@ -291,6 +297,7 @@ impl Form for Claim {
         write_text(out, &self.holder);
         write_u128(out, self.token);
         write_i128(out, self.until_unix_nanos);
+        write_u64(out, self.fence);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -299,6 +306,14 @@ impl Form for Claim {
             holder: read_text(cursor)?,
             token: read_u128(cursor)?,
             until_unix_nanos: read_i128(cursor)?,
+            // A claim kept before fences were written ends here: it was
+            // taken with none (`versioned`: a value added is read as
+            // nothing where a record written before lacks it).
+            fence: if cursor.is_empty() {
+                0
+            } else {
+                read_u64(cursor)?
+            },
         })
     }
 }
@@ -366,6 +381,7 @@ mod tests {
             holder: configure::fixture::test_cluster().node_scope(0),
             token: 42,
             until_unix_nanos: -5,
+            fence: 7,
         }
     }
 

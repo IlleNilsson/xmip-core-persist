@@ -144,6 +144,7 @@ mod tests {
             holder: configure::fixture::test_cluster().node_scope(0),
             token: 42,
             until_unix_nanos: -5,
+            fence: 0,
         };
         let hand_on = HandOn {
             claim: claim.clone(),

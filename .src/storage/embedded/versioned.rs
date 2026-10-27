@@ -17,7 +17,18 @@
 
 use super::super::schema::Database;
 use super::super::schema::version::{self, DatabaseVersion, VERSION, VERSIONS};
+use super::Embedded;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
+
+impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
+    /// The schema version each database holds — runtime, administration,
+    /// audit — brought to this build's as it opened: what the node
+    /// keeping them publishes.
+    #[must_use]
+    pub const fn versions(&self) -> &[DatabaseVersion; 3] {
+        &self.versions
+    }
+}
 
 /// The runtime, the administration and the audit databases, each at this
 /// build's [`VERSION`], `now` being Xmip Storage's time: the version each

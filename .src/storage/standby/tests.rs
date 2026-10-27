@@ -113,6 +113,14 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
             .write_journey(&journey(number, b"before"))
             .expect("written");
     }
+    // A Journey held mid-way when the primary stops (the owner, 2026-10-27:
+    // a fencing token, a number that grows with each holder).
+    let held = journey(7, b"").journey;
+    let lease = Duration::from_millis(50);
+    let before = client
+        .claim(held, "xmip:///C1/node/one", 1, lease)
+        .expect("asked")
+        .expect("taken");
     one.stop();
     one_server.stop();
 
@@ -122,6 +130,23 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
         two.said()
     );
     assert_eq!(two.standing().epoch, one.standing().epoch + 1);
+    std::thread::sleep(lease * 2);
+    let after = client
+        .claim(held, "xmip:///C1/node/two", 2, lease)
+        .expect("asked")
+        .expect("lapsed, taken over");
+    assert_eq!(after.fence >> 32, two.standing().epoch, "the new epoch");
+    assert!(
+        after.fence > before.fence,
+        "{} after {}: the new epoch's fence is above every fence before it",
+        after.fence,
+        before.fence
+    );
+    assert_eq!(
+        client.renew(&[before], lease).expect("asked"),
+        [],
+        "the old holder's claim is refused"
+    );
     for number in 0..50 {
         let read = client
             .read_journey(journey(number, b"").journey)

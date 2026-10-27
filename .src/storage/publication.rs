@@ -82,7 +82,7 @@ pub(crate) fn decide<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
     publication: &Publication,
-    now: i128,
+    (now, epoch): (i128, u64),
 ) -> Result<Decided, PersistError> {
     let message = &publication.message;
     let key = message.message.value().to_be_bytes();
@@ -100,7 +100,7 @@ pub(crate) fn decide<R: Engine>(
         let mut held = Vec::new();
         for asked in &publication.claims {
             if let Some(stored) = claim::stored(store, batch, asked)?
-                && stored.held_by(asked)
+                && stored.asked_by(asked)
             {
                 held.push(stored.claim);
             }
@@ -121,7 +121,12 @@ pub(crate) fn decide<R: Engine>(
     let until = now.saturating_add(i128::from(publication.lease_nanos));
     let mut held = Vec::new();
     for asked in &publication.claims {
-        held.extend(claim::take(store, batch, asked.clone(), (now, until))?);
+        held.extend(claim::take(
+            store,
+            batch,
+            asked.clone(),
+            (now, until, epoch),
+        )?);
     }
     batch.put(PUBLICATION, key.to_vec(), Some(digest));
     Ok(Decided::Now(held))
@@ -205,6 +210,7 @@ mod tests {
                 holder: configure::fixture::test_cluster().node_scope(0),
                 token: 11,
                 until_unix_nanos: 0,
+                fence: 0,
             }],
             lease_nanos: 30_000_000_000,
         };

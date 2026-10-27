@@ -24,11 +24,12 @@
 mod batch;
 mod syncer;
 
-pub(crate) use batch::Batch;
+pub(crate) use batch::{Batch, sequence};
 
 use syncer::Syncer;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread::JoinHandle;
 
@@ -122,15 +123,15 @@ pub(crate) struct Committer {
 }
 
 impl Committer {
-    /// The writer over `store`, telling time by `clock`, keeping `columns`.
+    /// The writer over `store`, telling time by `clock`, keeping `columns`,
+    /// fencing the claims it takes by the Storage `epoch`.
     ///
     /// # Errors
     ///
     /// When the audit sequence cannot be read, or the thread not started.
     pub(crate) fn start<R: Engine + 'static>(
         store: Arc<EncryptedStore<R>>,
-        clock: Arc<dyn Clock>,
-        columns: Arc<Columns>,
+        (clock, columns, epoch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>),
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
         let syncer = Syncer::start(Arc::clone(&store))?;
@@ -144,6 +145,7 @@ impl Committer {
                     next,
                     columns,
                     syncer,
+                    epoch,
                 };
                 writer.run(&inbox);
             })
@@ -192,20 +194,6 @@ impl Drop for Committer {
     }
 }
 
-/// A sequence number as kept, zero where none is.
-pub(crate) fn sequence<R: Engine>(
-    store: &EncryptedStore<R>,
-    which: &[u8],
-) -> Result<u64, PersistError> {
-    let Some(bytes) = store.get(SEQUENCE, which)? else {
-        return Ok(0);
-    };
-    let array: [u8; 8] = bytes
-        .try_into()
-        .map_err(|_| malformed("an audit sequence that is not eight bytes"))?;
-    Ok(u64::from_be_bytes(array))
-}
-
 struct Writer<R> {
     store: Arc<EncryptedStore<R>>,
     clock: Arc<dyn Clock>,
@@ -214,6 +202,8 @@ struct Writer<R> {
     /// Where each batch written is synced, while the next is decided; a
     /// batch handed it is synced before the writer's thread ends.
     syncer: Syncer,
+    /// The Storage epoch its node is the primary in: a claim's fence.
+    epoch: Arc<AtomicU64>,
 }
 
 impl<R: Engine> Writer<R> {
@@ -308,7 +298,13 @@ impl<R: Engine> Writer<R> {
             }
             Op::Claim { claim, lease_nanos } => {
                 let until = now.saturating_add(lease_nanos);
-                claim::take(&self.store, batch, claim, (now, until)).map(Done::Claim)
+                claim::take(
+                    &self.store,
+                    batch,
+                    claim,
+                    (now, until, self.epoch.load(Ordering::Acquire)),
+                )
+                .map(Done::Claim)
             }
             Op::Renew {
                 claims,
@@ -336,7 +332,12 @@ impl<R: Engine> Writer<R> {
             },
             Op::HandOn(hand_on) => claim::hand_on(&self.store, batch, &hand_on, now).map(Done::Yes),
             Op::Turn(turn) => super::instance::turn(&self.store, batch, &turn, now).map(Done::Yes),
-            Op::Publish(asked) => match publication::decide(&self.store, batch, &asked, now)? {
+            Op::Publish(asked) => match publication::decide(
+                &self.store,
+                batch,
+                &asked,
+                (now, self.epoch.load(Ordering::Acquire)),
+            )? {
                 Decided::Before(held) => Ok(Done::Claims(held)),
                 Decided::Now(held) => self
                     .decide(Op::Audit(Box::new(asked.audit)), now, batch)
