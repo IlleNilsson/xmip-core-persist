@@ -7,7 +7,7 @@
 use super::super::record::malformed;
 use super::super::row::Value;
 use super::Columns;
-use crate::{EncryptedStore, Engine, PersistError};
+use crate::{IndexScan, PersistError};
 
 impl Columns {
     /// The records `index` of `table` finds whose first columns are
@@ -20,9 +20,9 @@ impl Columns {
     ///
     /// Where the index is not one whose last column follows `equal`, or an
     /// entry fails its tag.
-    pub(crate) fn find_from<E: Engine>(
+    pub(crate) fn find_from<S: IndexScan + ?Sized>(
         &self,
-        store: &EncryptedStore<E>,
+        store: &S,
         at: (&str, &str),
         equal: &[Value],
         from: u64,
@@ -45,9 +45,9 @@ impl Columns {
     ///
     /// Where the index is not one whose columns after `equal` are as many
     /// as `from` says or more, or an entry fails its tag.
-    pub(crate) fn find_ordered<E: Engine>(
+    pub(crate) fn find_ordered<S: IndexScan + ?Sized>(
         &self,
-        store: &EncryptedStore<E>,
+        store: &S,
         at: (&str, &str),
         equal: &[Value],
         (from, to): (&[u64], u64),
