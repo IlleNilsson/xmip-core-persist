@@ -1,6 +1,8 @@
 //! The one layer that encrypts what Xmip stores of its own (ADR-0063
 //! clause 2), whatever engine holds the bytes.
 
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
 use crate::{Change, Engine, PersistError};
 use secret::{DataKey, KekName, KeyStore, SecretError};
 
@@ -44,6 +46,10 @@ pub struct EncryptedStore<E> {
     engine: E,
     record: DataKey,
     lookup: DataKey,
+    /// Held to write, and to read one consistent view across several
+    /// reads ([`EncryptedStore::consistent`]): an index entry and the
+    /// record it finds then always agree.
+    writing: RwLock<()>,
 }
 
 impl<E: Engine> EncryptedStore<E> {
@@ -75,6 +81,7 @@ impl<E: Engine> EncryptedStore<E> {
             record: data.derive(RECORD_PURPOSE)?,
             lookup: data.derive(LOOKUP_PURPOSE)?,
             engine,
+            writing: RwLock::new(()),
         })
     }
 
@@ -87,6 +94,7 @@ impl<E: Engine> EncryptedStore<E> {
     pub fn put(&self, kind: &str, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
         let place = place(kind, key);
         let sealed = self.seal(&place, value)?;
+        let _writing = self.write_lock();
         self.engine.write(&self.lookup.keyed_hash(&place), &sealed)
     }
 
@@ -154,7 +162,9 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// As [`EncryptedStore::put`]; nothing is written then.
     pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
-        self.engine.apply(&self.sealed(changes)?)
+        let sealed = self.sealed(changes)?;
+        let _writing = self.write_lock();
+        self.engine.apply(&sealed)
     }
 
     /// Every change of `changes` and every index entry of `entries` as one
@@ -172,7 +182,9 @@ impl<E: Engine> EncryptedStore<E> {
         changes: &[RecordChange<'_>],
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
-        self.engine.apply(&self.indexed(changes, entries)?)
+        let indexed = self.indexed(changes, entries)?;
+        let _writing = self.write_lock();
+        self.engine.apply(&indexed)
     }
 
     /// As [`EncryptedStore::apply_indexed`], through the engine's
@@ -187,7 +199,9 @@ impl<E: Engine> EncryptedStore<E> {
         changes: &[RecordChange<'_>],
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
-        self.engine.apply_deferred(&self.indexed(changes, entries)?)
+        let indexed = self.indexed(changes, entries)?;
+        let _writing = self.write_lock();
+        self.engine.apply_deferred(&indexed)
     }
 
     /// Every write before now durable, as the engine syncs
@@ -275,7 +289,21 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// As [`EncryptedStore::apply`].
     pub fn apply_deferred(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
-        self.engine.apply_deferred(&self.sealed(changes)?)
+        let sealed = self.sealed(changes)?;
+        let _writing = self.write_lock();
+        self.engine.apply_deferred(&sealed)
+    }
+
+    /// One consistent view of the store while the guard is held: no write
+    /// lands between the reads made under it, so an index entry read and
+    /// the record it finds always agree (corrected 2026-10-27: a queue
+    /// page read mid-write came back short).
+    pub fn consistent(&self) -> RwLockReadGuard<'_, ()> {
+        self.writing.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write_lock(&self) -> RwLockWriteGuard<'_, ()> {
+        self.writing.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `changes` as the engine keeps them: each place a keyed hash, each
