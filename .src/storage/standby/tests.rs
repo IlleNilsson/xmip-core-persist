@@ -118,7 +118,12 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
     let held = journey(7, b"").journey;
     let lease = Duration::from_millis(50);
     let before = client
-        .claim(held, "xmip:///C1/node/one", 1, lease)
+        .claim(
+            held,
+            &configure::fixture::test_cluster().node_scope(0),
+            1,
+            lease,
+        )
         .expect("asked")
         .expect("taken");
     one.stop();
@@ -132,7 +137,12 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
     assert_eq!(two.standing().epoch, one.standing().epoch + 1);
     std::thread::sleep(lease * 2);
     let after = client
-        .claim(held, "xmip:///C1/node/two", 2, lease)
+        .claim(
+            held,
+            &configure::fixture::test_cluster().node_scope(1),
+            2,
+            lease,
+        )
         .expect("asked")
         .expect("lapsed, taken over");
     assert_eq!(after.fence >> 32, two.standing().epoch, "the new epoch");
