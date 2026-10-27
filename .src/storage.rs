@@ -299,10 +299,10 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read or written; nothing of it is written then.
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError>;
 
-    /// Hand a Work Processs turn on as one atomic write: its Journeys
+    /// Hand a Work Process's turn on as one atomic write: its Journey's
     /// hand-on, the Instances it moved and the correlation keys it set and
     /// let go; or nothing, and `false`, where the claim is no longer its
-    /// holders or an Instance no longer stands at the turn it was read at
+    /// holder's or an Instance no longer stands at the turn it was read at
     /// (`instance`).
     ///
     /// # Errors
