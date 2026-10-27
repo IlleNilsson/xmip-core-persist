@@ -279,8 +279,8 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::ReadInstance(id) => storage
             .read_instance(id)
             .map(|record| Answer::Instance(record.map(Box::new))),
-        Request::ReadCorrelation(id) => storage
-            .read_correlation(id)
+        Request::ReadInstanceKey(id) => storage
+            .read_instance_key(id)
             .map(|found| Answer::Records(found.into_iter().collect())),
         Request::WriteAudit(entry) => storage.write_audit(&entry).map(|()| Answer::Done),
         Request::KeepAudit(most, chunk) => storage

@@ -331,8 +331,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         super::instance::read_instance(&self.runtime, instance)
     }
 
-    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
-        super::instance::read_correlation(&self.runtime, correlation)
+    fn read_instance_key(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        super::instance::read_instance_key(&self.runtime, correlation)
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn a_turn_writes_its_instance_and_correlation_only_over_the_turn_it_read() {
-        use super::super::{Correlation, InstanceRecord, InstanceWrite, Turn};
+        use super::super::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
         let (node, _) = node();
         node.publish(&holding(7, 1)).expect("published");
         node.publish(&holding(7, 2)).expect("published");
@@ -1112,18 +1112,18 @@ mod tests {
                 record: instance(turns),
                 over: turns - 1,
             }],
-            correlations: vec![Correlation {
-                correlation: 50,
+            keys: vec![InstanceKey {
+                key: 50,
                 instance: 40,
             }],
-            uncorrelated: Vec::new(),
+            unkeyed: Vec::new(),
         };
         assert!(
             node.turn(&turn(leaving(&node, 7, 1, b"started"), 1))
                 .expect("turned")
         );
         assert_eq!(node.read_instance(40).expect("read"), Some(instance(1)));
-        assert_eq!(node.read_correlation(50).expect("read"), Some(40));
+        assert_eq!(node.read_instance_key(50).expect("read"), Some(40));
         let stale = turn(leaving(&node, 7, 2, b"stale"), 1);
         assert!(
             !node.turn(&stale).expect("decided"),
@@ -1137,10 +1137,10 @@ mod tests {
             "and nothing of it"
         );
         let mut ended = turn(stale.hand_on.clone(), 2);
-        ended.uncorrelated = vec![50];
-        ended.correlations.clear();
+        ended.unkeyed = vec![50];
+        ended.keys.clear();
         assert!(node.turn(&ended).expect("turned"));
-        assert_eq!(node.read_correlation(50).expect("read"), None);
+        assert_eq!(node.read_instance_key(50).expect("read"), None);
     }
 
     /// The Journey `id` claimed and handed on as `body`, leaving `queue`.

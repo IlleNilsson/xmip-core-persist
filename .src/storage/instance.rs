@@ -1,4 +1,4 @@
-//! A Work Process's Instances and correlations, as Xmip Storage keeps them:
+//! A Work Process's Instances and keys, as Xmip Storage keeps them:
 //! two tables of their own in the runtime database, the Ledger
 //! (`runtime-model.md` section 22, *Process State belongs to the
 //! cluster*; the owner, 2026-10-14: every type of data its own table).
@@ -6,8 +6,8 @@
 //! - **Process Instance**: an Instance's state in the form
 //!   `xmip-core-process` writes, kept whole, by the Instance's identifier,
 //!   with how many turns it has taken and whether it has ended.
-//! - **Correlation**: a Correlation's key, by the identifier its
-//!   Work Process, set and key name, and the Instance it belongs to.
+//! - **Instance Key**: each value an Instance is correlated by — its Work
+//!   Process, Correlation and key, named — and the Instance it belongs to.
 //!
 //! Both are written in a hand-on and in nothing else, so an Instance moves
 //! on exactly when the Journey that moved it does ([`super::HandOn`]). An
@@ -28,8 +28,8 @@ use crate::{EncryptedStore, Engine, PersistError};
 /// Where the Process Instance table keeps an Instance, by its identifier.
 pub(crate) const INSTANCE: &str = "process-instance";
 
-/// Where the Correlation table keeps a key, by its identifier.
-pub(crate) const CORRELATION: &str = "process-correlation";
+/// Where the Instance Key table keeps a key, by its identifier.
+pub(crate) const INSTANCE_KEY: &str = "process-instance-key";
 
 /// One Instance as the Ledger keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,12 +52,12 @@ pub struct InstanceWrite {
     pub over: u64,
 }
 
-/// A Correlation's key and the Instance it belongs to.
+/// A key an Instance is correlated by, and the Instance it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Correlation {
-    /// The key's identifier: its Work Process, set and key, named
+pub struct InstanceKey {
+    /// The key's identifier: its Work Process, Correlation and key, named
     /// (`super::named`).
-    pub correlation: u128,
+    pub key: u128,
     pub instance: u128,
 }
 
@@ -95,15 +95,15 @@ impl Form for InstanceWrite {
     }
 }
 
-impl Form for Correlation {
+impl Form for InstanceKey {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.correlation);
+        write_u128(out, self.key);
         write_u128(out, self.instance);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(Self {
-            correlation: read_u128(cursor)?,
+            key: read_u128(cursor)?,
             instance: read_u128(cursor)?,
         })
     }
@@ -129,22 +129,22 @@ pub(crate) fn current<R: Engine>(
     Ok(true)
 }
 
-/// `writes` and `correlations` written in `batch`, and `uncorrelated`
+/// `writes` and `keys` written in `batch`, and `unkeyed`
 /// taken out.
 pub(crate) fn write(
     batch: &mut Batch<'_>,
     writes: &[InstanceWrite],
-    correlations: &[Correlation],
-    uncorrelated: &[u128],
+    keys: &[InstanceKey],
+    unkeyed: &[u128],
 ) {
     for write in writes {
         batch.record(INSTANCE, write.record.instance, &write.record);
     }
-    for correlation in correlations {
-        batch.record(CORRELATION, correlation.correlation, correlation);
+    for key in keys {
+        batch.record(INSTANCE_KEY, key.key, key);
     }
-    for gone in uncorrelated {
-        batch.put(CORRELATION, gone.to_be_bytes().to_vec(), None);
+    for gone in unkeyed {
+        batch.put(INSTANCE_KEY, gone.to_be_bytes().to_vec(), None);
     }
 }
 
@@ -154,20 +154,17 @@ pub(crate) fn write(
 pub struct Turn {
     pub hand_on: HandOn,
     pub instances: Vec<InstanceWrite>,
-    pub correlations: Vec<Correlation>,
-    pub uncorrelated: Vec<u128>,
+    pub keys: Vec<InstanceKey>,
+    pub unkeyed: Vec<u128>,
 }
 
 impl Form for Turn {
     fn write(&self, out: &mut Vec<u8>) {
         self.hand_on.write(out);
         self.instances.write(out);
-        self.correlations.write(out);
-        write_u32(
-            out,
-            u32::try_from(self.uncorrelated.len()).unwrap_or(u32::MAX),
-        );
-        for gone in &self.uncorrelated {
+        self.keys.write(out);
+        write_u32(out, u32::try_from(self.unkeyed.len()).unwrap_or(u32::MAX));
+        for gone in &self.unkeyed {
             write_u128(out, *gone);
         }
     }
@@ -176,8 +173,8 @@ impl Form for Turn {
         Ok(Self {
             hand_on: HandOn::read(cursor)?,
             instances: Vec::read(cursor)?,
-            correlations: Vec::read(cursor)?,
-            uncorrelated: (0..read_u32(cursor)?)
+            keys: Vec::read(cursor)?,
+            unkeyed: (0..read_u32(cursor)?)
                 .map(|_| read_u128(cursor))
                 .collect::<Result<_, _>>()?,
         })
@@ -186,7 +183,7 @@ impl Form for Turn {
 
 /// `turn` decided in `batch` at `now`: nothing where an Instance it moves
 /// no longer stands where its turn read it, or where the claim is not its
-/// holder's; else its hand-on, its Instances and its correlations, all in
+/// holder's; else its hand-on, its Instances and its keys, all in
 /// the one write.
 pub(crate) fn turn<R: Engine>(
     store: &EncryptedStore<R>,
@@ -200,12 +197,7 @@ pub(crate) fn turn<R: Engine>(
     if !super::claim::hand_on(store, batch, &turn.hand_on, now)? {
         return Ok(false);
     }
-    write(
-        batch,
-        &turn.instances,
-        &turn.correlations,
-        &turn.uncorrelated,
-    );
+    write(batch, &turn.instances, &turn.keys, &turn.unkeyed);
     Ok(true)
 }
 
@@ -220,14 +212,14 @@ pub(crate) fn read_instance<R: Engine>(
         .transpose()
 }
 
-/// The Instance the key `correlation` belongs to, where one does.
-pub(crate) fn read_correlation<R: Engine>(
+/// The Instance the key `key` belongs to, where one does.
+pub(crate) fn read_instance_key<R: Engine>(
     store: &EncryptedStore<R>,
-    correlation: u128,
+    key: u128,
 ) -> Result<Option<u128>, PersistError> {
     store
-        .get(CORRELATION, &correlation.to_be_bytes())?
-        .map(|bytes| Correlation::from_bytes(&bytes).map(|found| found.instance))
+        .get(INSTANCE_KEY, &key.to_be_bytes())?
+        .map(|bytes| InstanceKey::from_bytes(&bytes).map(|found| found.instance))
         .transpose()
 }
 
@@ -236,7 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_instance_write_and_a_correlation_come_back_from_their_bytes() {
+    fn an_instance_write_and_a_key_come_back_from_their_bytes() {
         let write = InstanceWrite {
             record: InstanceRecord {
                 instance: 7,
@@ -251,13 +243,10 @@ mod tests {
             InstanceWrite::from_bytes(&write.bytes()).expect("reads"),
             write
         );
-        let correlation = Correlation {
-            correlation: 9,
+        let key = InstanceKey {
+            key: 9,
             instance: 7,
         };
-        assert_eq!(
-            Correlation::from_bytes(&correlation.bytes()).expect("reads"),
-            correlation
-        );
+        assert_eq!(InstanceKey::from_bytes(&key.bytes()).expect("reads"), key);
     }
 }

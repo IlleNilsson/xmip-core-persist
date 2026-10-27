@@ -652,8 +652,8 @@ mod tests {
             self.beneath.read_instance(instance)
         }
 
-        fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
-            self.beneath.read_correlation(correlation)
+        fn read_instance_key(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+            self.beneath.read_instance_key(correlation)
         }
 
         fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {

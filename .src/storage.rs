@@ -78,7 +78,7 @@ pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
 pub use hand_on::{HandOn, Wait};
 pub use hold::{Held, HeldQueue, Hold, named};
-pub use instance::{Correlation, InstanceRecord, InstanceWrite, Turn};
+pub use instance::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
 pub use kept_audit::KeptAudit;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
@@ -323,7 +323,7 @@ pub trait XmipStorage: Send + Sync {
     /// # Errors
     ///
     /// When it cannot be read.
-    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError>;
+    fn read_instance_key(&self, correlation: u128) -> Result<Option<u128>, PersistError>;
     /// Write an audit record to the runtime database, where it is first
     /// written (ADR-0062, amendment 2026-10-01).
     ///
