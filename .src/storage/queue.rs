@@ -205,11 +205,36 @@ pub(crate) fn page<R: Engine>(
     from: u64,
     most: u32,
 ) -> Result<(Places, Vec<Vec<u8>>), PersistError> {
+    // A place taken out between reading the index and reading its entry
+    // leaves the page short of what it found: the page is read again, so
+    // a reader never takes a queue read mid-write for one that holds less
+    // (corrected 2026-10-27; a sequence's head read empty under load).
+    let mut read = page_once(store, kinds, queue, (from, most))?;
+    for _ in 1..PAGE_READS {
+        if read.2 {
+            break;
+        }
+        read = page_once(store, kinds, queue, (from, most))?;
+    }
+    Ok((read.0, read.1))
+}
+
+/// How often a page is read before a short one is answered as it is.
+const PAGE_READS: usize = 3;
+
+/// One reading of a page: its places, its entries, and whether every place
+/// found was read with its entry.
+fn page_once<R: Engine>(
+    store: &EncryptedStore<R>,
+    kinds: Kinds,
+    queue: u128,
+    (from, most): (u64, u32),
+) -> Result<(Places, Vec<Vec<u8>>, bool), PersistError> {
     let mut places = store
         .get(kinds.places, &places_key(queue))?
         .map_or(Ok(Places::default()), |bytes| Places::from_bytes(&bytes))?;
     if places.count == 0 {
-        return Ok((places, Vec::new()));
+        return Ok((places, Vec::new(), true));
     }
     let at = from.max(places.first);
     let most = usize::try_from(most).unwrap_or(usize::MAX);
@@ -226,6 +251,7 @@ pub(crate) fn page<R: Engine>(
     };
     places.first = first.unwrap_or(places.next);
     let mut entries = Vec::with_capacity(found.len());
+    let whole = found.len();
     for (sequence, _) in found {
         // Written and taken out with its entry, an index entry finds one;
         // one written before a read of it ended is read as it is now.
@@ -233,7 +259,8 @@ pub(crate) fn page<R: Engine>(
             entries.push(bytes);
         }
     }
-    Ok((places, entries))
+    let complete = entries.len() == whole;
+    Ok((places, entries, complete))
 }
 
 /// The places held in `queue` from `from` on, up to `most`, in order: one
