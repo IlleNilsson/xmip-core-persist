@@ -39,7 +39,7 @@ use super::row;
 use super::schema::{Database, DatabaseVersion};
 use super::stream::StreamRecord;
 use super::{FailedQueue, XmipStorage};
-use crate::{EncryptedStore, Engine, PersistError, RecordChange};
+use crate::{EncryptedStore, Engine, PersistError};
 
 mod administration;
 mod keeper;
@@ -167,20 +167,6 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(kind, key)?
             .map(|bytes| T::from_bytes(&bytes))
             .transpose()
-    }
-
-    /// `changes` written to `store`, whose tables `columns` are, as one
-    /// write, each searchable record stamped and its index entries with
-    /// it; the caller holds the store's one lock, `administering` or
-    /// `keeping`.
-    fn indexed(
-        &self,
-        (store, columns): (&EncryptedStore<A>, &Columns),
-        changes: Vec<RecordChange<'_>>,
-    ) -> Result<(), PersistError> {
-        let now = row::nanos(self.clock.unix_timestamp_nanos());
-        let (changes, entries) = columns.written(store, changes, now)?;
-        store.apply_indexed(&changes, &entries)
     }
 }
 

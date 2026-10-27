@@ -5,12 +5,27 @@
 
 use std::sync::PoisonError;
 
-use super::super::columns::ADMINISTRATION;
+use super::super::columns::{ADMINISTRATION, Columns};
 use super::super::record::{AdministrationKind, AdministrationRecord, Form};
+use super::super::row;
 use super::Embedded;
-use crate::{Engine, PersistError};
+use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
+    /// `changes` written to `store`, whose tables `columns` are, as one
+    /// write, each searchable record stamped and its index entries with
+    /// it; the caller holds the store's one lock, `administering` or
+    /// `keeping`.
+    pub(super) fn indexed(
+        &self,
+        (store, columns): (&EncryptedStore<A>, &Columns),
+        changes: Vec<RecordChange<'_>>,
+    ) -> Result<(), PersistError> {
+        let now = row::nanos(self.clock.unix_timestamp_nanos());
+        let (changes, entries) = columns.written(store, changes, now)?;
+        store.apply_indexed(&changes, &entries)
+    }
+
     /// The record of `kind` and `id` written as `bytes`, or removed where
     /// they are none, with its index entries, in one write:
     /// `write_administration` and `remove_administration`.
