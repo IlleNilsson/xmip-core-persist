@@ -32,6 +32,10 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 # key-encryption key of the platform's key store, and the sealing itself
 # (ADR-0063). Persist says what is sealed and where; secret seals it.
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main" }
+# Who may ask the Storage plane what, decided once for every plane Xmip
+# serves its own parts (`authorize::plane`): every request on the wire is
+# admitted by it before it is answered (server.rs).
+authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main" }
 # Xmip Storage's records and its wire, read and written over the estate's
 # one byte cursor and writer; and SHA-1, which RFC 9562 names for a
 # name-based UUID, the identifier a held Journey's queue is found by.
