@@ -5,7 +5,7 @@ use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
     AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_JOURNEY,
     FAILED_JOURNEY_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
-    STREAM,
+    SECRET, SECRET_INDEXES, STREAM,
 };
 use super::version::VERSIONS;
 use super::{Column, Database, Kind, Table};
@@ -42,7 +42,7 @@ const fn versions(database: Database) -> Table {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 24] = [
+pub const TABLES: [Table; 25] = [
     versions(Database::Runtime),
     Table {
         database: Database::Runtime,
@@ -334,5 +334,16 @@ pub const TABLES: [Table; 24] = [
         key: &["kind", "id"],
         unique: &[],
         indexes: ADMINISTRATION_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "secret",
+        since: 1,
+        keeps: "each secret a Location names, by its name: its kind, its value, and when and \
+                by whom it was last set; its value is never read back out",
+        columns: SECRET,
+        key: &["secret"],
+        unique: &["name"],
+        indexes: SECRET_INDEXES,
     },
 ];

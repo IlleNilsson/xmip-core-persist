@@ -21,10 +21,12 @@ use super::super::query::Query;
 use super::super::record::{
     AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
+use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::stream::StreamRecord;
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
 use crate::PersistError;
+use xcore::SecretName;
 
 /// The answer an operation expected, or why there was none.
 fn expected<T>(
@@ -349,6 +351,28 @@ impl XmipStorage for StorageClient {
         id: u128,
     ) -> Result<(), PersistError> {
         expected(self.ask(&Request::RemoveAdministration(kind, id))?, done)
+    }
+
+    fn write_secret(&self, secret: &SecretRecord) -> Result<(), PersistError> {
+        let asked = Request::WriteSecret(Box::new(secret.clone()));
+        expected(self.ask(&asked)?, done)
+    }
+
+    fn read_secret(&self, name: &SecretName) -> Result<Option<SecretRecord>, PersistError> {
+        expected(
+            self.ask(&Request::ReadSecret(name.clone()))?,
+            |answer| match answer {
+                Answer::Secret(record) => Ok(record.map(|record| *record)),
+                other => Err(other),
+            },
+        )
+    }
+
+    fn list_secrets(&self) -> Result<Vec<SecretEntry>, PersistError> {
+        expected(self.ask(&Request::ListSecrets)?, |answer| match answer {
+            Answer::Secrets(entries) => Ok(entries),
+            other => Err(other),
+        })
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {

@@ -37,6 +37,7 @@ use super::kept_audit::KeptAudit;
 use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
+use super::secret::{SECRET, SecretRecord};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 
 /// Where the audit database keeps an audit record the keeper
@@ -58,6 +59,7 @@ enum Searched {
     Audit,
     AuditStream,
     Administration,
+    Secret,
 }
 
 impl Searched {
@@ -74,6 +76,7 @@ impl Searched {
             (Database::Administration, kind) if kind.starts_with(ADMINISTRATION) => {
                 Self::Administration
             }
+            (Database::Administration, SECRET) => Self::Secret,
             _ => return None,
         })
     }
@@ -88,6 +91,7 @@ impl Searched {
             Self::Audit => "audit",
             Self::AuditStream => "audit_stream",
             Self::Administration => "administration",
+            Self::Secret => "secret",
         }
     }
 
@@ -103,6 +107,7 @@ impl Searched {
             Self::Audit => row::<KeptAudit>(bytes),
             Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
+            Self::Secret => row::<SecretRecord>(bytes),
         }
     }
 
@@ -123,6 +128,7 @@ impl Searched {
             Self::Audit => stamp::<KeptAudit>(bytes, before, now),
             Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
+            Self::Secret => stamp::<SecretRecord>(bytes, before, now),
         }
     }
 }

@@ -23,7 +23,8 @@ use super::super::facts::AuditFacts;
 use super::super::kept_audit::{KEPT_AUDIT_BODY, KeptAudit, body_key};
 use super::super::record::{Form, StreamChunk, malformed};
 use super::super::stream::{StreamDigest, StreamRecord};
-use super::{Embedded, chunk_key};
+use super::Embedded;
+use crate::storage::stream::chunk_key;
 use crate::{Engine, PersistError, RecordChange};
 
 /// The `audit_stream` rows of the Streams a record carries, and their

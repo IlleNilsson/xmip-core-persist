@@ -138,7 +138,12 @@ and 9).
   `audit_chain` index for the walk (`xmip-core-audit`'s `audit_chain::walk`,
   called by the runtime); and
   the administration records — registration, membership,
-  Modules, Handlers, deployment and operator state — keyed by UUIDv7. Every
+  Modules, Handlers, deployment and operator state — keyed by UUIDv7. And
+  the secrets Locations present, in a table of their own, `secret`: set by
+  `write_secret`, which keeps the identifier of the one it replaces, read
+  with its value by `read_secret` for the node that presents it
+  (`StoredSecrets`, the `xcore::Secrets` a node is handed), and listed
+  without values by `list_secrets` (ADR-0019, amendment 2026-10-29). Every
   write returns once it is durable. Every operation is all or nothing: one
   that fails half-way writes nothing of itself. A request asked again after
   a lost answer does nothing twice: a Publication is kept as written by its

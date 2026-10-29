@@ -80,6 +80,15 @@ impl Form for StreamRecord {
     }
 }
 
+/// Where a Stream's chunk is kept: its Stream and its number in it.
+pub(crate) fn chunk_key(stream: StreamId, index: u32) -> Vec<u8> {
+    [
+        stream.value().to_be_bytes().as_slice(),
+        &index.to_be_bytes(),
+    ]
+    .concat()
+}
+
 pub(crate) fn write_digest(out: &mut Vec<u8>, digest: &[u8; DIGEST]) {
     out.extend_from_slice(digest);
 }

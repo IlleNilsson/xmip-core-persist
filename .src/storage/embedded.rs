@@ -21,6 +21,7 @@ use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
 use super::audit_entry::AuditEntry;
+use super::claim::lease_nanos;
 use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
@@ -38,14 +39,16 @@ use super::record::{
 };
 use super::row;
 use super::schema::{Database, DatabaseVersion};
-use super::stream::StreamRecord;
-use super::{FailedQueue, XmipStorage};
+use super::stream::{StreamRecord, chunk_key};
+use super::{FailedQueue, SecretEntry, SecretRecord, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError};
+use xcore::SecretName;
 
 mod administration;
 mod epoch;
 mod keeper;
 mod searched;
+mod secrets;
 mod submitted;
 mod versioned;
 
@@ -170,18 +173,6 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .map(|bytes| T::from_bytes(&bytes))
             .transpose()
     }
-}
-
-fn lease_nanos(lease: Duration) -> i128 {
-    i128::try_from(lease.as_nanos()).unwrap_or(i128::MAX)
-}
-
-fn chunk_key(stream: StreamId, index: u32) -> Vec<u8> {
-    [
-        stream.value().to_be_bytes().as_slice(),
-        &index.to_be_bytes(),
-    ]
-    .concat()
 }
 
 impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
@@ -385,6 +376,18 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         id: u128,
     ) -> Result<(), PersistError> {
         self.administered(kind, id, None)
+    }
+
+    fn write_secret(&self, secret: &SecretRecord) -> Result<(), PersistError> {
+        self.secret_set(secret)
+    }
+
+    fn read_secret(&self, name: &SecretName) -> Result<Option<SecretRecord>, PersistError> {
+        self.secret_read(name)
+    }
+
+    fn list_secrets(&self) -> Result<Vec<SecretEntry>, PersistError> {
+        self.secret_list()
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
