@@ -298,6 +298,11 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::RemoveAdministration(kind, id) => storage
             .remove_administration(kind, id)
             .map(|()| Answer::Done),
+        Request::WriteSecret(secret) => storage.write_secret(&secret).map(|()| Answer::Done),
+        Request::ReadSecret(name) => storage
+            .read_secret(&name)
+            .map(|secret| Answer::Secret(secret.map(Box::new))),
+        Request::ListSecrets => storage.list_secrets().map(Answer::Secrets),
         // Answered once durable here: the client's caller acknowledges on it.
         Request::Publish(publication) => storage
             .publish(&publication)

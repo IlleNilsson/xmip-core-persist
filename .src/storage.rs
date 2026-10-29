@@ -59,6 +59,7 @@ mod queue;
 mod record;
 mod row;
 pub mod schema;
+mod secret;
 mod server;
 pub mod standby;
 mod stream;
@@ -86,6 +87,7 @@ pub use record::{
     AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
     StreamChunk,
 };
+pub use secret::{SecretEntry, SecretRecord, StoredSecrets};
 pub use server::{ALPN, StorageServer};
 pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
@@ -93,7 +95,7 @@ pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
 use std::sync::Arc;
 use std::time::Duration;
 
-use xcore::{AuditId, JourneyId, MessageId, StreamId};
+use xcore::{AuditId, JourneyId, MessageId, SecretName, StreamId};
 
 use crate::PersistError;
 
@@ -409,6 +411,28 @@ pub trait XmipStorage: Send + Sync {
     fn remove_administration(&self, kind: AdministrationKind, id: u128)
     -> Result<(), PersistError>;
 
+    /// Set a secret, replacing the one of its name, which keeps the
+    /// identifier it had; its time is Xmip Storage's to set (`secret`).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be written.
+    fn write_secret(&self, secret: &SecretRecord) -> Result<(), PersistError>;
+
+    /// The secret `name` with its value, or `None`: for the node that
+    /// presents it, never for a surface.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn read_secret(&self, name: &SecretName) -> Result<Option<SecretRecord>, PersistError>;
+
+    /// Every secret kept, by name, without its value.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn list_secrets(&self) -> Result<Vec<SecretEntry>, PersistError>;
     /// The identifiers of the records `query` finds, up to its most, in
     /// its index's order or the reverse: one index of one table read, a
     /// name or an identifier found by equality, as its column keeps it

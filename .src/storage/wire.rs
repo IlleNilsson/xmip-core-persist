@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use codec::cursor::Cursor;
-use xcore::{AuditId, JourneyId, MessageId, StreamId};
+use xcore::{AuditId, JourneyId, MessageId, SecretName, StreamId};
 
 use super::audit_entry::AuditEntry;
 use super::dead::Replay;
@@ -25,9 +25,10 @@ use super::publication::Publication;
 use super::query::Query;
 use super::record::{
     AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
-    StreamChunk, malformed, read_byte, read_u32, read_u64, read_u128, write_byte, write_u32,
-    write_u64, write_u128,
+    StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128, write_byte,
+    write_text, write_u32, write_u64, write_u128,
 };
+use super::secret::SecretRecord;
 use super::standby::Follow;
 use super::stream::StreamRecord;
 use crate::PersistError;
@@ -79,6 +80,10 @@ pub(crate) enum Request {
     Turn(Box<Turn>),
     ReadInstance(u128),
     ReadInstanceKey(u128),
+    /// A secret set (`super::secret`).
+    WriteSecret(Box<SecretRecord>),
+    ReadSecret(SecretName),
+    ListSecrets,
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -145,6 +150,15 @@ impl Request {
                 write_byte(out, 33);
                 write_u128(out, *id);
             }
+            Self::WriteSecret(secret) => {
+                write_byte(out, 34);
+                secret.write(out);
+            }
+            Self::ReadSecret(name) => {
+                write_byte(out, 35);
+                write_text(out, name.as_str());
+            }
+            Self::ListSecrets => write_byte(out, 36),
             _ => {}
         }
     }
@@ -305,6 +319,9 @@ impl Form for Request {
             31 => Self::Turn(Box::new(Turn::read(cursor)?)),
             32 => Self::ReadInstance(read_u128(cursor)?),
             33 => Self::ReadInstanceKey(read_u128(cursor)?),
+            34 => Self::WriteSecret(Box::new(SecretRecord::read(cursor)?)),
+            35 => Self::ReadSecret(SecretName::new(read_text(cursor)?).map_err(malformed)?),
+            36 => Self::ListSecrets,
             other => return Err(malformed(format!("no operation is numbered {other}"))),
         })
     }

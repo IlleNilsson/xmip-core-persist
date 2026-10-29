@@ -198,6 +198,21 @@ impl XmipStorage for Delegated {
         self.now()?.storage.remove_administration(kind, id)
     }
 
+    fn write_secret(&self, secret: &crate::storage::SecretRecord) -> Result<(), PersistError> {
+        self.now()?.storage.write_secret(secret)
+    }
+
+    fn read_secret(
+        &self,
+        name: &xcore::SecretName,
+    ) -> Result<Option<crate::storage::SecretRecord>, PersistError> {
+        self.now()?.storage.read_secret(name)
+    }
+
+    fn list_secrets(&self) -> Result<Vec<crate::storage::SecretEntry>, PersistError> {
+        self.now()?.storage.list_secrets()
+    }
+
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
         self.now()?.storage.query(query)
     }

@@ -708,6 +708,21 @@ mod tests {
             self.beneath.remove_administration(kind, id)
         }
 
+        fn write_secret(&self, secret: &crate::storage::SecretRecord) -> Result<(), PersistError> {
+            self.beneath.write_secret(secret)
+        }
+
+        fn read_secret(
+            &self,
+            name: &xcore::SecretName,
+        ) -> Result<Option<crate::storage::SecretRecord>, PersistError> {
+            self.beneath.read_secret(name)
+        }
+
+        fn list_secrets(&self) -> Result<Vec<crate::storage::SecretEntry>, PersistError> {
+            self.beneath.list_secrets()
+        }
+
         fn query(&self, query: &super::super::Query) -> Result<Vec<u128>, PersistError> {
             self.beneath.query(query)
         }

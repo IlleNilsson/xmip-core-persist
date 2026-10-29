@@ -14,6 +14,7 @@ use super::super::record::{
     read_byte, read_bytes, read_text, read_u32, read_u128, write_byte, write_bytes, write_text,
     write_u32, write_u128,
 };
+use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::standby::Standing;
 use super::super::stream::StreamRecord;
 use crate::PersistError;
@@ -57,6 +58,10 @@ pub(crate) enum Answer {
     Standby(String),
     /// A Work Process's Instance, or none (`super::super::instance`).
     Instance(Option<Box<InstanceRecord>>),
+    /// A secret, with its value, for the node that presents it.
+    Secret(Option<Box<SecretRecord>>),
+    /// The secrets kept, without their values.
+    Secrets(Vec<SecretEntry>),
 }
 
 impl Answer {
@@ -74,6 +79,14 @@ impl Answer {
             Self::Instance(record) => {
                 write_byte(out, 23);
                 write_optional(out, record.as_ref());
+            }
+            Self::Secret(record) => {
+                write_byte(out, 24);
+                write_optional(out, record.as_ref());
+            }
+            Self::Secrets(entries) => {
+                write_byte(out, 25);
+                entries.write(out);
             }
             _ => {}
         }
@@ -223,6 +236,8 @@ impl Form for Answer {
             21 => Self::Standing(Standing::read(cursor)?),
             22 => Self::Standby(read_text(cursor)?),
             23 => Self::Instance(read_optional(cursor)?),
+            24 => Self::Secret(read_optional(cursor)?),
+            25 => Self::Secrets(Vec::read(cursor)?),
             other => return Err(malformed(format!("no answer is numbered {other}"))),
         })
     }

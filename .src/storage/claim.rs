@@ -77,6 +77,12 @@ impl Claim {
 /// Journey had, where it had one — carries: the epoch in the high 32 bits,
 /// the Journey's holder count, one more, in the low 32.
 #[must_use]
+/// A lease as the nanoseconds a claim is held for, at most what an `i128`
+/// holds.
+pub(crate) fn lease_nanos(lease: std::time::Duration) -> i128 {
+    i128::try_from(lease.as_nanos()).unwrap_or(i128::MAX)
+}
+
 pub(crate) fn fence(epoch: u64, before: Option<&Claim>) -> u64 {
     let holders = before.map_or(0, |claim| claim.fence & u64::from(u32::MAX));
     (epoch << 32) | (holders + 1).min(u64::from(u32::MAX))
