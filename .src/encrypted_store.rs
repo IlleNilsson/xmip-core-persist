@@ -107,6 +107,17 @@ impl<E: Engine> EncryptedStore<E> {
             .write_new(&self.lookup.keyed_hash(&place), &sealed)
     }
 
+    /// A key derived from the store's own for `purpose` alone: what Xmip
+    /// Storage seals a value under before the store keeps it, so a value is
+    /// ciphertext whatever keeps the record (`storage::secret::sealed`).
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Key`] where the derivation failed.
+    pub(crate) fn derived(&self, purpose: &[u8]) -> Result<DataKey, PersistError> {
+        Ok(self.record.derive(purpose)?)
+    }
+
     /// The record `key` of `kind`, authenticated, or `None`.
     ///
     /// # Errors

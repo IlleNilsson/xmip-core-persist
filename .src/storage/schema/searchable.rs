@@ -245,13 +245,15 @@ pub(super) const ADMINISTRATION_INDEXES: &[Index] =
     &[index(16, "administration_updated", &["kind", "updated_at"])];
 
 /// A secret a Location names (ADR-0019, amendment 2026-10-29): its value
-/// the record's own, sealed with it on an embedded Storage node and never
+/// sealed by Xmip, under the administration database's data key with its
+/// name and kind bound in, before any store keeps it, so `sealed` holds
+/// ciphertext alone on every server (ADR-0063, amendment 2026-10-29); never
 /// in an index; found by its name.
 pub(super) const SECRET: &[Column] = &[
     column("secret", Kind::Identifier),
     column("name", Kind::Text),
     column("kind", Kind::Word),
-    column("value", Kind::Bytes),
+    column("sealed", Kind::Bytes),
     column("set_at", Kind::Time),
     column("set_by", Kind::Text),
 ];

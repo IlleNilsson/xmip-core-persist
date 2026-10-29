@@ -1,6 +1,7 @@
 //! The embedded Storage node's secrets: the administration database's
-//! `secret` table, each record sealed whole and found by its name's index
-//! entry (`super::super::secret`).
+//! `secret` table, each value sealed by Xmip before the record is written
+//! (`super::super::secret::sealed`), the record sealed whole again as every
+//! record here, and found by its name's index entry.
 
 use std::sync::PoisonError;
 
@@ -8,7 +9,7 @@ use xcore::SecretName;
 
 use super::super::record::Form;
 use super::super::row::Value;
-use super::super::secret::{SECRET, SecretEntry, SecretRecord};
+use super::super::secret::{KeptSecret, SEALING, SECRET, SecretEntry, SecretRecord};
 use super::Embedded;
 use crate::{Engine, PersistError};
 
@@ -23,7 +24,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .administering
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut kept = secret.clone();
+        let mut kept = secret.sealed(&self.administration.derived(SEALING)?)?;
         if let Some(id) = self.secret_id(secret.secret.name())? {
             kept.id = id;
         }
@@ -40,7 +41,10 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         let Some(id) = self.secret_id(name)? else {
             return Ok(None);
         };
-        self.secret_by_id(id)
+        let key = self.administration.derived(SEALING)?;
+        self.secret_by_id(id)?
+            .map(|kept| kept.opened(&key))
+            .transpose()
     }
 
     /// Every secret, without its value: `list_secrets`.
@@ -54,8 +58,8 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         )?;
         let mut entries = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Some(record) = self.secret_by_id(id)? {
-                entries.push(record.entry());
+            if let Some(kept) = self.secret_by_id(id)? {
+                entries.push(kept.entry());
             }
         }
         Ok(entries)
@@ -73,10 +77,10 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         Ok(found.first().copied())
     }
 
-    fn secret_by_id(&self, id: u128) -> Result<Option<SecretRecord>, PersistError> {
+    fn secret_by_id(&self, id: u128) -> Result<Option<KeptSecret>, PersistError> {
         self.administration
             .get(SECRET, &id.to_be_bytes())?
-            .map(|bytes| SecretRecord::from_bytes(&bytes))
+            .map(|bytes| KeptSecret::from_bytes(&bytes))
             .transpose()
     }
 }
@@ -141,6 +145,19 @@ mod tests {
         assert_eq!(names, ["partner-x", "partner-y"]);
         assert_eq!(listed[0].kind, SecretKind::Password);
 
+        // Its row, opened from the record seal every record here has,
+        // holds the value sealed again: never as it was set.
+        let row = node
+            .administration()
+            .get(SECRET, &7u128.to_be_bytes())
+            .expect("read")
+            .expect("kept");
+        for value in [&first, &second] {
+            assert!(
+                !row.windows(value.len()).any(|w| w == value.as_bytes()),
+                "the row"
+            );
+        }
         let everything = node.administration().engine().everything();
         for value in [&first, &second] {
             let found = everything
