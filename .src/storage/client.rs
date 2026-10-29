@@ -833,6 +833,30 @@ mod tests {
     }
 
     #[test]
+    fn a_persons_certificate_under_the_anchors_asks_xmip_storage_nothing() {
+        let authority = Authority::new();
+        let behind = storage();
+        let server = serve(&behind, &authority.issue(&authority));
+        let nodes = [server.address().to_string()];
+        let person = StorageClient::new(
+            &nodes,
+            &authority.issue_person(&authority),
+            TIMEOUT,
+            PASS_OVER,
+        )
+        .expect("client");
+        let name = xcore::SecretName::new("partner-x").expect("a name");
+        let refused = person.read_secret(&name).expect_err("a person is no node");
+        assert!(refused.to_string().contains("may not read"), "{refused}");
+        assert!(person.write_journey(&journey(b"from a person")).is_err());
+        assert_eq!(
+            behind.read_journey(journey(b"").journey).expect("read"),
+            None
+        );
+        server.stop();
+    }
+
+    #[test]
     fn no_storage_node_or_one_without_a_port_is_refused_before_anything_is_asked() {
         let authority = Authority::new();
         let identity = authority.issue(&authority);

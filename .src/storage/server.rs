@@ -6,6 +6,14 @@
 //! The protocol inside the TLS is agreed in its handshake by its own
 //! identifier, [`ALPN`] (RFC 7301), so a client that speaks something else
 //! is refused before it says anything.
+//!
+//! **Every request is admitted before it is answered** (`authorize::plane`,
+//! [`RULES`]): a certificate under the anchors proves a caller of the
+//! cluster, and only one that authenticates a server — a node's, never a
+//! person's, which authenticates a client alone (ADR-0034) — asks Xmip
+//! Storage anything, the secrets' operations named apart. A person's
+//! certificate, which reaches a node's operate listener, is refused here in
+//! words and its connection closed.
 
 use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -14,10 +22,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use authorize::plane;
+
 use super::XmipStorage;
 use super::standby::{Standing, StorageNode};
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
+use admitted::{RULES, caller};
 
 /// The application protocol a node and a Storage node agree in the TLS
 /// handshake: this wire, its first version.
@@ -37,6 +48,8 @@ const WATCH: Duration = Duration::from_millis(50);
 const WRITE: Duration = Duration::from_secs(30);
 
 /// The threads serving connections, so a stop can wait for each.
+mod admitted;
+
 type Served = Arc<Mutex<Vec<JoinHandle<()>>>>;
 
 /// A Storage node's server, running until it is stopped.
@@ -214,7 +227,7 @@ fn accept(
 }
 
 /// One connection, one request after another, until the node hangs up or
-/// the server stops.
+/// the server stops, each admitted by [`RULES`] before it is read further.
 /// A standby asking to follow is handed the primary's writes on it until
 /// either ends it.
 fn serve(
@@ -227,7 +240,14 @@ fn serve(
         return;
     };
     let mut watched = Watched { guarded, stopping };
+    let mut proven = None;
     while let Ok(Some(request)) = wire::receive::<Request>(&mut watched) {
+        // Read once the first request is: the handshake has finished by then.
+        let (who, standing) = proven.get_or_insert_with(|| caller(&watched.guarded));
+        if let Err(refused) = plane::admit(who.as_deref(), *standing, request.operation(), RULES) {
+            let _ = wire::send(&mut watched.guarded, &Answer::Failed(refused));
+            return;
+        }
         let answer = match request {
             Request::Standing => Answer::Standing(serving.standing()),
             Request::Follow(asked) => {

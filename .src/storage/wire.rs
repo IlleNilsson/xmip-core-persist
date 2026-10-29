@@ -35,6 +35,7 @@ use crate::PersistError;
 
 mod answer;
 mod frame;
+mod operation;
 
 pub(crate) use answer::Answer;
 pub(crate) use frame::{receive, send};

@@ -13,10 +13,29 @@ impl Authority {
         Self(rcgen::CertifiedKey { cert, key_pair })
     }
 
-    /// An identity for a node at 127.0.0.1, trusting `anchors`.
+    /// An identity for a node at 127.0.0.1, trusting `anchors`: server and
+    /// client authentication, as a node's certificate is (ADR-0034).
     pub(crate) fn issue(&self, anchors: &Self) -> tls::Identity {
+        self.issued(
+            anchors,
+            &[
+                rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+                rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+            ],
+        )
+    }
+
+    /// An identity for a person, trusting `anchors`: client authentication
+    /// alone, as an operator's certificate is.
+    pub(crate) fn issue_person(&self, anchors: &Self) -> tls::Identity {
+        self.issued(anchors, &[rcgen::ExtendedKeyUsagePurpose::ClientAuth])
+    }
+
+    fn issued(&self, anchors: &Self, uses: &[rcgen::ExtendedKeyUsagePurpose]) -> tls::Identity {
         let key = rcgen::KeyPair::generate().expect("a key");
-        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("params");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("params");
+        params.extended_key_usages = uses.to_vec();
         let leaf = params
             .signed_by(&key, &self.0.cert, &self.0.key_pair)
             .expect("issued");
