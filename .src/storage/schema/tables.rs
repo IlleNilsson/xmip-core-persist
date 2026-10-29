@@ -339,8 +339,9 @@ pub const TABLES: [Table; 25] = [
         database: Database::Administration,
         name: "secret",
         since: 1,
-        keeps: "each secret a Location names, by its name: its kind, its value, and when and \
-                by whom it was last set; its value is never read back out",
+        keeps: "each secret a Location names, by its name: its kind, its value sealed by Xmip \
+                under the administration database's data key, and when and by whom it was \
+                last set; its value is never read back out",
         columns: SECRET,
         key: &["secret"],
         unique: &["name"],

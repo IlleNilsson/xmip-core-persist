@@ -2,15 +2,18 @@
 //! `secret` table (ADR-0019, amendment 2026-10-29): a table of their own,
 //! every value but the secret's own in a column of its own, found by name.
 //!
-//! **Encrypted at rest.** On an embedded Storage node a secret is a record
-//! like any other there, sealed whole by `EncryptedStore` under the
-//! administration database's data key — AES-256-GCM, the key wrapped by
-//! the key home's key-encryption key (ADR-0063 clauses 2 and 4) — and its
-//! index entry holds its name alone, never its value. Behind a database
-//! server IT runs, encryption at rest is IT's (ADR-0063, amendment
-//! 2026-10-01). Between a node and a Storage node it travels inside
-//! Xmip's mutual TLS. It is kept usable, not as a verifier: the node
-//! presents it to the party it connects to.
+//! **Sealed by Xmip, whatever keeps it.** A Storage node seals a secret's
+//! value before any engine or database server sees it — AES-256-GCM under
+//! the administration database's data key, the key the key home's
+//! key-encryption key wraps (ADR-0063 clauses 2 and 4), its name and kind
+//! the associated data — and the `sealed` column holds ciphertext alone
+//! ([`sealed`]); whoever reads the table or its backups, a database
+//! server's administrator included, reads no secret (ADR-0063, amendment
+//! 2026-10-29). On an embedded Storage node the record is sealed whole
+//! again, as every record there, and its index entry holds its name alone.
+//! Between a node and a Storage node it travels inside Xmip's mutual TLS.
+//! It is kept usable, not as a verifier: the node presents it to the party
+//! it connects to.
 //!
 //! **Never read back out.** Xmip Storage answers a secret's value to the
 //! node that presents it ([`StoredSecrets`]); what a surface lists is
@@ -26,8 +29,11 @@ use super::record::{
     Form, malformed, read_bytes, read_text, read_u64, read_u128, write_bytes, write_text,
     write_u64, write_u128,
 };
-use super::row::{Columned, Row, Value};
 use crate::PersistError;
+
+mod sealed;
+
+pub(crate) use sealed::{KeptSecret, SEALING};
 
 /// What a secret's records are kept under in the administration database.
 pub(crate) const SECRET: &str = "secret";
@@ -123,30 +129,6 @@ impl Form for SecretEntry {
     }
 }
 
-impl Columned for SecretRecord {
-    fn id(&self) -> u128 {
-        self.id
-    }
-
-    fn stamp(&mut self, now: u64, _before: Option<&Self>) {
-        self.set_unix_nanos = now;
-    }
-
-    /// Its columns besides its key and its value: the value is the
-    /// record's own, never laid out where an index could hold it.
-    fn row(&self) -> Row {
-        vec![
-            ("name", Some(Value::Text(self.secret.name().to_string()))),
-            (
-                "kind",
-                Some(Value::Text(self.secret.kind().word().to_string())),
-            ),
-            ("set_at", Some(Value::Time(self.set_unix_nanos))),
-            ("set_by", Some(Value::Text(self.set_by.clone()))),
-        ]
-    }
-}
-
 /// The secrets a node's Locations name, read from Xmip Storage as each
 /// connects (`transport::Secured`): the one [`Secrets`] a node is handed.
 pub struct StoredSecrets(pub Arc<dyn XmipStorage>);
@@ -189,7 +171,7 @@ mod tests {
         assert_eq!(back.entry(), record.entry());
         let entry = record.entry().bytes();
         assert!(!entry.windows(drawn.len()).any(|w| w == drawn.as_bytes()));
-        assert!(record.row().iter().all(|(column, _)| *column != "value"));
+
         for asked in [
             Request::WriteSecret(Box::new(record.clone())),
             Request::ReadSecret(record.secret.name().clone()),

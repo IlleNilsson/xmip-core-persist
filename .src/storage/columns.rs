@@ -37,7 +37,7 @@ use super::kept_audit::KeptAudit;
 use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
-use super::secret::{SECRET, SecretRecord};
+use super::secret::{KeptSecret, SECRET};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 
 /// Where the audit database keeps an audit record the keeper
@@ -107,7 +107,7 @@ impl Searched {
             Self::Audit => row::<KeptAudit>(bytes),
             Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
-            Self::Secret => row::<SecretRecord>(bytes),
+            Self::Secret => row::<KeptSecret>(bytes),
         }
     }
 
@@ -128,7 +128,7 @@ impl Searched {
             Self::Audit => stamp::<KeptAudit>(bytes, before, now),
             Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
-            Self::Secret => stamp::<SecretRecord>(bytes, before, now),
+            Self::Secret => stamp::<KeptSecret>(bytes, before, now),
         }
     }
 }

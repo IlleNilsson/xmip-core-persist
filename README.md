@@ -139,7 +139,9 @@ and 9).
   called by the runtime); and
   the administration records — registration, membership,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. And
-  the secrets Locations present, in a table of their own, `secret`: set by
+  the secrets Locations present, in a table of their own, `secret`, each
+  value sealed by Xmip under the administration database's data key, its
+  name and kind bound in, before any store keeps it (`secret::sealed`): set by
   `write_secret`, which keeps the identifier of the one it replaces, read
   with its value by `read_secret` for the node that presents it
   (`StoredSecrets`, the `xcore::Secrets` a node is handed), and listed
