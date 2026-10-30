@@ -3,8 +3,8 @@
 //! The embedded Storage node's one writer decides and writes a batch, then
 //! syncs it (`super::commit`). A Publication is answered between the two:
 //! its claims are decided and its records readable, and what it is worth
-//! on disk is told here once the sync returns. So a send of the Journeys it
-//! opened is prepared while the Ledger syncs, and lets its far end see the
+//! on disk is told here once the sync returns. So a send of the Messages it
+//! queued is prepared while the Ledger syncs, and lets its far end see the
 //! Message only once [`Durable::wait`] says the Ledger holds it (ADR-0018,
 //! amendment 2026-10-20). Every other write is answered once durable, as
 //! before.

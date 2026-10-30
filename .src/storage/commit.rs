@@ -6,7 +6,7 @@
 //!
 //! One writer is also what makes a claim a conditional update on one
 //! node: each condition is read and its write decided in order, against
-//! what the batch has written so far, so two claimants of one Journey in
+//! what the batch has written so far, so two claimants of one Message in
 //! one batch are decided one after the other, and the first wins (the
 //! owner, 2026-10-01: *All DB records have to be central and clusterable,
 //! if one node fails another one should be able to pick up*;
@@ -55,7 +55,7 @@ pub(crate) const JOURNEY: &str = "journey";
 pub(crate) const CLAIM: &str = "claim";
 pub(crate) const AUDIT: &str = "audit";
 pub(crate) const HELD: &str = "held";
-/// A held Journey's place, found by its queue and its Journey.
+/// A held Message's place, found by its queue and its Journey.
 pub(crate) const HELD_JOURNEY: &str = "held-journey";
 pub(crate) const PLACES: &str = "held-places";
 /// Where a queue's first entries by when they are due are (`super::due`).

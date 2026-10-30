@@ -48,8 +48,9 @@ pub trait Engine: Send + Sync {
     /// on return. A change is a key and its new value, `None` removing it.
     ///
     /// It is what makes a hand-on one atomic write — the step's result,
-    /// the next Journey and the claim released together (`runtime-model.md`
-    /// section 3, *The Ledger*) — and what lets many writes share one sync,
+    /// the Message's next place and the claim released together
+    /// (`runtime-model.md` section 3, *The Ledger*) — and what lets many
+    /// writes share one sync,
     /// which is group commit (`deployment-model.md` section 7).
     ///
     /// # Errors

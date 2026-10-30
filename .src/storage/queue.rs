@@ -291,7 +291,7 @@ mod tests {
         store.apply_indexed(&changes, &entries).expect("written");
     }
 
-    /// The Journey held at `sequence`, numbered one past it.
+    /// The Message held at `sequence`, its Journey numbered one past it.
     fn held(sequence: u64) -> Vec<u8> {
         hold::Held {
             sequence,

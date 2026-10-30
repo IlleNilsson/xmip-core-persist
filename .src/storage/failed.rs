@@ -82,7 +82,7 @@ pub(crate) const KINDS: Kinds = Kinds {
 /// Where a queue's index of failed Messages keeps its entries.
 pub(crate) const FAILED: &str = "failed-message";
 
-/// `journey`, left Failed by its hand-on at `now` as `failure` says,
+/// The Message of `journey`, left Failed by its hand-on at `now` as `failure` says,
 /// entered at the end of its queue's index and its place there marked
 /// failed, in `batch`. Nothing where it holds no place in that queue; once
 /// where it is entered already.
@@ -112,7 +112,7 @@ pub(crate) fn enter<R: Engine>(
     .map(drop)
 }
 
-/// `journey` out of `queue`'s index of failed Messages, and its place in
+/// The Message of `journey` out of `queue`'s index of failed Messages, and its place in
 /// the queue, where it still holds one, no longer marked failed, in
 /// `batch`: an operator acted on it. Nothing where it is not in the index,
 /// so an act asked again does nothing twice.
@@ -236,7 +236,8 @@ mod tests {
         Embedded::open(runtime, administration, audit, keys, &kek).expect("open")
     }
 
-    /// `count` Journeys published into [`QUEUE`], numbered from one.
+    /// `count` Messages published into [`QUEUE`], their Journeys numbered
+    /// from one.
     fn published(node: &dyn XmipStorage, count: u128) {
         for id in 1..=count {
             let journey = JourneyId::new(id);
@@ -274,7 +275,8 @@ mod tests {
         }
     }
 
-    /// The Journey `id` claimed and handed on as `step` makes the hand-on.
+    /// The Message of the Journey `id` claimed and handed on as `step`
+    /// makes the hand-on.
     fn handed(node: &dyn XmipStorage, id: u128, step: impl FnOnce(Claim) -> HandOn) {
         let holder = configure::fixture::test_cluster().node_scope(0);
         let lease = Duration::from_secs(30);
@@ -411,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn a_journey_left_waiting_keeps_its_due_time_at_its_place_and_no_claim() {
+    fn a_message_left_waiting_keeps_its_due_time_at_its_place_and_no_claim() {
         let engines = kept();
         let node = opened(engines);
         published(&node, 2);

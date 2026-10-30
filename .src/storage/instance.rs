@@ -10,7 +10,7 @@
 //!   Process, Correlation and key, named — and the Instance it belongs to.
 //!
 //! Both are written in a hand-on and in nothing else, so an Instance moves
-//! on exactly when the Journey that moved it does ([`super::HandOn`]). An
+//! on exactly when the Message that moved it does ([`super::HandOn`]). An
 //! Instance is written only over the turn it was read at: two nodes taking
 //! two turns of one Instance from the same state never both write, and the
 //! later hand-on writes nothing, its claim kept for its holder to release.
@@ -148,7 +148,7 @@ pub(crate) fn write(
     }
 }
 
-/// A Work Process's turn, handed on as one write: the Journey's hand-on,
+/// A Work Process's turn, handed on as one write: the Message's hand-on,
 /// the Instances it moved, the keys it correlated and the keys it let go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Turn {

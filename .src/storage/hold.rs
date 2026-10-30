@@ -1,30 +1,30 @@
 //! What a paused Subscription holds, in the Ledger (`runtime-model.md`
-//! section 9: *A paused Subscription's Journey is written and held until
+//! section 9: *A paused Subscription's Message is written and held until
 //! the Subscription is resumed, and the held ones are picked up oldest
 //! first*).
 //!
-//! **A held Message is a held Journey.** Its Stream and its Message are in
+//! **A held Message has its Journey.** Its Stream and its Message are in
 //! the Ledger from the receive, and its Journey from the Publication; what
-//! holding adds is the Journey's place in its Subscription's queue — a
+//! holding adds is the Message's place in its Subscription's queue — a
 //! [`Hold`], written in the Publication's one write, so a receive whose
 //! hold was not written is not acknowledged. Xmip Storage numbers each as
 //! it is written, from zero, as it numbers every queue ([`super::queue`]).
 //!
-//! **Held once, by its Journey.** A held Journey is kept under its Journey's
+//! **Held once, by its Journey.** A held Message is kept under its Journey's
 //! identifier as well as its place, so one write that holds it twice takes
-//! one place. A Journey let go of is forgotten here, so that a Retry can
+//! one place. A Message let go of is forgotten here, so that a Retry can
 //! place it anew; what keeps a Publication asked again after a lost answer
-//! from queuing a Journey a second time is the Publication's own record,
+//! from queuing a Message a second time is the Publication's own record,
 //! by its Message (`super::publication`): one Journey, one delivery (the
 //! dedup key is the Journey's identifier).
 //!
 //! **Let go of only by a hand-on.** [`super::XmipStorage::hand_on`] writes
 //! the Journey as its step left it and lets go of its place in one write
-//! (`HandOn::leaves`): a held Journey moved on to where it is sent once its
+//! (`HandOn::leaves`): a held Message moved on to where it is sent once its
 //! Subscription is resumed, or a send that is done.
 //!
-//! **A queue is any line Journeys wait in.** A paused Subscription's is
-//! one; a Send Port's is another — every Journey bound for it, in the order
+//! **A queue is any line Messages wait in.** A paused Subscription's is
+//! one; a Send Port's is another — every Message bound for it, in the order
 //! its Publications were written, until its send is handed on
 //! (`runtime-model.md` section 10). Both are kept here, the same way.
 //!
@@ -43,7 +43,7 @@ use super::record::{
 };
 use crate::{EncryptedStore, Engine, PersistError};
 
-/// A Journey to hold: which queue, which Journey, and what the holder
+/// A Message to hold: which queue, which Journey, and what the holder
 /// needs to pick it up, in its own form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hold {
@@ -54,7 +54,7 @@ pub struct Hold {
     pub body: Vec<u8>,
 }
 
-/// A Journey held, at its place in its queue.
+/// A Message held, at its place in its queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Held {
     /// Its place, given by Xmip Storage as it was held: oldest lowest.
@@ -68,7 +68,7 @@ pub struct Held {
     /// of failed Messages or takes it out (`super::failed`), so a reader of
     /// the queue passes over what failed without reading its Journey.
     pub failed: bool,
-    /// When the Journey here is due again, where it waits for a retry: in
+    /// When the Message here is due again, where it waits for a retry: in
     /// nanoseconds since the Unix epoch on Xmip Storage's clock, Xmip
     /// Storage's to set in the hand-on that leaves it waiting
     /// (`super::HandOn::waits`). Read against the clock of the same read
@@ -158,7 +158,7 @@ pub(crate) const KINDS: Kinds = Kinds {
 };
 
 /// `kept` kept at the end of its queue, in `batch`: the place it takes is
-/// the queue's next. A Journey its queue holds already keeps the place it
+/// the queue's next. A Message its queue holds already keeps the place it
 /// has, so a Publication asked again holds it once.
 pub(crate) fn keep<R: Engine>(
     store: &EncryptedStore<R>,
@@ -179,7 +179,7 @@ pub(crate) fn keep<R: Engine>(
     .map(drop)
 }
 
-/// `journey`, held in `queue`, due again at `due` on Xmip Storage's clock,
+/// The Message of `journey`, held in `queue`, due again at `due` on Xmip Storage's clock,
 /// in `batch`: it waits there for a retry, claimed by nobody. Nothing where
 /// it holds no place there.
 pub(crate) fn wait<R: Engine>(
@@ -202,7 +202,7 @@ pub(crate) fn wait<R: Engine>(
     Ok(())
 }
 
-/// The Journey held at `sequence` in `queue` marked `failed`, or not, in
+/// The Message held at `sequence` in `queue` marked `failed`, or not, in
 /// `batch`; nothing where none is held there or it is marked so already.
 /// Marked failed, it waits for an operator and for no retry, so a due time
 /// it kept is gone with the mark.
@@ -228,7 +228,7 @@ pub(crate) fn mark<R: Engine>(
     Ok(())
 }
 
-/// The Journey held at `sequence` in `queue` let go of, in `batch`: its
+/// The Message held at `sequence` in `queue` let go of, in `batch`: its
 /// place gone, and the queue's first moved past every place let go of
 /// before it. Letting go of what is not held changes nothing, so a release
 /// asked again after a lost answer does nothing twice.

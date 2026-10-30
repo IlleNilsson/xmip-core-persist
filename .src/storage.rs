@@ -9,7 +9,7 @@
 //!   those held and queued, its node's claims, its Dead Message Queue entry,
 //!   its audit record — as one; read a queue oldest first, or what is due in
 //!   it; read and replay a node's Dead Message Queue; claim, renew and
-//!   release a Journey; hand a step on; write an audit record;
+//!   release a Message; hand a step on; write an audit record;
 //! - **a search** of any of them: the records one index of one table finds,
 //!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records, each with its Streams'
@@ -182,7 +182,7 @@ pub trait XmipStorage: Send + Sync {
     /// record, together, or nothing — once, by its Message. The claims its
     /// node holds of those it asked for, **answered once decided and
     /// readable, before its sync**, and when it is durable ([`Durable`]):
-    /// nothing is acknowledged, and no far end sees a Journey of it, before
+    /// nothing is acknowledged, and no far end sees a Message of it, before
     /// that. Asked again after a lost answer, it writes nothing and answers
     /// the claims of it its node still holds under their tokens.
     /// # Errors
@@ -247,7 +247,7 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read or written; nothing of it is written then.
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError>;
 
-    /// Claim `journey` for `holder` under `token` for `lease`: a
+    /// Claim the Message of `journey` for `holder` under `token` for `lease`: a
     /// conditional update — set the holder where there is none or the last
     /// one's claim has lapsed — time-limited (`runtime-model.md` section 3).
     /// The claim taken, or `None` where another holds it. A claimant that
@@ -289,7 +289,7 @@ pub trait XmipStorage: Send + Sync {
     fn release(&self, claim: &Claim) -> Result<bool, PersistError>;
 
     /// Hand a step on as one atomic write: its result, the Messages it made,
-    /// the Journeys that go on, the queues it leaves and the places it
+    /// the Messages that go on, the queues it leaves and the places it
     /// takes, and the claim released — or kept until a due time, where the
     /// step waits — together; or nothing, and `false`, where the claim is no
     /// longer its holder's. A hand-on repeated after a lost answer is `true`
@@ -301,7 +301,7 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read or written; nothing of it is written then.
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError>;
 
-    /// Hand a Work Process's turn on as one atomic write: its Journey's
+    /// Hand a Work Process's turn on as one atomic write: its Message's
     /// hand-on, the Instances it moved and the correlation keys it set and
     /// let go; or nothing, and `false`, where the claim is no longer its
     /// holder's or an Instance no longer stands at the turn it was read at

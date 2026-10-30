@@ -3,8 +3,8 @@
 
 use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
-    AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_JOURNEY,
-    FAILED_JOURNEY_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
+    AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_MESSAGE,
+    FAILED_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
     SECRET, SECRET_INDEXES, STREAM,
 };
 use super::version::VERSIONS;
@@ -95,8 +95,8 @@ pub const TABLES: [Table; 25] = [
         database: Database::Runtime,
         name: "held",
         since: 1,
-        keeps: "the Journeys a paused Subscription holds, at their place in its queue, \
-                each once",
+        keeps: "the Messages a paused Subscription holds, at their place in its queue, \
+                each once, by its Journey",
         columns: HELD,
         key: &["queue", "sequence"],
         unique: &["queue", "journey"],
@@ -121,7 +121,7 @@ pub const TABLES: [Table; 25] = [
         database: Database::Runtime,
         name: "held_due_places",
         since: 1,
-        keeps: "each queue's places in the order its Journeys are due: the place no Journey \
+        keeps: "each queue's places in the order its Messages are due: the place no Message \
                 due since it was held is before, the due time and place no retry is before, \
                 and how many keep a retry's due time",
         columns: &[
@@ -142,10 +142,10 @@ pub const TABLES: [Table; 25] = [
         keeps: "the Messages that failed waiting in each Send Port's queue for an operator, \
                 in the order they failed, each once, with its place in the queue and why, \
                 written with the failure and taken out with the operator's act",
-        columns: FAILED_JOURNEY,
+        columns: FAILED_MESSAGE,
         key: &["queue", "sequence"],
         unique: &["queue", "journey"],
-        indexes: FAILED_JOURNEY_INDEXES,
+        indexes: FAILED_MESSAGE_INDEXES,
     },
     Table {
         database: Database::Runtime,
@@ -209,7 +209,7 @@ pub const TABLES: [Table; 25] = [
         name: "publication",
         since: 1,
         keeps: "each Message published, with the digest of its Publication, so a Publication \
-                asked again writes nothing and resets no Journey moved on since",
+                asked again writes nothing and resets no Message moved on since",
         columns: &[
             column("message", Kind::Identifier),
             column("digest", Kind::Bytes),
@@ -222,8 +222,8 @@ pub const TABLES: [Table; 25] = [
         database: Database::Runtime,
         name: "claim",
         since: 1,
-        keeps: "the claim on each Journey: its holder, its token, when it lapses, and \
-                whether it was given back or its step handed on",
+        keeps: "the claim on each Message, by its Journey: its holder, its token, when it \
+                lapses, and whether it was given back or its step handed on",
         columns: &[
             column("journey", Kind::Identifier),
             column("holder", Kind::Text),

@@ -113,7 +113,7 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
             .write_journey(&journey(number, b"before"))
             .expect("written");
     }
-    // A Journey held mid-way when the primary stops (the owner, 2026-10-27:
+    // A Message held mid-way when the primary stops (the owner, 2026-10-27:
     // a fencing token, a number that grows with each holder).
     let held = journey(7, b"").journey;
     let lease = Duration::from_millis(50);

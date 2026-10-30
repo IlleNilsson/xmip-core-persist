@@ -334,7 +334,7 @@ mod tests {
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use crate::storage::{DeadEntry, DeadQueue, FailedQueue, HeldQueue, Replayed};
 
-    /// The hand-on of a send of the Journey `claim` names, delivered.
+    /// The hand-on of a send of the Message `claim` names, delivered.
     fn delivered(claim: &Claim) -> HandOn {
         HandOn {
             claim: claim.clone(),

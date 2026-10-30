@@ -94,12 +94,13 @@ and 9).
   where each part's first is; the one writer finds each first again once a
   batch is decided, by one range from where it was, so no read steps over
   what `RocksDB` keeps of entries taken out (ADR-0013, amendment
-  2026-10-21); a Journey marked failed waits for no retry, its due time
+  2026-10-21); a Message marked failed waits for no retry, its due time
   taken out with the mark; claim a
-  Journey (set the holder where there is none or
+  Message by its Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
-  Journeys that follow, the queues the Journey leaves (`HandOn::leaves`)
+  Journeys of the Messages that follow, the queues the Message leaves
+  (`HandOn::leaves`)
   and the places it takes (`HandOn::queued`), the queues it moves to the
   end of keeping what its place kept (`HandOn::requeued`, an Operator's
   Retry, built 2026-10-04), the queue it waits in Failed and why, entered
@@ -111,7 +112,7 @@ and 9).
   entries, `HeldQueue::read_unix_nanos`, and `HeldQueue::due_in` says how
   long one still waits, so no two clocks are compared; open problem 43),
   and the claim released, or kept for a holder that goes on at once
-  (`HandOn::kept_for_nanos`, a held Journey moved to a Port its node
+  (`HandOn::kept_for_nanos`, a held Message moved to a Port its node
   sends), as one atomic write; write an
   audit record to the runtime database; `keep_audit`, the audit keeper,
   moving each to the audit database exactly once, by its
@@ -150,7 +151,7 @@ and 9).
   that fails half-way writes nothing of itself. A request asked again after
   a lost answer does nothing twice: a Publication is kept as written by its
   Message, with the digest of what was asked, so asked again it writes
-  nothing — no Journey another node moved on since is written back or
+  nothing — no Message another node moved on since is written back or
   queued again — and answers the claims of it still held under their
   tokens, while another Publication of that Message is refused (review of
   2026-10-06; the `publication` table on a database server); and a hand-on

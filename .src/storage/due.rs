@@ -1,9 +1,9 @@
-//! A Send Port's queue read by when each Journey in it is due (the owner,
+//! A Send Port's queue read by when each Message in it is due (the owner,
 //! 2026-10-19: *a send scan reads only what is due*).
 //!
 //! **One index, three parts.** `held_due` keeps each entry by its queue,
 //! whether it failed, when it is due and its place
-//! (`super::schema::searchable`): first the Journeys due since they were
+//! (`super::schema::searchable`): first the Messages due since they were
 //! held — due at the epoch — in their order, then each retry by its due
 //! time. What is due now is a range of it up to Xmip Storage's now, what
 //! waits for a retry the rest, and what failed a part of its own; a read of
@@ -45,7 +45,7 @@ const NO_RETRY: (u64, u64) = (u64::MAX, u64::MAX);
 /// Which part of a queue a read by when each is due finds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DuePart {
-    /// What is due now: each Journey due since it was held, in its order,
+    /// What is due now: each Message due since it was held, in its order,
     /// then each retry whose due time has come, by its due time.
     Due,
     /// Each retry not yet due, by its due time.
@@ -61,7 +61,7 @@ pub enum DuePart {
 pub struct DueQueue {
     /// In the order the index keeps them.
     pub held: Vec<Held>,
-    /// How many Journeys of the queue keep a retry's due time, due or not
+    /// How many Messages of the queue keep a retry's due time, due or not
     /// yet; what failed aside.
     pub retrying: u64,
     /// The earliest due time of a retry not yet due, on Xmip Storage's
@@ -164,7 +164,7 @@ pub(crate) fn read<R: Engine>(
     })
 }
 
-/// Every queue `batch` writes a held Journey of, its [`DuePlaces`] kept as
+/// Every queue `batch` writes a held Message of, its [`DuePlaces`] kept as
 /// the batch leaves it, in the batch: how many keep a retry's due time
 /// counted on, and the first of each part found again from where it was —
 /// the first the batch did not write of what the engine holds, or one the
@@ -229,7 +229,7 @@ pub(crate) fn settle<R: Engine>(
     Ok(())
 }
 
-/// A held Journey's place a batch wrote, and what it left there.
+/// A held Message's place a batch wrote, and what it left there.
 type Written = (u64, Option<Vec<u8>>);
 
 /// One where it keeps a retry's due time and did not fail.
@@ -405,7 +405,8 @@ mod tests {
         (node, clock)
     }
 
-    /// The Journeys `ids` published in one write, each held in [`QUEUE`].
+    /// The Messages of the Journeys `ids` published in one write, each held
+    /// in [`QUEUE`].
     fn published(node: &Node, ids: std::ops::Range<u128>) {
         let journey = |id| JourneyRecord {
             journey: JourneyId::new(id),
@@ -438,7 +439,8 @@ mod tests {
         .expect("published");
     }
 
-    /// The Journey `id` claimed and handed on as `how` leaves it.
+    /// The Message of the Journey `id` claimed and handed on as `how` leaves
+    /// it.
     fn handed(node: &Node, id: u128, how: impl FnOnce(&mut HandOn)) {
         let holder = configure::fixture::test_cluster().node_scope(0);
         let claim = node.claim(JourneyId::new(id), &holder, id, LEASE);
@@ -483,9 +485,9 @@ mod tests {
         hand_on.leaves = vec![QUEUE];
     }
 
-    /// The Journeys `part` of [`QUEUE`] holds, read whole two at a time,
-    /// in the order read.
-    fn journeys(node: &Node, part: DuePart) -> Vec<u128> {
+    /// The Journeys of the Messages `part` of [`QUEUE`] holds, read whole two
+    /// at a time, in the order read.
+    fn messages(node: &Node, part: DuePart) -> Vec<u128> {
         let (mut from, mut found) = ((0, 0), Vec::new());
         loop {
             let page = node.read_due(QUEUE, part, from, 2).expect("read");
@@ -509,16 +511,16 @@ mod tests {
         handed(&node, 3, waits(10));
         handed(&node, 4, fails);
         handed(&node, 1, sent);
-        assert_eq!(journeys(&node, DuePart::Due), [5, 6], "due since held");
-        assert_eq!(journeys(&node, DuePart::Waiting), [3, 2], "by due time");
-        assert_eq!(journeys(&node, DuePart::Failed), [4]);
+        assert_eq!(messages(&node, DuePart::Due), [5, 6], "due since held");
+        assert_eq!(messages(&node, DuePart::Waiting), [3, 2], "by due time");
+        assert_eq!(messages(&node, DuePart::Failed), [4]);
         let read = node
             .read_due(QUEUE, DuePart::Due, (0, 0), 64)
             .expect("read");
         assert_eq!(read.retrying, 2);
         assert_eq!(read.next_due_in(), Some(Duration::from_nanos(10)));
         clock.pass(10);
-        assert_eq!(journeys(&node, DuePart::Due), [5, 6, 3], "then the retry");
+        assert_eq!(messages(&node, DuePart::Due), [5, 6, 3], "then the retry");
         let read = node
             .read_due(QUEUE, DuePart::Due, (0, 0), 64)
             .expect("read");
@@ -535,7 +537,7 @@ mod tests {
             "failed waits for none"
         );
         assert_eq!(read.next_due_unix_nanos, None);
-        assert_eq!(journeys(&node, DuePart::Failed), [2, 4], "in their order");
+        assert_eq!(messages(&node, DuePart::Failed), [2, 4], "in their order");
     }
 
     #[test]
@@ -545,7 +547,11 @@ mod tests {
         assert_eq!(places(&node).fresh, 0);
         handed(&node, 1, sent);
         handed(&node, 2, waits(HOUR));
-        assert_eq!(places(&node).fresh, 2, "the place of the Journey 3");
+        assert_eq!(
+            places(&node).fresh,
+            2,
+            "the place of the Message of the Journey 3"
+        );
         handed(&node, 5, waits(HOUR / 2));
         assert_eq!(places(&node).retry.1, 4, "the earlier retry first");
         handed(&node, 4, sent);
@@ -553,10 +559,14 @@ mod tests {
         assert_eq!(
             places(&node).fresh,
             5,
-            "past the one waiting, to the Journey 6"
+            "past the one waiting, to the Message of the Journey 6"
         );
         handed(&node, 5, sent);
-        assert_eq!(places(&node).retry.1, 1, "the Journey 2 next");
+        assert_eq!(
+            places(&node).retry.1,
+            1,
+            "the Message of the Journey 2 next"
+        );
         for id in [2, 6, 7, 8] {
             handed(&node, id, sent);
         }
@@ -564,7 +574,7 @@ mod tests {
         assert_eq!((emptied.fresh, emptied.retry), (8, NO_RETRY), "none held");
         published(&node, 9..10);
         assert_eq!(places(&node).fresh, 8, "the next place taken");
-        assert_eq!(journeys(&node, DuePart::Due), [9]);
+        assert_eq!(messages(&node, DuePart::Due), [9]);
     }
 
     /// Many held, few due: [`QUEUE`] holds `waiting` retries not yet due,

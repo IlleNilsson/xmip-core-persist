@@ -783,7 +783,7 @@ mod tests {
         assert_eq!(kept, Some(publication.audit));
     }
 
-    /// A Publication holding the Journey `id` in `queue`.
+    /// A Publication holding the Message of the Journey `id` in `queue`.
     fn holding(queue: u128, id: u128) -> Publication {
         Publication {
             message: MessageRecord {
@@ -841,8 +841,8 @@ mod tests {
         }
     }
 
-    /// The Replay of the Message `id` in `queue`, opening one Journey held
-    /// in the Subscription queue `held`.
+    /// The Replay of the Message `id` in `queue`, opening one Journey, its
+    /// Message held in the Subscription queue `held`.
     fn replaying(queue: u128, id: u128, held: u128) -> Replay {
         let opened = JourneyId::new(id + 1000);
         Replay {
@@ -1203,7 +1203,8 @@ mod tests {
         assert_eq!(node.read_instance_key(50).expect("read"), None);
     }
 
-    /// The Journey `id` claimed and handed on as `body`, leaving `queue`.
+    /// The Message of the Journey `id` claimed and handed on as `body`,
+    /// leaving `queue`.
     fn leaving(node: &Node, queue: u128, id: u128, body: &[u8]) -> HandOn {
         let claim = node
             .claim(JourneyId::new(id), &holder(0), id, LEASE)
@@ -1225,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_on_that_waits_keeps_its_claim_until_its_due_time_and_moves_a_journey_on() {
+    fn a_hand_on_that_waits_keeps_its_claim_until_its_due_time_and_moves_a_message_on() {
         let (node, clock) = node();
         node.publish(&holding(7, 1)).expect("published");
         let mut moved = leaving(&node, 7, 1, b"moved on");
@@ -1285,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_publication_asked_again_holds_its_journey_once() {
+    fn a_publication_asked_again_holds_its_message_once() {
         let (node, _) = node();
         node.publish(&holding(7, 1)).expect("published");
         node.publish(&holding(7, 1))
@@ -1297,8 +1298,8 @@ mod tests {
         assert_eq!(held, [JourneyId::new(1), JourneyId::new(2)]);
     }
 
-    /// The Publication holding the Journey `id` in `queue`, claimed by the
-    /// first node under `token` for a microsecond.
+    /// The Publication holding the Message of the Journey `id` in `queue`,
+    /// claimed by the first node under `token` for a microsecond.
     fn claiming(queue: u128, id: u128, token: u128) -> Publication {
         Publication {
             claims: vec![Claim {
@@ -1319,7 +1320,7 @@ mod tests {
         let publication = claiming(7, 1, 11);
         let first = node.publish(&publication).expect("published").0;
         assert_eq!(first.len(), 1, "its node holds what it claimed");
-        // Its answer lost, its claim lapses; another node sends the Journey
+        // Its answer lost, its claim lapses; another node sends the Message
         // and takes it out of its queue.
         clock.pass(1_001);
         assert!(

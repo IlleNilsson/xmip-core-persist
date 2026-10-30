@@ -6,7 +6,7 @@
 //! *Record identifiers are `UUIDv7`*): a Stream chunk by its Stream and its
 //! number in it, a Message, a Journey, an audit record and an
 //! administration record by their own identifiers, a claim by the Journey
-//! it is on. What a Message's or a Journey's body holds is the step's
+//! of the Message it is on. What a Message's or a Journey's body holds is the step's
 //! serialization, which the Ledger path decides; Xmip Storage keeps it as
 //! it is given, byte for byte.
 
@@ -48,7 +48,7 @@ pub struct JourneyRecord {
     pub facts: JourneyFacts,
 }
 
-/// A claim on a Journey: who holds it, by which token, until when
+/// A claim on a Message, by its Journey: who holds it, by which token, until when
 /// (`runtime-model.md` section 3, *Work moves by claim*). The time is the
 /// Storage node's, so no two claimants' clocks are compared.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct Claim {
     /// When it lapses, in nanoseconds since the Unix epoch.
     pub until_unix_nanos: i128,
     /// Its fencing token, Xmip Storage's to set as it takes the claim: the
-    /// Storage epoch in the high 32 bits and how many holders the Journey
+    /// Storage epoch in the high 32 bits and how many holders the Message
     /// has had in the low 32, so it grows with every holder and every
     /// failover, and a write by a holder the claim has passed from is
     /// refused (the owner, 2026-10-27). Asked for, it is zero.
