@@ -20,7 +20,7 @@
 //!
 //! **A queue's order is an index too** (open problem 40; the owner,
 //! 2026-10-19). Each queue's entries — held Journeys, Dead Message Queue
-//! entries, failed Journeys — are indexed on their queue and place, so a
+//! entries, failed Messages — are indexed on their queue and place, so a
 //! page of a queue is one range from its place. On a server that index is
 //! the table's primary key, and its scripts make no second one
 //! (`super::scripts`).
@@ -170,9 +170,9 @@ pub(super) const FAILED_JOURNEY: &[Column] = &[
     column("failed_at", Kind::Time),
 ];
 
-/// By its place in the index of failed Journeys, numbered as every queue is.
+/// By its place in the index of failed Messages, numbered as every queue is.
 pub(super) const FAILED_JOURNEY_INDEXES: &[Index] =
-    &[index(22, "failed_journey_place", &["queue", "sequence"])];
+    &[index(22, "failed_message_place", &["queue", "sequence"])];
 
 pub(super) const AUDIT: &[Column] = &[
     column("id", Kind::Identifier),

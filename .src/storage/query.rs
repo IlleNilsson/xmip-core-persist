@@ -37,13 +37,13 @@ impl Span {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
     /// Journeys in a state, by when they were last written.
-    JourneysInState { state: String, updated: Span },
+    MessagesInState { state: String, updated: Span },
     /// Journeys bound for a Send Port in a state.
-    JourneysAtSendPort { send_port: String, state: String },
+    MessagesAtSendPort { send_port: String, state: String },
     /// Journeys a Journey caused.
     JourneysAfter { journey: u128 },
     /// Journeys holding a Message last.
-    JourneysHolding { message: u128 },
+    MessagesHolding { message: u128 },
     /// Messages by when they were written.
     MessagesCreated { created: Span },
     /// Messages from a Party, by when they were written.
@@ -116,10 +116,10 @@ impl Ask {
     const fn index(&self) -> (Database, &'static str, &'static str) {
         use Database::{Administration, Audit, Runtime};
         match self {
-            Self::JourneysInState { .. } => (Runtime, "journey", "journey_state"),
-            Self::JourneysAtSendPort { .. } => (Runtime, "journey", "journey_send_port"),
+            Self::MessagesInState { .. } => (Runtime, "journey", "journey_state"),
+            Self::MessagesAtSendPort { .. } => (Runtime, "journey", "journey_send_port"),
             Self::JourneysAfter { .. } => (Runtime, "journey", "journey_previous"),
-            Self::JourneysHolding { .. } => (Runtime, "journey", "journey_message"),
+            Self::MessagesHolding { .. } => (Runtime, "journey", "journey_message"),
             Self::MessagesCreated { .. } => (Runtime, "message", "message_created"),
             Self::MessagesFromParty { .. } => (Runtime, "message", "message_party"),
             Self::MessagesOfContract { .. } => (Runtime, "message", "message_contract"),
@@ -144,12 +144,12 @@ impl Ask {
     fn values(&self) -> (Vec<Value>, Option<Span>) {
         let name = |text: &String| Value::Text(text.clone());
         match self {
-            Self::JourneysInState { state, updated } => (vec![name(state)], Some(*updated)),
-            Self::JourneysAtSendPort { send_port, state } => {
+            Self::MessagesInState { state, updated } => (vec![name(state)], Some(*updated)),
+            Self::MessagesAtSendPort { send_port, state } => {
                 (vec![name(send_port), name(state)], None)
             }
             Self::JourneysAfter { journey: id }
-            | Self::JourneysHolding { message: id }
+            | Self::MessagesHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
             | Self::AuditOfMessage { message: id }
@@ -207,18 +207,18 @@ impl Form for Span {
 impl Form for Ask {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
-            Self::JourneysInState { state, updated } => {
+            Self::MessagesInState { state, updated } => {
                 write_byte(out, 1);
                 write_text(out, state);
                 updated.write(out);
             }
-            Self::JourneysAtSendPort { send_port, state } => {
+            Self::MessagesAtSendPort { send_port, state } => {
                 write_byte(out, 2);
                 write_text(out, send_port);
                 write_text(out, state);
             }
             Self::JourneysAfter { journey: id }
-            | Self::JourneysHolding { message: id }
+            | Self::MessagesHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
             | Self::AuditOfMessage { message: id }
@@ -272,18 +272,18 @@ impl Form for Ask {
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
         Ok(match read_byte(cursor)? {
-            1 => Self::JourneysInState {
+            1 => Self::MessagesInState {
                 state: read_text(cursor)?,
                 updated: Span::read(cursor)?,
             },
-            2 => Self::JourneysAtSendPort {
+            2 => Self::MessagesAtSendPort {
                 send_port: read_text(cursor)?,
                 state: read_text(cursor)?,
             },
             3 => Self::JourneysAfter {
                 journey: read_u128(cursor)?,
             },
-            4 => Self::JourneysHolding {
+            4 => Self::MessagesHolding {
                 message: read_u128(cursor)?,
             },
             5 => Self::MessagesCreated {
@@ -344,10 +344,10 @@ impl Ask {
     /// Its number on the wire.
     const fn number(&self) -> u8 {
         match self {
-            Self::JourneysInState { .. } => 1,
-            Self::JourneysAtSendPort { .. } => 2,
+            Self::MessagesInState { .. } => 1,
+            Self::MessagesAtSendPort { .. } => 2,
             Self::JourneysAfter { .. } => 3,
-            Self::JourneysHolding { .. } => 4,
+            Self::MessagesHolding { .. } => 4,
             Self::MessagesCreated { .. } => 5,
             Self::MessagesFromParty { .. } => 6,
             Self::MessagesOfContract { .. } => 7,
@@ -391,16 +391,16 @@ mod tests {
     fn every_question_names_an_index_of_its_table_and_comes_back_from_its_bytes() {
         let span = Span::ALL;
         let asks = [
-            Ask::JourneysInState {
+            Ask::MessagesInState {
                 state: "Failed".to_string(),
                 updated: span,
             },
-            Ask::JourneysAtSendPort {
+            Ask::MessagesAtSendPort {
                 send_port: "Billing".to_string(),
                 state: "Active".to_string(),
             },
             Ask::JourneysAfter { journey: 1 },
-            Ask::JourneysHolding { message: 2 },
+            Ask::MessagesHolding { message: 2 },
             Ask::MessagesCreated { created: span },
             Ask::MessagesFromParty {
                 party: "partner-x".to_string(),

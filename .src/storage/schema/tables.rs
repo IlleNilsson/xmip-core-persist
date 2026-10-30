@@ -137,9 +137,9 @@ pub const TABLES: [Table; 25] = [
     },
     Table {
         database: Database::Runtime,
-        name: "failed_journey",
+        name: "failed_message",
         since: 1,
-        keeps: "the Journeys that failed waiting in each Send Port's queue for an operator, \
+        keeps: "the Messages that failed waiting in each Send Port's queue for an operator, \
                 in the order they failed, each once, with its place in the queue and why, \
                 written with the failure and taken out with the operator's act",
         columns: FAILED_JOURNEY,
@@ -149,10 +149,10 @@ pub const TABLES: [Table; 25] = [
     },
     Table {
         database: Database::Runtime,
-        name: "failed_journey_places",
+        name: "failed_message_places",
         since: 1,
-        keeps: "each queue's index of failed Journeys: its first place, its next and how \
-                many failed Journeys wait in the queue",
+        keeps: "each queue's index of failed Messages: its first place, its next and how \
+                many failed Messages wait in the queue",
         columns: &[
             column("queue", Kind::Identifier),
             column("first_place", Kind::Number),

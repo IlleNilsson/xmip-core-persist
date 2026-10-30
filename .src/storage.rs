@@ -200,7 +200,7 @@ pub trait XmipStorage: Send + Sync {
     /// and takes nothing past what it could not read.
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError>;
 
-    /// `queue`'s index of failed Journeys ([`Failed`]), read as `read_held` reads a queue.
+    /// `queue`'s index of failed Messages ([`Failed`]), read as `read_held` reads a queue.
     ///
     /// # Errors
     /// When it cannot be read, or fails its tag.

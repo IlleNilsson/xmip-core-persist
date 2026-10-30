@@ -32,16 +32,16 @@ pub struct HandOn {
     /// claimed Journey, or one that goes on from it, waits next.
     pub queued: Vec<Hold>,
     /// The queues the claimed Journey moves to the end of, keeping what its
-    /// place kept beside it: an operator's Retry of a Journey that failed,
+    /// place kept beside it: an operator's Retry of a Message that failed,
     /// taken up again after everything that waits there now. A queue it
     /// holds no place in is passed over.
     pub requeued: Vec<u128>,
     /// Where the step leaves the claimed Journey Failed, waiting in its
     /// queue for an operator: that queue and why, the Journey entered in
-    /// the queue's index of failed Journeys and counted there, in this one
+    /// the queue's index of failed Messages and counted there, in this one
     /// write ([`super::failed`]).
     pub failed: Option<Failure>,
-    /// The queues whose index of failed Journeys the claimed Journey leaves:
+    /// The queues whose index of failed Messages the claimed Journey leaves:
     /// an operator's Retry or Dismiss of it.
     pub cleared: Vec<u128>,
     /// Where the step leaves the claimed Journey waiting for a retry: the

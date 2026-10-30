@@ -48,7 +48,7 @@ pub(crate) enum Answer {
     Stream(Option<StreamRecord>),
     /// A chunk of a kept audit record's body, or none.
     Bytes(Option<Vec<u8>>),
-    /// A queue's index of failed Journeys.
+    /// A queue's index of failed Messages.
     FailedQueue(FailedQueue),
     /// A part of a queue read by when each is due.
     DueQueue(DueQueue),

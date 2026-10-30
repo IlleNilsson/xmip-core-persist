@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn a_queue_is_indexed_on_its_place_and_on_a_server_that_index_is_its_key() {
-        let queues = ["held", "dead_message", "failed_journey"];
+        let queues = ["held", "dead_message", "failed_message"];
         for name in queues {
             let table = TABLES.iter().find(|table| table.name == name);
             let table = table.expect("a queue's table");
