@@ -629,7 +629,7 @@ mod tests {
         };
         assert_eq!(find(&node, waiting.clone()), [101, 102], "by when written");
         assert_eq!(find(&node, Ask::JourneysAfter { journey: 8 }).len(), 3);
-        assert_eq!(find(&node, Ask::MessagesHolding { message: 2 }), [102]);
+        assert_eq!(find(&node, Ask::JourneysHolding { message: 2 }), [102]);
         let held = Ask::Held {
             queue: 9,
             held: span(20, 20),

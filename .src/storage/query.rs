@@ -43,7 +43,7 @@ pub enum Ask {
     /// Journeys a Journey caused.
     JourneysAfter { journey: u128 },
     /// Journeys holding a Message last.
-    MessagesHolding { message: u128 },
+    JourneysHolding { message: u128 },
     /// Messages by when they were written.
     MessagesCreated { created: Span },
     /// Messages from a Party, by when they were written.
@@ -119,7 +119,7 @@ impl Ask {
             Self::MessagesInState { .. } => (Runtime, "journey", "journey_state"),
             Self::MessagesAtSendPort { .. } => (Runtime, "journey", "journey_send_port"),
             Self::JourneysAfter { .. } => (Runtime, "journey", "journey_previous"),
-            Self::MessagesHolding { .. } => (Runtime, "journey", "journey_message"),
+            Self::JourneysHolding { .. } => (Runtime, "journey", "journey_message"),
             Self::MessagesCreated { .. } => (Runtime, "message", "message_created"),
             Self::MessagesFromParty { .. } => (Runtime, "message", "message_party"),
             Self::MessagesOfContract { .. } => (Runtime, "message", "message_contract"),
@@ -149,7 +149,7 @@ impl Ask {
                 (vec![name(send_port), name(state)], None)
             }
             Self::JourneysAfter { journey: id }
-            | Self::MessagesHolding { message: id }
+            | Self::JourneysHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
             | Self::AuditOfMessage { message: id }
@@ -218,7 +218,7 @@ impl Form for Ask {
                 write_text(out, state);
             }
             Self::JourneysAfter { journey: id }
-            | Self::MessagesHolding { message: id }
+            | Self::JourneysHolding { message: id }
             | Self::MessagesAfter { message: id }
             | Self::AuditOfJourney { journey: id }
             | Self::AuditOfMessage { message: id }
@@ -283,7 +283,7 @@ impl Form for Ask {
             3 => Self::JourneysAfter {
                 journey: read_u128(cursor)?,
             },
-            4 => Self::MessagesHolding {
+            4 => Self::JourneysHolding {
                 message: read_u128(cursor)?,
             },
             5 => Self::MessagesCreated {
@@ -347,7 +347,7 @@ impl Ask {
             Self::MessagesInState { .. } => 1,
             Self::MessagesAtSendPort { .. } => 2,
             Self::JourneysAfter { .. } => 3,
-            Self::MessagesHolding { .. } => 4,
+            Self::JourneysHolding { .. } => 4,
             Self::MessagesCreated { .. } => 5,
             Self::MessagesFromParty { .. } => 6,
             Self::MessagesOfContract { .. } => 7,
@@ -400,7 +400,7 @@ mod tests {
                 state: "Active".to_string(),
             },
             Ask::JourneysAfter { journey: 1 },
-            Ask::MessagesHolding { message: 2 },
+            Ask::JourneysHolding { message: 2 },
             Ask::MessagesCreated { created: span },
             Ask::MessagesFromParty {
                 party: "partner-x".to_string(),
