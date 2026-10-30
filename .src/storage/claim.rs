@@ -20,7 +20,7 @@ pub(crate) enum Standing {
     HandedOn,
 }
 
-/// A claim as stored: the last claim on its Journey, and where it stands.
+/// A claim as stored: the last claim on its Message, and where it stands.
 /// An ended claim keeps its token, so a hand-on asked again after a lost
 /// answer is known for what it is — and a hand-on after a mere release is
 /// not taken for one.
@@ -66,7 +66,7 @@ impl Stored {
 
 impl Claim {
     /// Whether `other` is this claim: the same holder's token and fence.
-    /// A write under a claim the Journey has passed from is refused by
+    /// A write under a claim the Message has passed from is refused by
     /// both, the fence being the number that grows (the owner, 2026-10-27).
     pub(crate) fn is(&self, other: &Claim) -> bool {
         self.token == other.token && self.fence == other.fence
@@ -74,8 +74,8 @@ impl Claim {
 }
 
 /// The fence a claim taken in `epoch` after `before` — the claim the
-/// Journey had, where it had one — carries: the epoch in the high 32 bits,
-/// the Journey's holder count, one more, in the low 32.
+/// Message had, where it had one — carries: the epoch in the high 32 bits,
+/// the Message's holder count, one more, in the low 32.
 #[must_use]
 /// A lease as the nanoseconds a claim is held for, at most what an `i128`
 /// holds.
@@ -88,7 +88,7 @@ pub(crate) fn fence(epoch: u64, before: Option<&Claim>) -> u64 {
     (epoch << 32) | (holders + 1).min(u64::from(u32::MAX))
 }
 
-/// `claim` taken in `batch` until `until`, where its Journey has no claim
+/// `claim` taken in `batch` until `until`, where its Message has no claim
 /// held at `now` — none, ended, or lapsed — or one held under its own token,
 /// a request asked again: the claim held, its fence the next for `epoch`,
 /// or `None` where another holds it (`runtime-model.md` section 3: *set the
@@ -129,12 +129,12 @@ pub(crate) fn end(batch: &mut Batch<'_>, claim: Claim, standing: Standing) {
     batch.put(CLAIM, key, Some(stored.bytes()));
 }
 
-/// Where a Journey's claim is kept: under the Journey's identifier.
+/// Where a Message's claim is kept: under its Journey's identifier.
 pub(crate) fn key(claim: &Claim) -> Vec<u8> {
     claim.journey.value().to_be_bytes().to_vec()
 }
 
-/// The claim on `claim`'s Journey in `store`, as `batch` has left it.
+/// The claim on `claim`'s Message in `store`, as `batch` has left it.
 pub(crate) fn stored<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &Batch<'_>,
@@ -148,8 +148,8 @@ pub(crate) fn stored<R: Engine>(
 
 /// `hand_on` decided in `batch` at `now`: its result, what it made and what
 /// follows written, the places it leaves let go of and the ones it takes
-/// kept, its Journey entered in or taken out of a queue's index of failed
-/// Journeys, and its claim ended handed on — or kept, where the step waits —
+/// kept, its Message entered in or taken out of a queue's index of failed
+/// Messages, and its claim ended handed on — or kept, where the step waits —
 /// `true`, where the claim is its holder's; `true` and nothing written
 /// where it was handed on already under its token, an answer that was
 /// lost; `false` otherwise.

@@ -19,13 +19,13 @@
 //! (`super::super::columns`); a number is never reused.
 //!
 //! **A queue's order is an index too** (open problem 40; the owner,
-//! 2026-10-19). Each queue's entries — held Journeys, Dead Message Queue
+//! 2026-10-19). Each queue's entries — held Messages, Dead Message Queue
 //! entries, failed Messages — are indexed on their queue and place, so a
 //! page of a queue is one range from its place. On a server that index is
 //! the table's primary key, and its scripts make no second one
 //! (`super::scripts`).
 //!
-//! **So is when a held Journey is due** (the owner, 2026-10-19). `held_due`
+//! **So is when a held Message is due** (the owner, 2026-10-19). `held_due`
 //! orders a queue's entries by whether they failed, when each is due and
 //! its place: those due since they were held first, in their order, then
 //! each retry by its due time, so what is due now is one range of it and a
@@ -155,13 +155,13 @@ pub(super) const DEAD_MESSAGE: &[Column] = &[
     column("queued_at", Kind::Time),
 ];
 
-/// By when it was queued; and by its place, as a held Journey is.
+/// By when it was queued; and by its place, as a held Message is.
 pub(super) const DEAD_MESSAGE_INDEXES: &[Index] = &[
     index(10, "dead_message_time", &["queue", "queued_at"]),
     index(21, "dead_message_place", &["queue", "sequence"]),
 ];
 
-pub(super) const FAILED_JOURNEY: &[Column] = &[
+pub(super) const FAILED_MESSAGE: &[Column] = &[
     column("queue", Kind::Identifier),
     column("sequence", Kind::Number),
     column("journey", Kind::Identifier),
@@ -171,7 +171,7 @@ pub(super) const FAILED_JOURNEY: &[Column] = &[
 ];
 
 /// By its place in the index of failed Messages, numbered as every queue is.
-pub(super) const FAILED_JOURNEY_INDEXES: &[Index] =
+pub(super) const FAILED_MESSAGE_INDEXES: &[Index] =
     &[index(22, "failed_message_place", &["queue", "sequence"])];
 
 pub(super) const AUDIT: &[Column] = &[

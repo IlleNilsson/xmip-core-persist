@@ -7,8 +7,8 @@
 //!
 //! **One write, all or nothing.** A receive killed in the middle of its
 //! Publication leaves its Message with every Journey, or with its Dead
-//! Message Queue entry, or nothing, so no Journey goes on from a Message
-//! whose others were never written, no hold is lost to a write that was
+//! Message Queue entry, or nothing, so no Message goes on one way whose
+//! other Journeys were never written, no hold is lost to a write that was
 //! refused, no Message nothing matched is kept without why, and the sender
 //! — not acknowledged — sends again. One write is also one sync: a
 //! Publication costs what one record costs.
@@ -18,10 +18,10 @@
 //! was written and the digest of what was asked. A Publication asked again
 //! — a node's request repeated after its answer was lost — writes nothing
 //! and is answered as it stands: the claims its node still holds of those
-//! it took. So a Journey another node has since sent, retried or dismissed
+//! it took. So a Message another node has since sent, retried or dismissed
 //! is never written back to where the Publication left it, nor queued
 //! again, nor claimed again by the node that published it (review of
-//! 2026-10-06: a repeated Publication reset a Journey another node had
+//! 2026-10-06: a repeated Publication reset a Message another node had
 //! completed and queued it for a second delivery). Another Publication of
 //! the same Message is refused, and writes nothing: a business Message
 //! published again is another Message, with an identifier of its own

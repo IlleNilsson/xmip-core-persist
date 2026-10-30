@@ -1,5 +1,5 @@
-//! A place held for many Journeys at once, kept until the last of them
-//! closes (ADR-0024 and ADR-0066, amendments 2026-10-22 and 2026-10-27):
+//! A place held for many Messages at once, kept until the last of their
+//! Journeys closes (ADR-0024 and ADR-0066, amendments 2026-10-22 and 2026-10-27):
 //! a Stream's place in the sequences it holds end to end, and a Send Port
 //! Group delivery's place in the Group's sequence.
 //!

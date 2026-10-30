@@ -532,8 +532,8 @@ mod tests {
         }
     }
 
-    /// The Message `id` from `party`, its Journey ([`journey`]) held in the
-    /// queue nine, and its audit record `id + 200`, a failure for the
+    /// The Message `id` from `party`, with its Journey ([`journey`]), held in
+    /// the queue nine, and its audit record `id + 200`, a failure for the
     /// Message two.
     fn published(id: u128, party: &str, port: &str, state: &str) -> Publication {
         Publication {
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn journeys_are_found_by_send_port_and_state_and_a_rewrite_moves_them() {
+    fn messages_are_found_by_send_port_and_state_and_a_rewrite_moves_them() {
         let (node, clock) = three();
         let billing = |state: &str| Ask::MessagesAtSendPort {
             send_port: "Billing".to_string(),

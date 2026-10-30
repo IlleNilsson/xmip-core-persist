@@ -36,9 +36,9 @@ impl Span {
 /// What is asked, of which table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
-    /// Journeys in a state, by when they were last written.
+    /// Messages whose Journey is in a state, by when it was last written.
     MessagesInState { state: String, updated: Span },
-    /// Journeys bound for a Send Port in a state.
+    /// Messages bound for a Send Port whose Journey is in a state.
     MessagesAtSendPort { send_port: String, state: String },
     /// Journeys a Journey caused.
     JourneysAfter { journey: u128 },

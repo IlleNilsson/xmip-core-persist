@@ -27,7 +27,7 @@
 //! done by the node that lost it; every operation is written to bear that.
 //! A record is written under its own identifier, so writing it twice leaves
 //! one; a Publication asked again writes nothing and answers as it stands,
-//! by its Message, so a Journey moved on since is not reset; a claim asked
+//! by its Message, so a Message moved on since is not reset; a claim asked
 //! again under the token it holds by is that claim; a hand-on asked again
 //! after it was done is `true` and writes nothing, and is told from a claim
 //! only given back; an audit record written twice is kept once, by its
@@ -735,7 +735,7 @@ mod tests {
         let id = journey(b"").journey;
         let queue = 7;
         // Between the write and its lost answer, another node sends the
-        // Journey and takes it out of its queue.
+        // Message and takes it out of its queue.
         let meanwhile: Meanwhile = Box::new(move |storage| {
             let other = configure::fixture::test_cluster().node_scope(1);
             let claim = storage.claim(id, &other, 2, TIMEOUT).expect("asked");
