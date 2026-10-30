@@ -87,7 +87,7 @@ impl Searched {
             Self::Message => "message",
             Self::Held => "held",
             Self::Dead => "dead_message",
-            Self::Failed => "failed_journey",
+            Self::Failed => "failed_message",
             Self::Audit => "audit",
             Self::AuditStream => "audit_stream",
             Self::Administration => "administration",
@@ -410,7 +410,7 @@ mod tests {
             ("message", message.row()),
             ("held", held.row()),
             ("dead_message", dead.row()),
-            ("failed_journey", failed.row()),
+            ("failed_message", failed.row()),
             ("audit", audit.row()),
             ("audit_stream", kept_stream.row()),
             ("administration", administration.row()),
@@ -617,25 +617,25 @@ mod tests {
     #[test]
     fn journeys_are_found_by_send_port_and_state_and_a_rewrite_moves_them() {
         let (node, clock) = three();
-        let billing = |state: &str| Ask::JourneysAtSendPort {
+        let billing = |state: &str| Ask::MessagesAtSendPort {
             send_port: "Billing".to_string(),
             state: state.to_string(),
         };
         assert_eq!(find(&node, billing("Active")), [101]);
         assert_eq!(find(&node, billing("Completed")), [103]);
-        let waiting = Ask::JourneysInState {
+        let waiting = Ask::MessagesInState {
             state: "Active".to_string(),
             updated: Span::ALL,
         };
         assert_eq!(find(&node, waiting.clone()), [101, 102], "by when written");
         assert_eq!(find(&node, Ask::JourneysAfter { journey: 8 }).len(), 3);
-        assert_eq!(find(&node, Ask::JourneysHolding { message: 2 }), [102]);
+        assert_eq!(find(&node, Ask::MessagesHolding { message: 2 }), [102]);
         let held = Ask::Held {
             queue: 9,
             held: span(20, 20),
         };
         assert_eq!(find(&node, held).len(), 2);
-        let crossed = Ask::JourneysAtSendPort {
+        let crossed = Ask::MessagesAtSendPort {
             send_port: "partner-x".to_string(),
             state: "Active".to_string(),
         };

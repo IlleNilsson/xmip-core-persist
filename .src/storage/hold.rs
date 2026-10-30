@@ -63,9 +63,9 @@ pub struct Held {
     /// When Xmip Storage held it, in nanoseconds since the Unix epoch:
     /// Xmip Storage's to set.
     pub held_unix_nanos: u64,
-    /// Whether the Journey failed here and waits for an operator: Xmip
+    /// Whether the Message failed here and waits for an operator: Xmip
     /// Storage's to set, in the write that enters it in its queue's index
-    /// of failed Journeys or takes it out (`super::failed`), so a reader of
+    /// of failed Messages or takes it out (`super::failed`), so a reader of
     /// the queue passes over what failed without reading its Journey.
     pub failed: bool,
     /// When the Journey here is due again, where it waits for a retry: in
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn a_retry_moves_its_journey_to_the_end_of_its_queue_keeping_what_was_kept() {
+    fn a_retry_moves_its_message_to_the_end_of_its_queue_keeping_what_was_kept() {
         use crate::fixture::Memory;
         use crate::storage::{
             AuditEntry, Embedded, HandOn, JourneyRecord, MessageRecord, Publication, XmipStorage,

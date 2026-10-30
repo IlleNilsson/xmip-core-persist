@@ -68,10 +68,10 @@ and 9).
   by its Message, answering the claims its node holds of those it asked
   for; read
   a queue — a Subscription's, a Send Port's — oldest first (`read_held`),
-  each place marked where its Journey failed there (`Held::failed`); read a
-  Send Port queue's index of failed Journeys (`read_failed`, a page at a
+  each place marked where its Message failed there (`Held::failed`); read a
+  Send Port queue's index of failed Messages (`read_failed`, a page at a
   time, in the order they failed, its count one read of its places,
-  `FailedQueue`; the `failed_journey` and `failed_journey_places` tables;
+  `FailedQueue`; the `failed_message` and `failed_message_places` tables;
   open problem 34, 2026-10-16); read a node's Dead Message Queue (`read_dead`, oldest first, a page at a
   time; `read_dead_message`, one entry) and `replay` an entry — the
   Journeys a routing against the Subscriptions of now opened, the ones held,
@@ -79,7 +79,7 @@ and 9).
   again after a lost answer it is `Replayed::Before` and writes nothing. Every
   kind of queue is numbered as written and kept by one set of mechanics
   (`queue.rs`), and read in its order by an index on its queue and place
-  (`held_place`, `dead_message_place`, `failed_journey_place`; on a server,
+  (`held_place`, `dead_message_place`, `failed_message_place`; on a server,
   the table's primary key), written and taken out with each entry: a page
   is one ordered range from its place, a gap never read, and the queue's
   first place is found by the read that asks for it, never by the writer
@@ -103,7 +103,7 @@ and 9).
   and the places it takes (`HandOn::queued`), the queues it moves to the
   end of keeping what its place kept (`HandOn::requeued`, an Operator's
   Retry, built 2026-10-04), the queue it waits in Failed and why, entered
-  in that queue's index of failed Journeys (`HandOn::failed`), the queues
+  in that queue's index of failed Messages (`HandOn::failed`), the queues
   whose index it leaves (`HandOn::cleared`, an Operator's Retry or
   Dismiss), the queue it waits in for a retry and how long, its due time
   kept at its place there on the Storage node's clock (`HandOn::waits`,

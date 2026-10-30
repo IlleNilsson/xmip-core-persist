@@ -18,7 +18,7 @@
 //! 2026-10-19). An entry is kept under a keyed hash
 //! ([`crate::EncryptedStore`]), which sorts nowhere, so each kind of queue
 //! is indexed on its queue and place (`held_place`, `dead_message_place`,
-//! `failed_journey_place`), written with the entry like every other index
+//! `failed_message_place`), written with the entry like every other index
 //! (`super::columns`) and taken out with it. A page is one ordered range of
 //! that index from its place, and then a read of each entry it finds; a
 //! gap is never read. The queue's first place is found when a read asks

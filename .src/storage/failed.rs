@@ -1,16 +1,16 @@
-//! The Journeys that failed waiting in a Send Port's queue, indexed in the
+//! The Messages that failed waiting in a Send Port's queue, indexed in the
 //! Ledger beside it (`runtime-model.md` section 10; open problem 34: *the
-//! count, and an index of the failed Journeys of each queue, kept by Xmip
+//! count, and an index of the failed Messages of each queue, kept by Xmip
 //! Storage in the Ledger and read from it*).
 //!
-//! **Written with the failure.** A hand-on that writes its Journey Failed
+//! **Written with the failure.** A hand-on that writes its Message Failed
 //! and keeps it in its queue names that queue and why
-//! ([`super::HandOn::failed`]): Xmip Storage enters the Journey at the end
+//! ([`super::HandOn::failed`]): Xmip Storage enters the Message at the end
 //! of the queue's index and marks its place in the queue failed
 //! ([`super::Held::failed`]), in that one write. An operator's Retry or
 //! Dismiss names the queues whose index it leaves
 //! ([`super::HandOn::cleared`]), in its own one write. So the count and the
-//! index never disagree with the Journeys, whichever node failed them and
+//! index never disagree with the Messages, whichever node failed them and
 //! however often a node restarts.
 //!
 //! **Numbered in the order they failed**, from zero, as every queue is
@@ -30,7 +30,7 @@ use super::record::{
 };
 use crate::{EncryptedStore, Engine, PersistError};
 
-/// Where a hand-on leaves its Journey Failed: the queue it waits in for an
+/// Where a hand-on leaves its Message Failed: the queue it waits in for an
 /// operator, and why it failed, in words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -38,7 +38,7 @@ pub struct Failure {
     pub reason: String,
 }
 
-/// A Journey that failed, at its place in its queue's index of them.
+/// A Message that failed, at its place in its queue's index of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     /// The queue it failed in: what its index is kept by, with its place.
@@ -55,7 +55,7 @@ pub struct Failed {
     pub failed_unix_nanos: i128,
 }
 
-/// A queue's index of failed Journeys as read: where it starts and ends,
+/// A queue's index of failed Messages as read: where it starts and ends,
 /// how many it holds, and the ones asked for, oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailedQueue {
@@ -63,24 +63,24 @@ pub struct FailedQueue {
     pub first: u64,
     /// The place the next that fails takes.
     pub next: u64,
-    /// How many failed Journeys wait in the queue.
+    /// How many failed Messages wait in the queue.
     pub count: u64,
     /// The ones read, oldest first.
     pub failed: Vec<Failed>,
 }
 
-/// Where a queue's index of failed Journeys keeps what it keeps: its
+/// Where a queue's index of failed Messages keeps what it keeps: its
 /// entries, each one's place by its Journey, and its places.
 pub(crate) const KINDS: Kinds = Kinds {
     entry: FAILED,
-    by: "failed-journey-by-journey",
-    places: "failed-journey-places",
-    table: "failed_journey",
-    index: "failed_journey_place",
+    by: "failed-message-by-journey",
+    places: "failed-message-places",
+    table: "failed_message",
+    index: "failed_message_place",
 };
 
-/// Where a queue's index of failed Journeys keeps its entries.
-pub(crate) const FAILED: &str = "failed-journey";
+/// Where a queue's index of failed Messages keeps its entries.
+pub(crate) const FAILED: &str = "failed-message";
 
 /// `journey`, left Failed by its hand-on at `now` as `failure` says,
 /// entered at the end of its queue's index and its place there marked
@@ -112,7 +112,7 @@ pub(crate) fn enter<R: Engine>(
     .map(drop)
 }
 
-/// `journey` out of `queue`'s index of failed Journeys, and its place in
+/// `journey` out of `queue`'s index of failed Messages, and its place in
 /// the queue, where it still holds one, no longer marked failed, in
 /// `batch`: an operator acted on it. Nothing where it is not in the index,
 /// so an act asked again does nothing twice.
@@ -133,7 +133,7 @@ pub(crate) fn clear<R: Engine>(
     Ok(())
 }
 
-/// `queue`'s index of failed Journeys as `store` keeps it: its places, and
+/// `queue`'s index of failed Messages as `store` keeps it: its places, and
 /// up to `most` of them from the place `from` on, oldest first.
 pub(crate) fn read<R: Engine>(
     store: &EncryptedStore<R>,
