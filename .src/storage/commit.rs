@@ -2,7 +2,9 @@
 //! write goes through it, and every write waiting when it is free goes in
 //! the same batch, under one sync — group commit (`deployment-model.md`
 //! section 7: *once it is synced to disk; group commit shares one sync
-//! among concurrent writes*).
+//! among concurrent writes*). A batch is decided on the thread of the
+//! caller that leads it, never handed to a thread of its own
+//! ([`waiting`]; ADR-0018, amendment 2026-11-01).
 //!
 //! One writer is also what makes a claim a conditional update on one
 //! node: each condition is read and its write decided in order, against
@@ -16,23 +18,23 @@
 //! **A batch is answered once written, and synced after.** Each write is
 //! answered with the batch's [`Durable`] as soon as the batch is in the
 //! engine — decided and readable — and the batch is synced then, on a
-//! thread of its own ([`syncer`]), while the writer takes the next: a
+//! thread of its own ([`syncer`]), while the next is decided: a
 //! caller waiting for its write to be durable waits on it
 //! ([`Committer::submit`]), and a Publication's send is prepared meanwhile
 //! ([`Committer::ahead`]; ADR-0018, amendments 2026-10-20 and 2026-10-21).
 
 mod batch;
 mod syncer;
+mod waiting;
 
 use batch::again;
 pub(crate) use batch::{Batch, sequence};
 
 use syncer::Syncer;
+use waiting::{Answer, Decides, Reply, Waiting};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::JoinHandle;
 
 use std::time::Duration;
 use xcore::Clock;
@@ -117,12 +119,9 @@ pub(crate) enum Done {
     Replayed(Replayed),
 }
 
-type Reply = SyncSender<Result<(Done, Durable), PersistError>>;
-
-/// The writer's thread, and the way to it.
+/// The one writer, and the writes waiting for its next batch.
 pub(crate) struct Committer {
-    work: Option<Sender<(Op, Reply)>>,
-    thread: Option<JoinHandle<()>>,
+    waiting: Waiting,
 }
 
 impl Committer {
@@ -131,31 +130,24 @@ impl Committer {
     ///
     /// # Errors
     ///
-    /// When the audit sequence cannot be read, or the thread not started.
+    /// When the audit sequence cannot be read, or the sync thread not
+    /// started.
     pub(crate) fn start<R: Engine + 'static>(
         store: Arc<EncryptedStore<R>>,
         (clock, columns, epoch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>),
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
         let syncer = Syncer::start(Arc::clone(&store))?;
-        let (work, inbox) = mpsc::channel();
-        let thread = std::thread::Builder::new()
-            .name("xmip-storage-commit".to_string())
-            .spawn(move || {
-                let mut writer = Writer {
-                    store,
-                    clock,
-                    next,
-                    columns,
-                    syncer,
-                    epoch,
-                };
-                writer.run(&inbox);
-            })
-            .map_err(|error| PersistError::engine("xmip-storage", error))?;
+        let writer = Writer {
+            store,
+            clock,
+            next,
+            columns,
+            syncer,
+            epoch,
+        };
         Ok(Self {
-            work: Some(work),
-            thread: Some(thread),
+            waiting: Waiting::new(Box::new(writer)),
         })
     }
 
@@ -175,25 +167,9 @@ impl Committer {
     ///
     /// # Errors
     ///
-    /// The write's own, or the writer having stopped.
+    /// The write's own, or the batch it was in having failed.
     pub(crate) fn ahead(&self, op: Op) -> Result<(Done, Durable), PersistError> {
-        let (reply, answer) = mpsc::sync_channel(1);
-        let stopped = || PersistError::engine("xmip-storage", "the writer has stopped");
-        self.work
-            .as_ref()
-            .ok_or_else(stopped)?
-            .send((op, reply))
-            .map_err(|_| stopped())?;
-        answer.recv().map_err(|_| stopped())?
-    }
-}
-
-impl Drop for Committer {
-    fn drop(&mut self) {
-        self.work = None;
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.waiting.decided(op)
     }
 }
 
@@ -203,27 +179,26 @@ struct Writer<R> {
     next: u64,
     columns: Arc<Columns>,
     /// Where each batch written is synced, while the next is decided; a
-    /// batch handed it is synced before the writer's thread ends.
+    /// batch handed it is synced before the writer is let go of.
     syncer: Syncer,
     /// The Storage epoch its node is the primary in: a claim's fence.
     epoch: Arc<AtomicU64>,
 }
 
-impl<R: Engine> Writer<R> {
-    fn run(&mut self, inbox: &Receiver<(Op, Reply)>) {
-        while let Ok(first) = inbox.recv() {
-            let mut group = vec![first];
-            while group.len() < GROUP {
-                match inbox.try_recv() {
-                    Ok(more) => group.push(more),
-                    Err(_) => break,
-                }
-            }
-            self.commit(group);
-        }
+impl<R: Engine> Decides for Writer<R> {
+    fn commit(&mut self, group: Vec<(Op, Reply)>) {
+        self.committed(group);
     }
 
-    fn commit(&mut self, group: Vec<(Op, Reply)>) {
+    fn recover(&mut self) {
+        if let Ok(next) = sequence(&self.store, NEXT) {
+            self.next = next;
+        }
+    }
+}
+
+impl<R: Engine> Writer<R> {
+    fn committed(&mut self, group: Vec<(Op, Reply)>) {
         let (spent, writes) = (
             Spent::begin(),
             u32::try_from(group.len()).unwrap_or(u32::MAX),
@@ -293,7 +268,7 @@ impl<R: Engine> Writer<R> {
                 (Ok(()), done) => done.map(|done| (done, durable.clone())),
                 (Err(error), _) => Err(again(error)),
             };
-            let _ = reply.send(answer);
+            let _ = reply.send(Answer::Decided(answer));
         }
         if durable.told().is_none() {
             self.syncer.written(durable);

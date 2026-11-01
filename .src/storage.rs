@@ -188,7 +188,7 @@ pub trait XmipStorage: Send + Sync {
     /// # Errors
     /// When it cannot be written, or its Message was published before as
     /// another Publication; nothing of it is written then.
-    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError>;
+    fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError>;
 
     /// What `queue` holds: its places, how many, and up to `most` of them
     /// from the place `from` on, oldest first, one range of its index by

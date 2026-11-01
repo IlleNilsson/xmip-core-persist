@@ -193,7 +193,13 @@ and 9).
   2026-10-10), so it may be on other storage than the other two. Every runtime write goes
   through one writer, which takes every write waiting into one batch under
   one sync: group commit, and the one place a claim's condition is decided.
-  A batch is written, answered, then synced: every write but a Publication
+  No thread of its own decides a batch: the caller that finds none being
+  decided leads it on its own thread, the writes arriving meanwhile wait
+  for the next, and once its own write is answered it hands the lead to
+  the first still waiting (`storage::commit::Waiting`; ADR-0018,
+  amendment 2026-11-01). A batch that panics answers its writes with an
+  error, and the lead goes on. A Publication is handed over by value
+  (`XmipStorage::publish`). A batch is written, answered, then synced: every write but a Publication
   is waited on until durable, and a Publication is answered with its claims
   and its durability (`storage::Durable`), so its sends are prepared while
   the log syncs (ADR-0018, amendment 2026-10-20). The sync is a thread of

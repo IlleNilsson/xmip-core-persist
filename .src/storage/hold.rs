@@ -408,7 +408,7 @@ mod tests {
         let queue = 7;
         for id in 1..=3u128 {
             let journey = JourneyId::new(id);
-            node.publish(&Publication {
+            node.publish(Publication {
                 message: MessageRecord {
                     message: MessageId::new(id),
                     body: Vec::new(),

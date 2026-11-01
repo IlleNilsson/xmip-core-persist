@@ -81,7 +81,7 @@ impl XmipStorage for Delegated {
         self.now()?.storage.read_journey(journey)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+    fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
         self.now()?.storage.publish(publication)
     }
 

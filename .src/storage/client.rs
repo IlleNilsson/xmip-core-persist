@@ -536,10 +536,7 @@ mod tests {
     }
 
     impl XmipStorage for LosesAnswer {
-        fn publish(
-            &self,
-            publication: &Publication,
-        ) -> Result<(Vec<Claim>, Durable), PersistError> {
+        fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
             let held = self.beneath.publish(publication)?;
             let meanwhile = self.meanwhile.lock().expect("meanwhile").take();
             let Some(meanwhile) = meanwhile else {
@@ -788,7 +785,7 @@ mod tests {
             lease_nanos: 0,
         };
 
-        let (answered, durable) = client.publish(&publication).expect("asked again, answered");
+        let (answered, durable) = client.publish(publication).expect("asked again, answered");
 
         assert_eq!(answered, Vec::new());
         assert_eq!(

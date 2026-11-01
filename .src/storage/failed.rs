@@ -241,7 +241,7 @@ mod tests {
     fn published(node: &dyn XmipStorage, count: u128) {
         for id in 1..=count {
             let journey = JourneyId::new(id);
-            node.publish(&Publication {
+            node.publish(Publication {
                 message: MessageRecord {
                     message: MessageId::new(id),
                     body: Vec::new(),
