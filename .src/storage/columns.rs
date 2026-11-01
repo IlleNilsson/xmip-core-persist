@@ -182,6 +182,22 @@ impl Columns {
         changes: Vec<RecordChange<'a>>,
         now: u64,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
+        self.written_over(changes, now, |kind, key| store.get(kind, key))
+    }
+
+    /// As [`Columns::written`], each record a change replaces as `kept`
+    /// says the store holds it: what a batch read of it already, read
+    /// once (`super::commit::Batch::before`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Columns::written`].
+    pub(crate) fn written_over<'a>(
+        &self,
+        changes: Vec<RecordChange<'a>>,
+        now: u64,
+        kept: impl Fn(&'a str, &[u8]) -> Result<Option<Vec<u8>>, PersistError>,
+    ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
         let mut entries = Vec::new();
         let mut latest: HashMap<(&'a str, Vec<u8>), Option<Vec<u8>>> = HashMap::new();
         let mut written = Vec::with_capacity(changes.len());
@@ -192,7 +208,7 @@ impl Columns {
             };
             let before = match latest.get(&(kind, key.clone())) {
                 Some(before) => before.clone(),
-                None => store.get(kind, &key)?,
+                None => kept(kind, &key)?,
             };
             if let Some(before) = &before {
                 let (row, id) = searched.row(before)?;
