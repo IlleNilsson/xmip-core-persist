@@ -1,7 +1,9 @@
 //! One batch the embedded Storage node's writer decides (`super::commit`):
 //! what it has written so far, by place, read back by every operation
-//! decided after it in the same batch.
+//! decided after it in the same batch; and what the store held of each
+//! record it read, read from the store once a batch.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::super::record::Form;
@@ -14,9 +16,17 @@ use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 /// the others in its batch are.
 pub(crate) struct Batch<'a> {
     pub(super) below: Option<&'a Batch<'a>>,
-    pub(super) written: HashMap<(&'static str, Vec<u8>), Option<Vec<u8>>>,
+    pub(super) written: ByPlace,
     pub(super) changes: Vec<RecordChange<'static>>,
+    /// What the store held of each record the batch read, as it held it
+    /// before the batch: read once, however many of its operations — and
+    /// its laying out after them — ask (the bottom batch's alone).
+    kept: RefCell<ByPlace>,
 }
+
+/// Each record's value by its place, its kind and its key: `None` where
+/// there is none.
+pub(super) type ByPlace = HashMap<(&'static str, Vec<u8>), Option<Vec<u8>>>;
 
 impl Batch<'_> {
     /// A batch with nothing in it yet, over what is written.
@@ -25,6 +35,7 @@ impl Batch<'_> {
             below: None,
             written: HashMap::new(),
             changes: Vec::new(),
+            kept: RefCell::default(),
         }
     }
 
@@ -34,6 +45,7 @@ impl Batch<'_> {
             below: Some(self),
             written: HashMap::new(),
             changes: Vec::new(),
+            kept: RefCell::default(),
         }
     }
 
@@ -45,11 +57,39 @@ impl Batch<'_> {
         kind: &'static str,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, PersistError> {
-        match (self.written.get(&(kind, key.to_vec())), self.below) {
+        // A stage that wrote nothing yet is not asked: its place's key is
+        // never made.
+        let written = if self.written.is_empty() {
+            None
+        } else {
+            self.written.get(&(kind, key.to_vec()))
+        };
+        match (written, self.below) {
             (Some(value), _) => Ok(value.clone()),
             (None, Some(below)) => below.read(store, kind, key),
-            (None, None) => store.get(kind, key),
+            (None, None) => self.before(store, kind, key),
         }
+    }
+
+    /// The value `kind` `key` held in `store` before this batch, whatever
+    /// the batch has written of it since: read from the store the first
+    /// time it is asked, and from what that read found after.
+    pub(crate) fn before<R: Engine>(
+        &self,
+        store: &EncryptedStore<R>,
+        kind: &'static str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, PersistError> {
+        if let Some(below) = self.below {
+            return below.before(store, kind, key);
+        }
+        let place = (kind, key.to_vec());
+        if let Some(kept) = self.kept.borrow().get(&place) {
+            return Ok(kept.clone());
+        }
+        let kept = store.get(kind, key)?;
+        self.kept.borrow_mut().insert(place, kept.clone());
+        Ok(kept)
     }
 
     /// What this batch itself has written of `kind`, by key: the value it
@@ -87,4 +127,57 @@ pub(crate) fn sequence<R: Engine>(
         .try_into()
         .map_err(|_| super::malformed("an audit sequence that is not eight bytes"))?;
     Ok(u64::from_be_bytes(array))
+}
+
+/// The failure of a batch, said again to each write that was in it.
+pub(super) fn again(error: &PersistError) -> PersistError {
+    match error {
+        PersistError::Refused { scope, reason } => PersistError::Refused {
+            scope: scope.clone(),
+            reason: reason.clone(),
+        },
+        PersistError::Engine { engine, reason } => PersistError::Engine {
+            engine,
+            reason: reason.clone(),
+        },
+        other => super::malformed(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixture::Memory;
+
+    #[test]
+    fn a_record_is_read_from_the_store_once_a_batch_and_as_the_batch_left_it() {
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        let kek = secret::KekName::new("runtime").expect("a name");
+        let store = EncryptedStore::open(Memory::default(), &keys, &kek).expect("open");
+        store.put("journey", b"7", b"before").expect("put");
+        let mut batch = Batch::empty();
+        assert_eq!(
+            batch.read(&store, "journey", b"7").expect("read"),
+            Some(b"before".to_vec())
+        );
+        // Changed beneath it: the batch reads what it read.
+        store.put("journey", b"7", b"since").expect("put");
+        assert_eq!(
+            batch.before(&store, "journey", b"7").expect("read"),
+            Some(b"before".to_vec())
+        );
+        batch.put("journey", b"7".to_vec(), Some(b"written".to_vec()));
+        let staged = batch.staged();
+        assert_eq!(
+            staged.read(&store, "journey", b"7").expect("read"),
+            Some(b"written".to_vec()),
+            "as the batch left it"
+        );
+        assert_eq!(
+            staged.before(&store, "journey", b"7").expect("read"),
+            Some(b"before".to_vec()),
+            "and what was there before it"
+        );
+        assert_eq!(staged.before(&store, "journey", b"8").expect("read"), None);
+    }
 }

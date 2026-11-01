@@ -1,12 +1,19 @@
 //! The one layer that encrypts what Xmip stores of its own (ADR-0063
 //! clause 2), whatever engine holds the bytes.
 
+mod place;
 mod viewed;
+
+use place::place;
 
 use crate::{Change, Engine, PersistError, Reads};
 use secret::{DataKey, KekName, KeyStore, SecretError};
 use viewed::Now;
 pub use viewed::{IndexScan, Viewed};
+// Every write the engine is asked for, timed as the I/O of the Message the
+// asking thread works for, if it works for one (`xcore::spent`): the
+// Ledger's appends and its syncs, never the sealing before them.
+use xcore::spent::on_io;
 
 /// Where the store's own data key is kept, wrapped, in the engine: the one
 /// engine key that is not a keyed hash. A keyed hash is thirty-two bytes,
@@ -154,15 +161,20 @@ impl<E: Engine> EncryptedStore<E> {
         let Some(stored) = reads.read(&self.lookup.keyed_hash(&place))? else {
             return Ok(None);
         };
-        self.opened(&place, &stored, &format!("record of kind '{kind}'"))
+        self.opened(&place, &stored, &|| format!("record of kind '{kind}'"))
             .map(Some)
     }
 
     /// What `stored` seals for `place`, authenticated; `what` names it in
-    /// the scope of a refusal.
-    fn opened(&self, place: &[u8], stored: &[u8], what: &str) -> Result<Vec<u8>, PersistError> {
+    /// the scope of a refusal, said only for one.
+    fn opened(
+        &self,
+        place: &[u8],
+        stored: &[u8],
+        what: &dyn Fn() -> String,
+    ) -> Result<Vec<u8>, PersistError> {
         let refused = |reason: String| PersistError::Refused {
-            scope: format!("{} {what}", self.engine.engine()),
+            scope: format!("{} {}", self.engine.engine(), what()),
             reason,
         };
         let Some((&LAYOUT, sealed)) = stored.split_first() else {
@@ -194,7 +206,7 @@ impl<E: Engine> EncryptedStore<E> {
     /// As [`EncryptedStore::put`]; nothing is written then.
     pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
         let sealed = self.sealed(changes)?;
-        self.engine.apply(&sealed)
+        on_io(|| self.engine.apply(&sealed))
     }
 
     /// Every change of `changes` and every index entry of `entries` as one
@@ -213,7 +225,7 @@ impl<E: Engine> EncryptedStore<E> {
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
         let indexed = self.indexed(changes, entries)?;
-        self.engine.apply(&indexed)
+        on_io(|| self.engine.apply(&indexed))
     }
 
     /// As [`EncryptedStore::apply_indexed`], through the engine's
@@ -229,7 +241,7 @@ impl<E: Engine> EncryptedStore<E> {
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
         let indexed = self.indexed(changes, entries)?;
-        self.engine.apply_deferred(&indexed)
+        on_io(|| self.engine.apply_deferred(&indexed))
     }
 
     /// Every write before now durable, as the engine syncs
@@ -239,7 +251,7 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// [`PersistError::Engine`] when the engine cannot sync.
     pub fn sync(&self) -> Result<(), PersistError> {
-        self.engine.sync()
+        on_io(|| self.engine.sync())
     }
 
     /// `changes` sealed, and every index entry of `entries` sealed with
@@ -309,7 +321,7 @@ impl<E: Engine> EncryptedStore<E> {
         entries
             .into_iter()
             .map(|(key, stored)| {
-                let record = self.opened(&key, &stored, "index entry")?;
+                let record = self.opened(&key, &stored, &|| "index entry".to_string())?;
                 let record: [u8; 16] = record.try_into().map_err(|_| PersistError::Refused {
                     scope: format!("{} index entry", self.engine.engine()),
                     reason: "not a record's identifier".to_string(),
@@ -329,7 +341,7 @@ impl<E: Engine> EncryptedStore<E> {
     /// As [`EncryptedStore::apply`].
     pub fn apply_deferred(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
         let sealed = self.sealed(changes)?;
-        self.engine.apply_deferred(&sealed)
+        on_io(|| self.engine.apply_deferred(&sealed))
     }
 
     /// `changes` as the engine keeps them: each place a keyed hash, each
@@ -362,8 +374,7 @@ impl<E: Engine> EncryptedStore<E> {
     }
 
     fn seal(&self, place: &[u8], value: &[u8]) -> Result<Vec<u8>, PersistError> {
-        let sealed = self.record.seal(place, value)?;
-        Ok([&[LAYOUT], sealed.as_slice()].concat())
+        Ok(self.record.seal_after(&[LAYOUT], place, value)?)
     }
 }
 
@@ -374,12 +385,6 @@ pub type RecordChange<'a> = (&'a str, Vec<u8>, Option<Vec<u8>>);
 /// One index entry: its key after the index mark, and the record it finds,
 /// `None` removing it.
 pub type IndexEntry = (Vec<u8>, Option<u128>);
-
-/// A record's place: its kind, a zero byte, its key. What it is sealed for
-/// and what its lookup key is hashed from.
-fn place(kind: &str, key: &[u8]) -> Vec<u8> {
-    [kind.as_bytes(), &[0], key].concat()
-}
 
 #[cfg(test)]
 mod tests {

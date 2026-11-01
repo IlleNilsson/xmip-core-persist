@@ -24,6 +24,7 @@
 mod batch;
 mod syncer;
 
+use batch::again;
 pub(crate) use batch::{Batch, sequence};
 
 use syncer::Syncer;
@@ -33,7 +34,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread::JoinHandle;
 
+use std::time::Duration;
 use xcore::Clock;
+use xcore::spent::Spent;
 
 use super::audit_entry::AuditEntry;
 use super::claim::{self, Standing, Stored, end, hold};
@@ -221,6 +224,11 @@ impl<R: Engine> Writer<R> {
     }
 
     fn commit(&mut self, group: Vec<(Op, Reply)>) {
+        let (spent, writes) = (
+            Spent::begin(),
+            u32::try_from(group.len()).unwrap_or(u32::MAX),
+        );
+        let entered = spent.entered();
         let now = self.clock.unix_timestamp_nanos();
         let before = self.next;
         let mut batch = Batch::empty();
@@ -259,9 +267,12 @@ impl<R: Engine> Writer<R> {
         } else {
             // Each searchable record stamped on this clock, and its index
             // entries in the same write (`super::columns`), unsynced: it
-            // is answered first, and synced after.
+            // is answered first, and synced after. Each record a change
+            // replaces is the one the batch read of it, if it did.
+            let changes = std::mem::take(&mut batch.changes);
+            let kept = |kind, key: &[u8]| batch.before(&self.store, kind, key);
             self.columns
-                .written(&self.store, batch.changes, row::nanos(now))
+                .written_over(changes, row::nanos(now), kept)
                 .and_then(|(changes, entries)| {
                     self.store.apply_indexed_deferred(&changes, &entries)
                 })
@@ -274,6 +285,9 @@ impl<R: Engine> Writer<R> {
         } else {
             Durable::pending()
         };
+        // What the batch took outside its I/O, shared by its writes.
+        drop(entered);
+        durable.worked_each(spent.own(Duration::ZERO) / writes.max(1));
         for (reply, done) in decided {
             let answer = match (&written, done) {
                 (Ok(()), done) => done.map(|done| (done, durable.clone())),
@@ -376,20 +390,5 @@ impl<R: Engine> Writer<R> {
                 Ok(Done::Yes(true))
             }
         }
-    }
-}
-
-/// The failure of a batch, said again to each write that was in it.
-fn again(error: &PersistError) -> PersistError {
-    match error {
-        PersistError::Refused { scope, reason } => PersistError::Refused {
-            scope: scope.clone(),
-            reason: reason.clone(),
-        },
-        PersistError::Engine { engine, reason } => PersistError::Engine {
-            engine,
-            reason: reason.clone(),
-        },
-        other => malformed(other.to_string()),
     }
 }

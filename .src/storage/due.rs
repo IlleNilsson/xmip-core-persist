@@ -190,7 +190,7 @@ pub(crate) fn settle<R: Engine>(
         let mut touched = HashSet::new();
         let (mut fresh, mut retry) = (None, None);
         for (place, value) in written {
-            let old = store.get(HELD, &entry_key(queue, place))?;
+            let old = batch.before(store, HELD, &entry_key(queue, place))?;
             let old = old.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
             let new = value.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
             places.retrying =
@@ -206,7 +206,16 @@ pub(crate) fn settle<R: Engine>(
             }
         }
         let most = touched.len() + 1;
-        let kept_fresh = untouched(store, queue, ((0, places.fresh), 0), most, &touched)?;
+        // Every entry the engine holds of a part is at or after where its
+        // first was, so a first the batch wrote at or before it is the
+        // first, and a part that held none still holds none the batch did
+        // not write: nothing is read then. A lone Message published to an
+        // empty queue reads no range.
+        let kept_fresh = if fresh.is_some_and(|first| first <= places.fresh) {
+            None
+        } else {
+            untouched(store, queue, ((0, places.fresh), 0), most, &touched)?
+        };
         places.fresh = match kept_fresh
             .map(|(_, place)| place)
             .into_iter()
@@ -216,7 +225,12 @@ pub(crate) fn settle<R: Engine>(
             Some(first) => first,
             None => queue::places(store, batch, KINDS, queue)?.next,
         };
-        let kept_retry = untouched(store, queue, (places.retry, u64::MAX), most, &touched)?;
+        let kept_retry =
+            if places.retry == NO_RETRY || retry.is_some_and(|first| first <= places.retry) {
+                None
+            } else {
+                untouched(store, queue, (places.retry, u64::MAX), most, &touched)?
+            };
         places.retry = kept_retry
             .into_iter()
             .chain(retry)
