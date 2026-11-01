@@ -229,8 +229,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.read(JOURNEY, &journey.value().to_be_bytes())
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
-        self.held_ahead(Op::Publish(Box::new(publication.clone())))
+    fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+        self.held_ahead(Op::Publish(Box::new(publication)))
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
@@ -769,7 +769,7 @@ mod tests {
             claims: Vec::new(),
             lease_nanos: 0,
         };
-        node.publish(&publication).expect("published");
+        node.publish(publication.clone()).expect("published");
         assert_eq!(
             node.read_message(MessageId::new(7)).expect("read"),
             Some(publication.message.clone())
@@ -867,12 +867,11 @@ mod tests {
     fn a_message_nothing_matched_is_kept_with_its_entry_and_listed_oldest_first_in_pages() {
         let (node, _) = node();
         for id in 1..=5u128 {
-            node.publish(&unmatched(7, id)).expect("published");
+            node.publish(unmatched(7, id)).expect("published");
         }
-        node.publish(&unmatched(7, 3))
+        node.publish(unmatched(7, 3))
             .expect("asked again: kept once");
-        node.publish(&unmatched(8, 9))
-            .expect("another node's queue");
+        node.publish(unmatched(8, 9)).expect("another node's queue");
         let first = node.read_dead(7, 0, 2).expect("read");
         let places: Vec<u64> = first.dead.iter().map(|dead| dead.sequence).collect();
         assert_eq!((first.first, first.next, first.count), (0, 5, 5));
@@ -902,8 +901,8 @@ mod tests {
     #[test]
     fn a_replay_writes_its_journeys_and_takes_the_entry_out_once() {
         let (node, _) = node();
-        node.publish(&unmatched(7, 1)).expect("published");
-        node.publish(&unmatched(7, 2)).expect("published");
+        node.publish(unmatched(7, 1)).expect("published");
+        node.publish(unmatched(7, 2)).expect("published");
         assert_eq!(node.keep_audit(10, 4096).expect("kept"), 2);
         let replay = replaying(7, 1, 5);
         assert_eq!(node.replay(&replay).expect("replayed"), Replayed::Now);
@@ -937,7 +936,7 @@ mod tests {
             0,
             "not audited twice"
         );
-        node.publish(&unmatched(7, 1))
+        node.publish(unmatched(7, 1))
             .expect("its Publication asked again");
         assert_eq!(
             node.read_dead(7, 0, 10).expect("read").count,
@@ -956,7 +955,7 @@ mod tests {
         node.runtime()
             .put(DEAD_PLACES, &places_key(7), b"torn")
             .expect("torn");
-        assert!(node.publish(&unmatched(7, 1)).is_err());
+        assert!(node.publish(unmatched(7, 1)).is_err());
         assert_eq!(node.read_message(MessageId::new(1)).expect("read"), None);
         assert_eq!(
             node.keep_audit(10, 4096).expect("kept"),
@@ -966,7 +965,7 @@ mod tests {
         node.runtime()
             .remove(DEAD_PLACES, &places_key(7))
             .expect("mended");
-        node.publish(&unmatched(7, 1)).expect("published");
+        node.publish(unmatched(7, 1)).expect("published");
         node.runtime()
             .put(DEAD_PLACES, &places_key(7), b"torn")
             .expect("torn again");
@@ -979,9 +978,9 @@ mod tests {
     fn what_a_queue_holds_is_read_oldest_first_and_released_in_any_order() {
         let (node, _) = node();
         for id in 1..=4u128 {
-            node.publish(&holding(7, id)).expect("published");
+            node.publish(holding(7, id)).expect("published");
         }
-        node.publish(&holding(8, 9)).expect("another queue");
+        node.publish(holding(8, 9)).expect("another queue");
         let read = node.read_held(7, 0, 10).expect("read");
         let places: Vec<u64> = read.held.iter().map(|held| held.sequence).collect();
         assert_eq!((read.first, read.next, read.count), (0, 4, 4));
@@ -1021,7 +1020,7 @@ mod tests {
         // A Publication whose queue cannot be read, after its Message and
         // Journey were decided.
         torn(7);
-        assert!(node.publish(&holding(7, 1)).is_err());
+        assert!(node.publish(holding(7, 1)).is_err());
         assert_eq!(node.read_message(MessageId::new(1)).expect("read"), None);
         assert_eq!(node.read_journey(JourneyId::new(1)).expect("read"), None);
         let none_held = node.runtime().get(HELD, &held_key(7, 0)).expect("read");
@@ -1034,7 +1033,7 @@ mod tests {
 
         // A hand-on whose queue cannot be read, after its Journey was
         // written and its place let go of.
-        node.publish(&holding(8, 2)).expect("published");
+        node.publish(holding(8, 2)).expect("published");
         let delivered = leaving(&node, 8, 2, b"delivered");
         torn(8);
         assert!(node.hand_on(&delivered).is_err());
@@ -1073,7 +1072,7 @@ mod tests {
                     body: b"OrdersIn".to_vec(),
                 }])
                 .collect();
-            node.publish(&published).expect("published");
+            node.publish(published).expect("published");
         }
         let head = |node: &Node| {
             node.read_held(sequence, 0, 1)
@@ -1122,7 +1121,7 @@ mod tests {
                 .map(|id| place(7, *id))
                 .chain([place(sequence, delivery)])
                 .collect();
-            node.publish(&published).expect("published");
+            node.publish(published).expect("published");
         }
         let head = |queue: u128| {
             node.read_held(queue, 0, 1)
@@ -1157,8 +1156,8 @@ mod tests {
     fn a_turn_writes_its_instance_and_correlation_only_over_the_turn_it_read() {
         use super::super::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
         let (node, _) = node();
-        node.publish(&holding(7, 1)).expect("published");
-        node.publish(&holding(7, 2)).expect("published");
+        node.publish(holding(7, 1)).expect("published");
+        node.publish(holding(7, 2)).expect("published");
         let instance = |turns: u64| InstanceRecord {
             instance: 40,
             work_process: "OrderApproval".into(),
@@ -1228,7 +1227,7 @@ mod tests {
     #[test]
     fn a_hand_on_that_waits_keeps_its_claim_until_its_due_time_and_moves_a_message_on() {
         let (node, clock) = node();
-        node.publish(&holding(7, 1)).expect("published");
+        node.publish(holding(7, 1)).expect("published");
         let mut moved = leaving(&node, 7, 1, b"moved on");
         moved.queued = vec![super::super::Hold {
             queue: 9,
@@ -1266,7 +1265,7 @@ mod tests {
             lease_nanos: 1_000,
             ..holding(7, 1)
         };
-        node.publish(&publication).expect("published");
+        node.publish(publication).expect("published");
         assert_eq!(
             node.claim(JourneyId::new(1), &holder(1), 8, LEASE)
                 .expect("c"),
@@ -1288,10 +1287,10 @@ mod tests {
     #[test]
     fn a_publication_asked_again_holds_its_message_once() {
         let (node, _) = node();
-        node.publish(&holding(7, 1)).expect("published");
-        node.publish(&holding(7, 1))
+        node.publish(holding(7, 1)).expect("published");
+        node.publish(holding(7, 1))
             .expect("asked again after a lost answer");
-        node.publish(&holding(7, 2)).expect("the next");
+        node.publish(holding(7, 2)).expect("the next");
         let read = node.read_held(7, 0, 10).expect("read");
         let held: Vec<JourneyId> = read.held.iter().map(|held| held.hold.journey).collect();
         assert_eq!((read.next, read.count), (2, 2));
@@ -1318,7 +1317,7 @@ mod tests {
     fn a_publication_asked_again_after_its_journey_was_completed_writes_nothing() {
         let (node, clock) = node();
         let publication = claiming(7, 1, 11);
-        let first = node.publish(&publication).expect("published").0;
+        let first = node.publish(publication.clone()).expect("published").0;
         assert_eq!(first.len(), 1, "its node holds what it claimed");
         // Its answer lost, its claim lapses; another node sends the Message
         // and takes it out of its queue.
@@ -1328,7 +1327,7 @@ mod tests {
                 .expect("sent")
         );
 
-        let again = node.publish(&publication).expect("asked again").0;
+        let again = node.publish(publication).expect("asked again").0;
 
         assert_eq!(again, Vec::new(), "no claim taken again");
         let read = node.read_journey(JourneyId::new(1)).expect("read");
@@ -1345,7 +1344,7 @@ mod tests {
     #[test]
     fn a_publication_is_answered_readable_and_told_durable_once_synced() {
         let (node, _) = node();
-        let (held, durable) = node.publish(&claiming(7, 1, 11)).expect("published");
+        let (held, durable) = node.publish(claiming(7, 1, 11)).expect("published");
         assert_eq!(held.len(), 1, "its claim decided");
         // Readable as answered, whether or not the sync is over.
         assert!(
@@ -1364,8 +1363,8 @@ mod tests {
             lease_nanos: u64::try_from(LEASE.as_nanos()).expect("a lease"),
             ..claiming(7, 1, 11)
         };
-        let first = node.publish(&publication).expect("published").0;
-        let again = node.publish(&publication).expect("asked again").0;
+        let first = node.publish(publication.clone()).expect("published").0;
+        let again = node.publish(publication).expect("asked again").0;
         assert_eq!(again, first, "the outcome it had");
         assert_eq!(node.read_held(7, 0, 10).expect("read").count, 1);
     }
@@ -1373,11 +1372,11 @@ mod tests {
     #[test]
     fn another_publication_of_a_message_published_before_is_refused_and_writes_nothing() {
         let (node, _) = node();
-        node.publish(&holding(7, 1)).expect("published");
+        node.publish(holding(7, 1)).expect("published");
         let mut other = holding(7, 1);
         other.message.body = b"another order".to_vec();
         other.held[0].queue = 8;
-        let refused = node.publish(&other);
+        let refused = node.publish(other);
         assert!(
             matches!(&refused, Err(PersistError::Failed { reason }) if reason.contains("before")),
             "{refused:?}"
@@ -1385,7 +1384,7 @@ mod tests {
         let message = node.read_message(MessageId::new(1)).expect("read");
         assert_eq!(message.map(|m| m.body), Some(b"order".to_vec()));
         assert_eq!(node.read_held(8, 0, 10).expect("read").count, 0);
-        node.publish(&holding(7, 2))
+        node.publish(holding(7, 2))
             .expect("another Message is published");
     }
 

@@ -325,7 +325,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         Request::ListSecrets => storage.list_secrets().map(Answer::Secrets),
         // Answered once durable here: the client's caller acknowledges on it.
         Request::Publish(publication) => storage
-            .publish(&publication)
+            .publish(*publication)
             .and_then(|(held, durable)| durable.wait().map(|()| Answer::Claims(held))),
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)

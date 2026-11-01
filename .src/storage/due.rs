@@ -432,7 +432,7 @@ mod tests {
             journey: JourneyId::new(id),
             body: Vec::new(),
         };
-        node.publish(&Publication {
+        node.publish(Publication {
             message: MessageRecord {
                 message: MessageId::new(ids.start),
                 body: Vec::new(),

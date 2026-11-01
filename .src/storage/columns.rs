@@ -593,12 +593,12 @@ mod tests {
     fn three() -> (Embedded<Memory, Memory>, Arc<Pinned>) {
         let (node, clock) = node();
         clock.set(10);
-        node.publish(&published(1, "partner-x", "Billing", "Active"))
+        node.publish(published(1, "partner-x", "Billing", "Active"))
             .expect("published");
         clock.set(20);
-        node.publish(&published(2, "partner-x", "Archive", "Active"))
+        node.publish(published(2, "partner-x", "Archive", "Active"))
             .expect("published");
-        node.publish(&published(3, "Fabrikam", "Billing", "Completed"))
+        node.publish(published(3, "Fabrikam", "Billing", "Completed"))
             .expect("published");
         (node, clock)
     }
@@ -728,7 +728,7 @@ mod tests {
             location: "OrdersIn".to_string(),
             ..DeadMessage::default()
         });
-        node.publish(&unmatched).expect("published");
+        node.publish(unmatched).expect("published");
         let dead = |queued| Ask::DeadMessages { queue: 11, queued };
         assert_eq!(find(&node, dead(span(40, 40))), [4]);
         assert_eq!(find(&node, dead(span(41, 99))), []);
@@ -743,7 +743,7 @@ mod tests {
             .put(PLACES, &places_key(9), b"torn")
             .expect("torn");
         assert!(
-            node.publish(&published(1, "partner-x", "Billing", "Active"))
+            node.publish(published(1, "partner-x", "Billing", "Active"))
                 .is_err()
         );
         let party = Ask::MessagesFromParty {

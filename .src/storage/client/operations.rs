@@ -130,11 +130,8 @@ impl XmipStorage for StorageClient {
     }
 
     /// Answered by the Storage node once durable there.
-    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
-        let held = expected(
-            self.ask(&Request::Publish(Box::new(publication.clone())))?,
-            held,
-        )?;
+    fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+        let held = expected(self.ask(&Request::Publish(Box::new(publication)))?, held)?;
         Ok((held, Durable::kept()))
     }
 
