@@ -44,7 +44,7 @@ const LAYOUT: u8 = 1;
 ///
 /// Each record is AES-256-GCM under a fresh nonce, with its own place — its
 /// kind and key — as associated data, so a record copied under another key
-/// is refused. The key it is found by is HMAC-SHA-256 of that place under a
+/// is refused. The key it is found by is keyed BLAKE3 of that place under a
 /// second key, so the engine's files hold neither what is stored nor the
 /// names it is stored under. An index entry ([`EncryptedStore::apply_indexed`])
 /// is the one key not hashed: the caller builds it in the clear, so it
