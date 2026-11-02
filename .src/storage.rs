@@ -83,6 +83,8 @@ pub use instance::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
 pub use kept_audit::KeptAudit;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
+#[cfg(any(test, feature = "test-support"))]
+pub use queue::gap::page_across_a_gap;
 pub use record::{
     AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
     StreamChunk,
