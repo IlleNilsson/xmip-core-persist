@@ -250,7 +250,7 @@ and 9).
 - **`database`** and **`schema`** — what each data domain's database is
   kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
   `mariadb`, as each domain's own table in the configuration names it in
-  `storage` (the owner, 2026-10-10: *i would do it like runtime, storage,
+  `storage` (the owner, 2026-10-10: *I would do it like runtime, storage,
   connection string*) — and a database server Xmip Storage is in front of
   (option A): the one reading of a connection, in the server's own form
   (`host=… port=… dbname=… user=…` for PostgreSQL,

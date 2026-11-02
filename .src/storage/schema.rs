@@ -35,7 +35,7 @@ pub use version::{DatabaseVersion, VERSION};
 
 /// Which of the three databases, one to each data domain, a table is in.
 /// Each is made by scripts of its own, so each may be on a server of its
-/// own (the owner, 2026-10-10: *The audit part might be better of in its
+/// own (the owner, 2026-10-10: *The audit part might be better off in its
 /// own database so it can be hosted on a different set of nodes, different
 /// storage*).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
