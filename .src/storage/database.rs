@@ -4,7 +4,7 @@
 //!
 //! Xmip Storage keeps three databases, one to each data domain — runtime,
 //! administration, audit — and each names its own storage and connection
-//! in a table of its own (the owner, 2026-10-10: *i would do it like
+//! in a table of its own (the owner, 2026-10-10: *I would do it like
 //! runtime, storage, connection string. Same for audit and
 //! administration*, and *Yes, better*):
 //!

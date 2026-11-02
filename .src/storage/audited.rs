@@ -19,7 +19,7 @@
 //! copied once.
 //!
 //! **Each Stream is a row of its own** (the owner, 2026-10-09: *when the
-//! Xmip Core or its Providers uses the Audit functionality the whole
+//! Xmip Core or its Providers use the Audit functionality the whole
 //! shebang goes to audit*): the keeper writes, in the record's own write, a
 //! [`KeptStream`] for each — the record's identifier, and the Stream's own
 //! record ([`super::StreamRecord`], the one home of its length, its chunks,
