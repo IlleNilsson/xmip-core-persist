@@ -372,127 +372,18 @@ impl Form for DueQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture::{Counted, Memory};
-    use crate::storage::{
-        AuditEntry, AuditFacts, Embedded, Failure, HandOn, Hold, JourneyFacts, JourneyRecord,
-        MessageFacts, MessageRecord, Publication, Wait, XmipStorage,
-    };
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-    use xcore::{AuditId, Clock, JourneyId, MessageId};
+    use crate::fixture::crowd::{HOUR, Node, QUEUE, fails, handed_by, node, published, waits};
+    use crate::storage::{HandOn, XmipStorage};
 
-    const QUEUE: u128 = 7;
-    const LEASE: Duration = Duration::from_secs(30);
-    /// An hour, in nanoseconds: a retry not due while a test runs.
-    const HOUR: u64 = 3_600_000_000_000;
-
-    /// A clock a test moves by hand.
-    #[derive(Default)]
-    struct Pinned(Mutex<i128>);
-
-    impl Pinned {
-        fn pass(&self, nanos: i128) {
-            *self.0.lock().expect("clock") += nanos;
-        }
-    }
-
-    impl Clock for Pinned {
-        fn unix_timestamp_nanos(&self) -> i128 {
-            *self.0.lock().expect("clock")
-        }
-    }
-
-    type Node = Embedded<Box<Counted>, Memory>;
-
-    fn node() -> (Node, Arc<Pinned>) {
-        let keys = secret::Held::new(secret::fixture::Memory::default());
-        let kek = secret::KekName::new("storage").expect("name");
-        let clock = Arc::new(Pinned::default());
-        clock.pass(1_000);
-        let node = Embedded::over(
-            EncryptedStore::open(Box::default(), &keys, &kek).expect("runtime"),
-            EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
-            EncryptedStore::open(Memory::default(), &keys, &kek).expect("audit"),
-            Arc::clone(&clock) as Arc<dyn Clock>,
-        )
-        .expect("node");
-        (node, clock)
-    }
-
-    /// The Messages of the Journeys `ids` published in one write, each held
-    /// in [`QUEUE`].
-    fn published(node: &Node, ids: std::ops::Range<u128>) {
-        let journey = |id| JourneyRecord {
-            journey: JourneyId::new(id),
-            body: b"to send".to_vec(),
-            facts: JourneyFacts::default(),
-        };
-        let hold = |id| Hold {
-            queue: QUEUE,
-            journey: JourneyId::new(id),
-            body: Vec::new(),
-        };
-        node.publish(Publication {
-            message: MessageRecord {
-                message: MessageId::new(ids.start),
-                body: Vec::new(),
-                facts: MessageFacts::default(),
-            },
-            journeys: ids.clone().map(journey).collect(),
-            held: ids.clone().map(hold).collect(),
-            dead: None,
-            audit: AuditEntry {
-                id: AuditId::new(ids.start),
-                body: Vec::new(),
-                audited: None,
-                facts: AuditFacts::default(),
-            },
-            claims: Vec::new(),
-            lease_nanos: 0,
-        })
-        .expect("published");
+    /// The test cluster's first node, the holder of every claim here.
+    fn holder() -> String {
+        configure::fixture::test_cluster().node_scope(0)
     }
 
     /// The Message of the Journey `id` claimed and handed on as `how` leaves
     /// it.
     fn handed(node: &Node, id: u128, how: impl FnOnce(&mut HandOn)) {
-        let holder = configure::fixture::test_cluster().node_scope(0);
-        let claim = node.claim(JourneyId::new(id), &holder, id, LEASE);
-        let mut hand_on = HandOn {
-            claim: claim.expect("asked").expect("claimed"),
-            result: JourneyRecord {
-                journey: JourneyId::new(id),
-                body: b"tried".to_vec(),
-                facts: JourneyFacts::default(),
-            },
-            messages: Vec::new(),
-            next: Vec::new(),
-            leaves: Vec::new(),
-            queued: Vec::new(),
-            requeued: Vec::new(),
-            failed: None,
-            cleared: Vec::new(),
-            waits: None,
-            kept_for_nanos: None,
-        };
-        how(&mut hand_on);
-        assert!(node.hand_on(&hand_on).expect("handed on"));
-    }
-
-    fn waits(after_nanos: u64) -> impl FnOnce(&mut HandOn) {
-        move |hand_on| {
-            hand_on.waits = Some(Wait {
-                queue: QUEUE,
-                after_nanos,
-            });
-        }
-    }
-
-    fn fails(hand_on: &mut HandOn) {
-        hand_on.failed = Some(Failure {
-            queue: QUEUE,
-            reason: "refused".to_string(),
-        });
+        handed_by(node, &holder(), id, how);
     }
 
     fn sent(hand_on: &mut HandOn) {
@@ -594,15 +485,7 @@ mod tests {
     /// Many held, few due: [`QUEUE`] holds `waiting` retries not yet due,
     /// `failed` failed, and three due.
     fn crowded(waiting: u128, failed: u128) -> Node {
-        let (node, _) = node();
-        published(&node, 1..waiting + failed + 4);
-        for id in 1..=waiting {
-            handed(&node, id, waits(HOUR));
-        }
-        for id in waiting + 1..=waiting + failed {
-            handed(&node, id, fails);
-        }
-        node
+        crate::fixture::crowd::crowded(&holder(), waiting, failed)
     }
 
     #[test]
@@ -632,23 +515,5 @@ mod tests {
         }
         eprintln!("what is due: 4 keys read; the whole queue, as a scan read it: {reads}");
         assert!(reads > 11_000, "{reads}");
-    }
-
-    #[test]
-    fn a_read_of_what_is_due_among_many_held_takes_under_a_millisecond() {
-        let node = crowded(10_000, 1_000);
-        let fastest = (0..5)
-            .map(|_| {
-                let started = Instant::now();
-                let read = node
-                    .read_due(QUEUE, DuePart::Due, (0, 0), 64)
-                    .expect("read");
-                assert_eq!(read.held.len(), 3);
-                started.elapsed()
-            })
-            .min()
-            .unwrap_or_default();
-        eprintln!("three due of 11,003 held: read in {fastest:?}");
-        assert!(fastest < Duration::from_millis(1), "{fastest:?}");
     }
 }

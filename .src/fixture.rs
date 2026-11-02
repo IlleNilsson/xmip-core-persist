@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
+pub mod crowd;
 mod viewed;
 
 use viewed::{CountedView, MemoryView, ranged};

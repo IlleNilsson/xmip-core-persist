@@ -36,6 +36,10 @@ use super::row::Value;
 use super::schema::Database;
 use crate::{EncryptedStore, Engine, IndexScan, PersistError};
 
+/// A queue with a gap of a million places, and what it costs: for tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod gap;
+
 /// Where one kind of queue keeps what it keeps: its entries by queue and
 /// place, its index by queue and what an entry is about, its places by
 /// queue, and the table and index its entries are found in order by.
@@ -271,81 +275,10 @@ impl Form for Places {
 
 #[cfg(test)]
 mod tests {
-    use super::super::hold::{self, Hold, KINDS};
+    use super::super::hold::{self, KINDS};
+    use super::gap::{GAP, QUEUE, queue, taken_out};
     use super::*;
     use crate::fixture::Counted;
-    use crate::{IndexEntry, RecordChange};
-    use secret::KekName;
-    use std::time::{Duration, Instant};
-    use xcore::JourneyId;
-
-    const QUEUE: u128 = 7;
-    /// A gap of a million places.
-    const GAP: u64 = 1_000_000;
-
-    /// `changes` written as the one writer writes them: each entry with its
-    /// index entries.
-    fn written(store: &EncryptedStore<&Counted>, changes: Vec<RecordChange<'_>>) {
-        let columns = Columns::of(Database::Runtime);
-        let (changes, entries) = columns.written(store, changes, 0).expect("laid out");
-        store.apply_indexed(&changes, &entries).expect("written");
-    }
-
-    /// The Message held at `sequence`, its Journey numbered one past it.
-    fn held(sequence: u64) -> Vec<u8> {
-        hold::Held {
-            sequence,
-            hold: Hold {
-                queue: QUEUE,
-                journey: JourneyId::new(u128::from(sequence) + 1),
-                body: Vec::new(),
-            },
-            held_unix_nanos: 0,
-            failed: false,
-            due_unix_nanos: None,
-        }
-        .bytes()
-    }
-
-    /// A queue whose entries at `kept` it still holds, the rest of the
-    /// places before `next` taken out.
-    fn queue<'c>(counted: &'c Counted, kept: &[u64], next: u64) -> EncryptedStore<&'c Counted> {
-        let keys = secret::Held::new(secret::fixture::Memory::default());
-        let kek = KekName::new("runtime").expect("a name");
-        let store = EncryptedStore::open(counted, &keys, &kek).expect("open");
-        let places = Places {
-            first: kept.first().copied().unwrap_or(next),
-            next,
-            count: kept.len() as u64,
-        };
-        let entries = kept
-            .iter()
-            .map(|&at| (KINDS.entry, entry_key(QUEUE, at), Some(held(at))));
-        let places = (KINDS.places, places_key(QUEUE), Some(places.bytes()));
-        written(&store, entries.chain([places]).collect());
-        counted.read();
-        store
-    }
-
-    /// The entry at `sequence` taken out as the one writer decides it, and
-    /// what its batch writes laid out as the writer lays it out: the
-    /// writer's whole part of it.
-    fn taken_out(store: &EncryptedStore<&Counted>, sequence: u64) -> Laid {
-        let mut batch = Batch::empty();
-        take_out(store, &mut batch, KINDS, QUEUE, sequence).expect("taken");
-        let left = places(store, &batch, KINDS, QUEUE).expect("places");
-        let changes = vec![
-            (KINDS.entry, entry_key(QUEUE, sequence), None),
-            (KINDS.places, places_key(QUEUE), Some(left.bytes())),
-        ];
-        let columns = Columns::of(Database::Runtime);
-        let laid = columns.written(store, changes, 0).expect("laid out");
-        assert_eq!(laid.1.len(), 3, "its three index entries taken out with it");
-        laid
-    }
-
-    /// What the writer applies: the changes and their index entries.
-    type Laid = (Vec<RecordChange<'static>>, Vec<IndexEntry>);
 
     fn sequences(entries: &[Vec<u8>]) -> Vec<u64> {
         let held = |bytes: &Vec<u8>| hold::Held::from_bytes(bytes).expect("held").sequence;
@@ -437,33 +370,5 @@ mod tests {
         store.apply_indexed(&changes, &entries).expect("written");
         let (places, _) = page(&store, KINDS, QUEUE, 0, 10).expect("emptied");
         assert_eq!((places.first, places.count), (GAP + 1, 0));
-    }
-
-    /// The fastest of five rounds of `round`: what it costs apart from the
-    /// scheduler's.
-    fn fastest(mut round: impl FnMut()) -> Duration {
-        (0..5)
-            .map(|_| {
-                let started = Instant::now();
-                round();
-                started.elapsed()
-            })
-            .min()
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn a_page_across_a_gap_and_the_writer_taking_out_before_it_each_take_under_a_millisecond() {
-        let counted = Counted::default();
-        let store = queue(&counted, &[0, GAP], GAP + 1);
-        let paged = fastest(|| {
-            let (_, entries) = page(&store, KINDS, QUEUE, 0, 64).expect("a page");
-            assert_eq!(entries.len(), 2);
-        });
-        let taken = fastest(|| drop(taken_out(&store, 0)));
-        eprintln!("a gap of {GAP} places: a page {paged:?}, a removal decided {taken:?}");
-        let millisecond = Duration::from_millis(1);
-        assert!(paged < millisecond, "a page took {paged:?}");
-        assert!(taken < millisecond, "a removal took {taken:?}");
     }
 }
