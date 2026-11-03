@@ -80,7 +80,7 @@ configure = { package = "xmip-core-configure", git = "https://github.com/IlleNil
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
 # A certificate authority and the certificates it issues, for the tests of
 # a node and a Storage node over mutual TLS. Test-only.
-rcgen = "0.13"
+rcgen = "0.14"
 
 [profile.dev.package."*"]
 opt-level = 3
