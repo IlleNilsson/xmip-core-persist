@@ -183,6 +183,7 @@ impl Serving {
                 epoch: 0,
                 history: 0,
                 next: [1; super::standby::DATABASES],
+                copying: false,
             },
             |node| node.standing(),
         )

@@ -41,6 +41,7 @@ impl StorageNode {
             epoch: held.epoch,
             history: self.copies.history(),
             next: self.copies.next(),
+            copying: self.is_copying(),
         }
     }
 
