@@ -1196,10 +1196,55 @@ mod tests {
             "and nothing of it"
         );
         let mut ended = turn(stale.hand_on.clone(), 2);
-        ended.unkeyed = vec![50];
+        ended.unkeyed = ended.keys.clone();
         ended.keys.clear();
         assert!(node.turn(&ended).expect("turned"));
         assert_eq!(node.read_instance_key(50).expect("read"), None);
+    }
+
+    #[test]
+    fn two_first_arrivals_of_one_key_start_one_instance_and_only_its_owner_lets_it_go() {
+        use super::super::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
+        let (node, _) = node();
+        for id in [1, 2] {
+            node.publish(holding(7, id)).expect("published");
+        }
+        // Both arrivals read the key unmapped, before either is written,
+        // and each starts an Instance by its own Journey.
+        let first = |hand_on: HandOn, instance: u128| Turn {
+            hand_on,
+            instances: vec![InstanceWrite {
+                record: InstanceRecord {
+                    instance,
+                    work_process: "OrderApproval".into(),
+                    turns: 1,
+                    ended: false,
+                    body: Vec::new(),
+                },
+                over: 0,
+            }],
+            keys: vec![InstanceKey { key: 50, instance }],
+            unkeyed: Vec::new(),
+        };
+        let one = first(leaving(&node, 7, 1, b"one"), 41);
+        let two = first(leaving(&node, 7, 2, b"two"), 42);
+        assert!(node.turn(&one).expect("turned"));
+        assert!(
+            !node.turn(&two).expect("decided"),
+            "the key is the first Instance's"
+        );
+        assert_eq!(node.read_instance_key(50).expect("read"), Some(41));
+        assert_eq!(node.read_instance(42).expect("read"), None, "never started");
+
+        // An Instance letting go of a key another holds leaves it.
+        let mut stray = first(two.hand_on.clone(), 42);
+        stray.keys.clear();
+        stray.unkeyed = vec![InstanceKey {
+            key: 50,
+            instance: 42,
+        }];
+        assert!(node.turn(&stray).expect("turned"));
+        assert_eq!(node.read_instance_key(50).expect("read"), Some(41));
     }
 
     /// The Message of the Journey `id` claimed and handed on as `body`,

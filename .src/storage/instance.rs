@@ -14,14 +14,19 @@
 //! Instance is written only over the turn it was read at: two nodes taking
 //! two turns of one Instance from the same state never both write, and the
 //! later hand-on writes nothing, its claim kept for its holder to release.
+//! A key is written only where it belongs to no Instance or to the one
+//! writing it, in the same write: two first arrivals of one key that each
+//! start an Instance never both do, and the later one, taken again, finds
+//! the key and joins the first. A key is let go only by the Instance it
+//! belongs to.
 
 use codec::cursor::Cursor;
 
 use super::commit::Batch;
 use super::hand_on::HandOn;
 use super::record::{
-    Form, read_byte, read_bytes, read_text, read_u32, read_u64, read_u128, write_byte, write_bytes,
-    write_text, write_u32, write_u64, write_u128,
+    Form, read_byte, read_bytes, read_text, read_u64, read_u128, write_byte, write_bytes,
+    write_text, write_u64, write_u128,
 };
 use crate::{EncryptedStore, Engine, PersistError};
 
@@ -110,11 +115,14 @@ impl Form for InstanceKey {
 }
 
 /// Whether every Instance of `writes` stands, as `batch` has left it, at
-/// the turn its write is over: nothing is written unless all do.
+/// the turn its write is over, and every key of `keys` belongs to no
+/// Instance or to the one it names: nothing is written unless all do, so
+/// two first arrivals of one key never both start an Instance by it.
 pub(crate) fn current<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &Batch<'_>,
     writes: &[InstanceWrite],
+    keys: &[InstanceKey],
 ) -> Result<bool, PersistError> {
     for write in writes {
         let key = write.record.instance.to_be_bytes();
@@ -126,17 +134,36 @@ pub(crate) fn current<R: Engine>(
             return Ok(false);
         }
     }
+    for key in keys {
+        let owner = owner(store, batch, key.key)?;
+        if owner.is_some_and(|owner| owner != key.instance) {
+            return Ok(false);
+        }
+    }
     Ok(true)
 }
 
-/// `writes` and `keys` written in `batch`, and `unkeyed`
-/// taken out.
-pub(crate) fn write(
+/// The Instance the key `key` belongs to, as `batch` has left it.
+fn owner<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &Batch<'_>,
+    key: u128,
+) -> Result<Option<u128>, PersistError> {
+    batch
+        .read(store, INSTANCE_KEY, &key.to_be_bytes())?
+        .map(|bytes| InstanceKey::from_bytes(&bytes).map(|found| found.instance))
+        .transpose()
+}
+
+/// `writes` and `keys` written in `batch`, and each of `unkeyed` taken out
+/// where it still belongs to the Instance it names: a key another Instance
+/// took since is that one's.
+pub(crate) fn write<R: Engine>(
+    store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    writes: &[InstanceWrite],
-    keys: &[InstanceKey],
-    unkeyed: &[u128],
-) {
+    (writes, keys): (&[InstanceWrite], &[InstanceKey]),
+    unkeyed: &[InstanceKey],
+) -> Result<(), PersistError> {
     for write in writes {
         batch.record(INSTANCE, write.record.instance, &write.record);
     }
@@ -144,18 +171,22 @@ pub(crate) fn write(
         batch.record(INSTANCE_KEY, key.key, key);
     }
     for gone in unkeyed {
-        batch.put(INSTANCE_KEY, gone.to_be_bytes().to_vec(), None);
+        if owner(store, batch, gone.key)? == Some(gone.instance) {
+            batch.put(INSTANCE_KEY, gone.key.to_be_bytes().to_vec(), None);
+        }
     }
+    Ok(())
 }
 
 /// A Work Process's turn, handed on as one write: the Message's hand-on,
-/// the Instances it moved, the keys it correlated and the keys it let go.
+/// the Instances it moved, the keys it correlated and the keys it let go,
+/// each named with the Instance it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Turn {
     pub hand_on: HandOn,
     pub instances: Vec<InstanceWrite>,
     pub keys: Vec<InstanceKey>,
-    pub unkeyed: Vec<u128>,
+    pub unkeyed: Vec<InstanceKey>,
 }
 
 impl Form for Turn {
@@ -163,10 +194,7 @@ impl Form for Turn {
         self.hand_on.write(out);
         self.instances.write(out);
         self.keys.write(out);
-        write_u32(out, u32::try_from(self.unkeyed.len()).unwrap_or(u32::MAX));
-        for gone in &self.unkeyed {
-            write_u128(out, *gone);
-        }
+        self.unkeyed.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -174,30 +202,28 @@ impl Form for Turn {
             hand_on: HandOn::read(cursor)?,
             instances: Vec::read(cursor)?,
             keys: Vec::read(cursor)?,
-            unkeyed: (0..read_u32(cursor)?)
-                .map(|_| read_u128(cursor))
-                .collect::<Result<_, _>>()?,
+            unkeyed: Vec::read(cursor)?,
         })
     }
 }
 
 /// `turn` decided in `batch` at `now`: nothing where an Instance it moves
-/// no longer stands where its turn read it, or where the claim is not its
-/// holder's; else its hand-on, its Instances and its keys, all in
-/// the one write.
+/// no longer stands where its turn read it, a key it correlates is another
+/// Instance's, or the claim is not its holder's; else its hand-on, its
+/// Instances and its keys, all in the one write.
 pub(crate) fn turn<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
     turn: &Turn,
     now: i128,
 ) -> Result<bool, PersistError> {
-    if !current(store, batch, &turn.instances)? {
+    if !current(store, batch, &turn.instances, &turn.keys)? {
         return Ok(false);
     }
     if !super::claim::hand_on(store, batch, &turn.hand_on, now)? {
         return Ok(false);
     }
-    write(batch, &turn.instances, &turn.keys, &turn.unkeyed);
+    write(store, batch, (&turn.instances, &turn.keys), &turn.unkeyed)?;
     Ok(true)
 }
 
