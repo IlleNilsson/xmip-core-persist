@@ -54,13 +54,18 @@ impl StorageNode {
 
     /// Whether, where no primary answered, this node is the one promoted:
     /// the standby holding most of the latest epoch, the first listed of
-    /// equals; at once where each one listed before it answered, else once
-    /// no primary was heard for the silence allowed.
+    /// equals, none whose whole copy is under way or was cut short; at once
+    /// where each one listed before it answered, else once no primary was
+    /// heard for the silence allowed.
     fn promotes(&self, answered: &[Answered]) -> bool {
         let Some(me) = answered.iter().find(|a| a.standing.process == self.process) else {
             return false;
         };
-        let best = answered.iter().max_by(|one, other| {
+        if me.standing.copying {
+            return false;
+        }
+        let whole = answered.iter().filter(|a| !a.standing.copying);
+        let best = whole.max_by(|one, other| {
             (one.standing.epoch, one.standing.held())
                 .cmp(&(other.standing.epoch, other.standing.held()))
                 .then(other.place.cmp(&one.place))
@@ -77,6 +82,11 @@ impl StorageNode {
     /// followed none — and its positions given up, so a copy of another
     /// primary later starts whole.
     fn promote(&self, epoch: u64) -> Result<(), PersistError> {
+        if self.is_copying() {
+            return Err(PersistError::Failed {
+                reason: "a whole copy into it was cut short; it holds part of a Ledger".to_string(),
+            });
+        }
         if self.copies.history() == 0 {
             self.copies.restart(
                 u128::from_be_bytes(codec::random::array()),

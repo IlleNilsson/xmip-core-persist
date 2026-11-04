@@ -204,6 +204,10 @@ fn a_standby_started_late_is_copied_whole_and_a_former_primary_follows_the_new_o
         one.said(),
         two.said()
     );
+    assert!(
+        !two.standing().copying,
+        "a whole copy taken is no longer under way"
+    );
     one.stop();
     one_server.stop();
     assert!(
@@ -239,6 +243,38 @@ fn a_standby_started_late_is_copied_whole_and_a_former_primary_follows_the_new_o
     assert_eq!(read.map(|r| r.body), Some(b"later".to_vec()));
     again.stop();
     again_server.stop();
+}
+
+#[test]
+fn a_standby_whose_whole_copy_was_cut_short_is_never_promoted() {
+    let authority = Authority::new();
+    let (mut bound, listed) = listeners(1);
+    let own = Own::new();
+    // What a whole copy cut short between pages leaves: part of a Ledger,
+    // no position, and the copy still under way.
+    own.engines[0].write(super::COPYING, &[1]).expect("written");
+    own.engines[1]
+        .write(b"part", b"of a Ledger")
+        .expect("written");
+    let (node, server) = started(&own, (bound.pop().expect("one"), &listed), &authority);
+    std::thread::sleep(timings().silence * 3);
+    assert!(!node.is_primary(), "{}", node.said());
+    assert!(node.standing().copying);
+    node.stop();
+    server.stop();
+
+    // An empty Storage node is a new cluster's, and is promoted.
+    let (mut bound, listed) = listeners(1);
+    let fresh = Own::new();
+    let (node, server) = started(&fresh, (bound.pop().expect("one"), &listed), &authority);
+    assert!(
+        until(Duration::from_secs(5), || node.is_primary()),
+        "{}",
+        node.said()
+    );
+    assert!(!node.standing().copying);
+    node.stop();
+    server.stop();
 }
 
 #[test]

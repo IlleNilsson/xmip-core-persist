@@ -28,6 +28,9 @@ pub struct Standing {
     pub history: u128,
     /// The number of the next write each database takes.
     pub next: [u64; DATABASES],
+    /// Whether a whole copy into it is under way or was cut short: it holds
+    /// part of a Ledger, and is not promoted.
+    pub copying: bool,
 }
 
 impl Standing {
@@ -48,6 +51,7 @@ impl Form for Standing {
         for next in self.next {
             write_u64(out, next);
         }
+        write_byte(out, u8::from(self.copying));
     }
 
     fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
@@ -57,6 +61,7 @@ impl Form for Standing {
             epoch: read_u64(cursor)?,
             history: read_u128(cursor)?,
             next: [read_u64(cursor)?, read_u64(cursor)?, read_u64(cursor)?],
+            copying: read_byte(cursor)? != 0,
         })
     }
 }
@@ -241,6 +246,7 @@ mod tests {
             epoch: 2,
             history: 8,
             next: [1, 2, 3],
+            copying: true,
         };
         assert_eq!(
             Standing::from_bytes(&standing.bytes()).expect("read"),

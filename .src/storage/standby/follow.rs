@@ -10,7 +10,7 @@ use secret::DataKey;
 
 use super::super::wire::{self, Request};
 use super::copies::{DATABASES, position};
-use super::{Follow, Shipped, StorageNode};
+use super::{COPYING, Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
 use crate::{Change, PersistError};
 
@@ -73,7 +73,11 @@ impl StorageNode {
                     self.heard(0);
                 }
                 Shipped::Whole(history, epoch, keys) => {
-                    // Nothing held is any history's until the copy is whole.
+                    // Nothing held is any history's until the copy is whole,
+                    // and the node is not promoted until then (`COPYING`).
+                    self.engines[0]
+                        .apply(&[(COPYING.to_vec(), Some(vec![1]))])
+                        .map_err(|e| e.to_string())?;
                     self.copies.restart(0, [1; DATABASES]);
                     self.wiped(&keys).map_err(|e| e.to_string())?;
                     self.heard(epoch);
@@ -150,7 +154,14 @@ impl StorageNode {
                 if page.is_empty() {
                     break;
                 }
-                let gone: Vec<Change> = page.into_iter().map(|(key, _)| (key, None)).collect();
+                let gone: Vec<Change> = page
+                    .into_iter()
+                    .filter(|(key, _)| key != COPYING)
+                    .map(|(key, _)| (key, None))
+                    .collect();
+                if gone.is_empty() {
+                    break;
+                }
                 engine.apply_deferred(&gone)?;
             }
             let wrapped = self.keys.wrap(&self.kek, &DataKey::taken(key)?)?;
@@ -160,12 +171,14 @@ impl StorageNode {
     }
 
     /// A whole copy taken: each database's position written and synced,
-    /// and its writes numbered on from where its copies follow.
+    /// then the copy no longer under way, and its writes numbered on from
+    /// where its copies follow.
     fn copied_whole(&self, whole: &Whole) -> Result<(), PersistError> {
         let next = whole.next.map(|next| next.unwrap_or(1));
         for (engine, next) in self.engines.iter().zip(next) {
             engine.apply(&[position(whole.history, next)])?;
         }
+        self.engines[0].apply(&[(COPYING.to_vec(), None)])?;
         self.copies.restart(whole.history, next);
         Ok(())
     }
