@@ -329,7 +329,7 @@ chunks it missed and never one it took (2026-10-20).
 RocksDB's own encryption hook and SQLCipher are not used: each would be a
 second way, for one engine (ADR-0063 clause 2). A device build leaves
 `rocksdb` out and with it the C++ toolchain and libclang
-(`prerequisite.toml`).
+(`prerequisite.xmip`).
 
 ## What it is not
 
