@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use super::super::embedded::Embedded;
 use super::super::wire::{self, Answer, Request};
@@ -175,7 +176,7 @@ impl StorageNode {
     /// Wait `most`, or until stopped: a stop wakes it at once.
     pub(super) fn rest(&self, most: Duration) {
         let until = Instant::now() + most;
-        let mut settling = self.settling.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut settling = self.settling.locked();
         while !self.stopping() {
             let Some(left) = until.checked_duration_since(Instant::now()) else {
                 return;
@@ -191,6 +192,6 @@ impl StorageNode {
     /// `what` kept as the last thing it has to say of its standing, which
     /// what it says of itself ends with ([`StorageNode::said`]).
     pub(super) fn told(&self, what: &str) {
-        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(what.to_string());
+        *self.last.locked() = Some(what.to_string());
     }
 }

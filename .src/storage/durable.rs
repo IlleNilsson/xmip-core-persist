@@ -17,6 +17,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use crate::PersistError;
 
@@ -49,7 +50,7 @@ impl Durable {
 
     /// Told what the sync came to; told once, the first word stands.
     pub(crate) fn tell(&self, synced: Result<(), String>) {
-        let mut told = self.0.told.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut told = self.0.told.locked();
         if told.is_none() {
             *told = Some(synced);
             self.0.woken.notify_all();
@@ -77,7 +78,7 @@ impl Durable {
     /// [`PersistError::Engine`] where the sync failed: what was written is
     /// lost with the process, or with the machine.
     pub fn wait(&self) -> Result<(), PersistError> {
-        let told = self.0.told.lock().unwrap_or_else(PoisonError::into_inner);
+        let told = self.0.told.locked();
         let told = self
             .0
             .woken
@@ -92,7 +93,7 @@ impl Durable {
     /// Whether it was told, and durable: `None` while the sync runs.
     #[must_use]
     pub fn told(&self) -> Option<bool> {
-        let told = self.0.told.lock().unwrap_or_else(PoisonError::into_inner);
+        let told = self.0.told.locked();
         told.as_ref().map(Result::is_ok)
     }
 }

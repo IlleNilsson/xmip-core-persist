@@ -3,8 +3,9 @@
 //! primary, Xmip Storage as it serves the others and as its own node reaches
 //! it, and what it says of itself.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, PoisonError};
+use xcore::lock::Locked;
 
 use super::super::XmipStorage;
 use super::super::client::StorageClient;
@@ -19,11 +20,7 @@ struct Lending(Arc<StorageNode>);
 impl Drop for Lending {
     fn drop(&mut self) {
         if self.0.lent.fetch_sub(1, Ordering::SeqCst) == 1 && self.0.stopping() {
-            let _settling = self
-                .0
-                .settling
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _settling = self.0.settling.locked();
             self.0.settled.notify_all();
         }
     }
@@ -110,10 +107,7 @@ impl StorageNode {
                 held.epoch
             ),
             Role::Primary(_) => {
-                let followers = self
-                    .followers
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let followers = self.followers.locked();
                 let behind: Vec<String> = followers
                     .iter()
                     .map(|(at, next)| {
@@ -134,7 +128,7 @@ impl StorageNode {
                 held.epoch
             ),
         };
-        let last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        let last = self.last.locked();
         match last.as_deref() {
             Some(last) => format!("{what}, {writes} writes held; {last}"),
             None => format!("{what}, {writes} writes held"),

@@ -2,9 +2,8 @@
 //! primary's writes from where it is, and takes them in order — first the
 //! whole of each database where it cannot take them on from there — until
 //! the primary goes silent, declines or the node stops.
-
-use std::sync::PoisonError;
 use std::time::{Duration, Instant};
+use xcore::lock::ReadWriteLocked;
 
 use secret::DataKey;
 
@@ -118,7 +117,7 @@ impl StorageNode {
     /// The primary heard, in `epoch` where it says one.
     fn heard(&self, epoch: u64) {
         let later = {
-            let mut held = self.held.write().unwrap_or_else(PoisonError::into_inner);
+            let mut held = self.held.write_locked();
             held.heard = Instant::now();
             let later = epoch > held.epoch;
             held.epoch = held.epoch.max(epoch);

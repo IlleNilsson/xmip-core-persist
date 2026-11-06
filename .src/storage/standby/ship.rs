@@ -5,8 +5,8 @@
 //! wrote before the connection ends.
 
 use std::io::Write;
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, Ordering};
+use xcore::lock::Locked;
 
 use super::super::wire;
 use super::copies::DATABASES;
@@ -32,10 +32,7 @@ impl StorageNode {
         (peer, server): (&str, &AtomicBool),
     ) {
         let shipped = self.shipping(connection, asked, (peer, server));
-        self.followers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(peer);
+        self.followers.locked().remove(peer);
         if let Err(reason) = shipped {
             let _ = wire::send(connection, &Shipped::Declined(reason));
         }
@@ -83,10 +80,7 @@ impl StorageNode {
                     handed = true;
                 }
             }
-            self.followers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(peer.to_string(), next);
+            self.followers.locked().insert(peer.to_string(), next);
             if stopping && !handed {
                 return Ok(());
             }

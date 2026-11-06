@@ -18,9 +18,10 @@
 use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use authorize::plane;
 
@@ -151,8 +152,7 @@ impl StorageServer {
             let address = self.address;
             let _ = net::accepting::woken(accepting, WAKE, || net::accepting::knock(address, WAKE));
         }
-        let served =
-            std::mem::take(&mut *self.served.lock().unwrap_or_else(PoisonError::into_inner));
+        let served = std::mem::take(&mut *self.served.locked());
         for thread in served {
             let _ = thread.join();
         }
@@ -221,7 +221,7 @@ fn accept(
         else {
             continue;
         };
-        let mut served = served.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut served = served.locked();
         served.retain(|thread| !thread.is_finished());
         served.push(thread);
     }

@@ -2,8 +2,7 @@
 //! shared and kept over time, each record under its kind and identifier,
 //! written by one writer at a time in this process (`deployment-model.md`
 //! section 7).
-
-use std::sync::PoisonError;
+use xcore::lock::Locked;
 
 use super::super::columns::{ADMINISTRATION, Columns};
 use super::super::record::{AdministrationKind, AdministrationRecord, Form};
@@ -35,10 +34,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         id: u128,
         bytes: Option<Vec<u8>>,
     ) -> Result<(), PersistError> {
-        let _one = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _one = self.administering.locked();
         let kind = kind_of(kind);
         let tables = (&self.administration, &self.administration_columns);
         self.indexed(tables, vec![(&kind, id.to_be_bytes().to_vec(), bytes)])

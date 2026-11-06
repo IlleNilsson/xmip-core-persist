@@ -58,6 +58,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use xcore::lock::{Locked, ReadWriteLocked};
 
 use secret::{KekName, KeyStore};
 
@@ -234,9 +235,9 @@ impl StorageNode {
             .name("xmip-storage-standing".to_string())
             .spawn(move || node.find())
             .map_err(|error| PersistError::engine("xmip-storage", error))?;
-        *self.finding.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
+        *self.finding.locked() = Some(thread);
         let deadline = Instant::now() + within;
-        let mut settling = self.settling.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut settling = self.settling.locked();
         while self.is_finding() {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 break;
@@ -256,7 +257,7 @@ impl StorageNode {
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let deadline = Instant::now() + self.timings.timeout;
-        let mut settling = self.settling.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut settling = self.settling.locked();
         while self.lent.load(Ordering::SeqCst) > 0 {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 break;
@@ -270,12 +271,7 @@ impl StorageNode {
         self.drained.store(true, Ordering::SeqCst);
         self.settled.notify_all();
         drop(settling);
-        if let Some(thread) = self
-            .finding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+        if let Some(thread) = self.finding.locked().take() {
             let _ = thread.join();
         }
     }
@@ -285,7 +281,7 @@ impl StorageNode {
     }
 
     fn held(&self) -> std::sync::RwLockReadGuard<'_, Held> {
-        self.held.read().unwrap_or_else(PoisonError::into_inner)
+        self.held.read_locked()
     }
 
     /// Whether it is still finding its primary, or being promoted: neither
@@ -306,7 +302,7 @@ impl StorageNode {
     /// than the one kept.
     fn take_up(&self, role: Role, epoch: u64) {
         let kept = {
-            let mut held = self.held.write().unwrap_or_else(PoisonError::into_inner);
+            let mut held = self.held.write_locked();
             let later = epoch > held.epoch;
             held.epoch = held.epoch.max(epoch);
             if !matches!(role, Role::Finding) {
@@ -318,7 +314,7 @@ impl StorageNode {
         if let Some(epoch) = kept {
             let _ = self.engines[0].write(EPOCH, &epoch.to_be_bytes());
         }
-        let _settling = self.settling.lock().unwrap_or_else(PoisonError::into_inner);
+        let _settling = self.settling.locked();
         self.settled.notify_all();
     }
 

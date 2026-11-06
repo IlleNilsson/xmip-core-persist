@@ -7,8 +7,7 @@
 //! (ADR-0070, `super::super::audited`) — and its body, its record and the
 //! Message it carries, in chunks of its own beside its row, as a Stream is
 //! kept (ADR-0070, amendment 2026-10-10; `super::super::kept_audit`).
-
-use std::sync::PoisonError;
+use xcore::lock::Locked;
 
 use xcore::{AuditId, StreamId};
 
@@ -35,7 +34,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     /// Move up to `most` audit records, oldest first, each body in chunks
     /// of `chunk` bytes: `keep_audit`.
     pub(super) fn keep(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
-        let _keeping = self.keeping.lock().unwrap_or_else(PoisonError::into_inner);
+        let _keeping = self.keeping.locked();
         let kept = sequence(&self.runtime, KEPT)?;
         let next = sequence(&self.runtime, NEXT)?;
         let mut moved = 0;
