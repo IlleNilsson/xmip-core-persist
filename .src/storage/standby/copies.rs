@@ -12,8 +12,10 @@
 //! among them, are never copied ([`OWN`]).
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
+
+use xcore::wake::Revision;
 
 use crate::encrypted_store::OWN;
 use crate::{Change, Engine, Entry, PersistError};
@@ -80,8 +82,7 @@ pub struct Copies {
     most: usize,
     /// How many writes were kept, all databases together: what a standby's
     /// shipping waits on.
-    told: Mutex<u64>,
-    changed: Condvar,
+    told: Revision,
 }
 
 impl Copies {
@@ -98,8 +99,7 @@ impl Copies {
                 })
             }),
             most,
-            told: Mutex::new(0),
-            changed: Condvar::new(),
+            told: Revision::new(),
         }
     }
 
@@ -135,9 +135,7 @@ impl Copies {
     }
 
     fn tell(&self) {
-        let mut told = self.told.lock().unwrap_or_else(PoisonError::into_inner);
-        *told += 1;
-        self.changed.notify_all();
+        self.told.raise();
     }
 
     /// `write` done to `database`, and where it wrote, the changes
@@ -255,18 +253,12 @@ impl Copies {
     /// How many writes were kept so far, all databases together.
     #[must_use]
     pub fn count(&self) -> u64 {
-        *self.told.lock().unwrap_or_else(PoisonError::into_inner)
+        self.told.now()
     }
 
     /// Wait until a write is kept after the `seen`-th, or `most` passed.
     pub fn wait(&self, seen: u64, most: Duration) {
-        let told = self.told.lock().unwrap_or_else(PoisonError::into_inner);
-        if *told == seen {
-            let _ = self
-                .changed
-                .wait_timeout(told, most)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+        self.told.wait(seen, most);
     }
 }
 
