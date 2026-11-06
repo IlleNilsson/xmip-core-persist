@@ -16,7 +16,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
+use xcore::lock::Locked;
 
 use super::super::durable::Durable;
 use super::{Done, GROUP, Op};
@@ -92,7 +93,7 @@ impl Waiting {
     /// the queue was empty before its own was answered, which cannot be
     /// while it waits in it.
     fn lead(&self, answer: &Receiver<Answer>) -> Option<Result<(Done, Durable), PersistError>> {
-        let mut writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut writer = self.writer.locked();
         loop {
             let group = {
                 let mut queue = self.queue();
@@ -138,7 +139,7 @@ impl Waiting {
     }
 
     fn queue(&self) -> MutexGuard<'_, Queue> {
-        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+        self.queue.locked()
     }
 }
 

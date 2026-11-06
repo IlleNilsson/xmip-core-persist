@@ -2,8 +2,7 @@
 //! `secret` table, each value sealed by Xmip before the record is written
 //! (`super::super::secret::sealed`), the record sealed whole again as every
 //! record here, and found by its name's index entry.
-
-use std::sync::PoisonError;
+use xcore::lock::Locked;
 
 use xcore::SecretName;
 
@@ -20,10 +19,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     /// `secret` written, keeping the identifier of the one of its name it
     /// replaces: `write_secret`.
     pub(super) fn secret_set(&self, secret: &SecretRecord) -> Result<(), PersistError> {
-        let _one = self
-            .administering
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _one = self.administering.locked();
         let mut kept = secret.sealed(&self.administration.derived(SEALING)?)?;
         if let Some(id) = self.secret_id(secret.secret.name())? {
             kept.id = id;

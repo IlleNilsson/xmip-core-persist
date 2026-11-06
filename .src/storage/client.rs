@@ -44,8 +44,9 @@
 //! [`StorageClient::reached`], which every surface shows.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use super::XmipStorage;
 use super::server::ALPN;
@@ -79,10 +80,7 @@ struct Node {
 
 impl Node {
     fn passed_over(&self, now: Instant) -> bool {
-        let until = *self
-            .passed_over
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let until = *self.passed_over.locked();
         until.is_some_and(|until| until > now)
     }
 
@@ -93,12 +91,8 @@ impl Node {
             Err(Asked::Failed(said)) => (false, self.standby.load(Ordering::Relaxed), said.clone()),
         };
         self.standby.store(standby, Ordering::Relaxed);
-        *self
-            .passed_over
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) =
-            (!answered).then(|| Instant::now() + pass_over);
-        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(Reached {
+        *self.passed_over.locked() = (!answered).then(|| Instant::now() + pass_over);
+        *self.last.locked() = Some(Reached {
             address: self.address.clone(),
             answered,
             standby,
@@ -216,7 +210,7 @@ impl StorageClient {
         self.nodes
             .iter()
             .map(|node| {
-                let last = node.last.lock().unwrap_or_else(PoisonError::into_inner);
+                let last = node.last.locked();
                 (node.address.clone(), last.clone())
             })
             .collect()
@@ -275,18 +269,11 @@ impl StorageClient {
     }
 
     fn ask_node(&self, node: &Node, request: &Request) -> Result<Answer, Asked> {
-        let kept = node
-            .idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop();
+        let kept = node.idle.locked().pop();
         if let Some(mut connection) = kept
             && let Ok(answer) = exchange(&mut connection, request)
         {
-            node.idle
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(connection);
+            node.idle.locked().push(connection);
             return standby(answer);
         }
         let failed = |failure: String| Asked::Failed(failure);
@@ -297,10 +284,7 @@ impl StorageClient {
         self.standing(&mut connection)?;
         let answer =
             exchange(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
-        node.idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(connection);
+        node.idle.locked().push(connection);
         standby(answer)
     }
 

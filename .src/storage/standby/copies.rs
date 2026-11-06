@@ -12,8 +12,9 @@
 //! among them, are never copied ([`OWN`]).
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use xcore::wake::Revision;
 
@@ -104,15 +105,13 @@ impl Copies {
     }
 
     fn kept(&self, database: usize) -> MutexGuard<'_, Kept> {
-        self.kept[database]
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.kept[database].locked()
     }
 
     /// The history the numbers count.
     #[must_use]
     pub fn history(&self) -> u128 {
-        *self.history.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.history.locked()
     }
 
     /// The number the next write of each database takes.
@@ -125,7 +124,7 @@ impl Copies {
     /// whole from its primary.
     pub fn restart(&self, history: u128, next: [u64; DATABASES]) {
         let mut kept: Vec<MutexGuard<'_, Kept>> = (0..DATABASES).map(|d| self.kept(d)).collect();
-        *self.history.lock().unwrap_or_else(PoisonError::into_inner) = history;
+        *self.history.locked() = history;
         for (kept, next) in kept.iter_mut().zip(next) {
             **kept = Kept {
                 next,
