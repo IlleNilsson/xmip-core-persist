@@ -28,10 +28,11 @@
 //! index lacks it, and before the first release nothing migrates it.
 
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::columns::Columns;
 use super::commit::Batch;
-use super::record::{Form, read_u64, write_u64};
 use super::row::Value;
 use super::schema::Database;
 use crate::{EncryptedStore, Engine, IndexScan, PersistError};
@@ -96,7 +97,9 @@ pub(crate) fn places<R: Engine>(
 ) -> Result<Places, PersistError> {
     batch
         .read(store, kinds.places, &places_key(queue))?
-        .map_or(Ok(Places::default()), |bytes| Places::from_bytes(&bytes))
+        .map_or(Ok(Places::default()), |bytes| {
+            Ok(Places::from_bytes(&bytes)?)
+        })
 }
 
 /// An entry about `about` placed at the end of `queue`, in `batch`: the
@@ -259,16 +262,16 @@ fn placed_from<S: IndexScan + ?Sized>(
 
 impl Form for Places {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.first);
-        write_u64(out, self.next);
-        write_u64(out, self.count);
+        out.u64_be(self.first);
+        out.u64_be(self.next);
+        out.u64_be(self.count);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            first: read_u64(cursor)?,
-            next: read_u64(cursor)?,
-            count: read_u64(cursor)?,
+            first: cursor.u64_be()?,
+            next: cursor.u64_be()?,
+            count: cursor.u64_be()?,
         })
     }
 }

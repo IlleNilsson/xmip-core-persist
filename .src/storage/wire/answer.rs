@@ -1,7 +1,11 @@
 //! What Xmip Storage answers on the wire: a verdict, and what the
 //! operation returned or why it failed (`super`).
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::super::dead::{DeadEntry, DeadQueue, Replayed};
 use super::super::due::DueQueue;
@@ -10,14 +14,11 @@ use super::super::hold::HeldQueue;
 use super::super::instance::InstanceRecord;
 use super::super::kept_audit::KeptAudit;
 use super::super::record::{
-    AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord, StreamChunk, malformed,
-    read_byte, read_bytes, read_text, read_u32, read_u128, write_byte, write_bytes, write_text,
-    write_u32, write_u128,
+    AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::standby::Standing;
 use super::super::stream::StreamRecord;
-use crate::PersistError;
 
 /// What an operation answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,23 +70,23 @@ impl Answer {
     fn write_late(&self, out: &mut Vec<u8>) {
         match self {
             Self::Standing(standing) => {
-                write_byte(out, 21);
+                out.byte(21);
                 standing.write(out);
             }
             Self::Standby(reason) => {
-                write_byte(out, 22);
-                write_text(out, reason);
+                out.byte(22);
+                field::text(out, reason);
             }
             Self::Instance(record) => {
-                write_byte(out, 23);
+                out.byte(23);
                 write_optional(out, record.as_ref());
             }
             Self::Secret(record) => {
-                write_byte(out, 24);
+                out.byte(24);
                 write_optional(out, record.as_ref());
             }
             Self::Secrets(entries) => {
-                write_byte(out, 25);
+                out.byte(25);
                 entries.write(out);
             }
             _ => {}
@@ -94,14 +95,14 @@ impl Answer {
 }
 
 fn write_optional<T: Form>(out: &mut Vec<u8>, value: Option<&T>) {
-    write_byte(out, u8::from(value.is_some()));
+    out.byte(u8::from(value.is_some()));
     if let Some(value) = value {
         value.write(out);
     }
 }
 
-fn read_optional<T: Form>(cursor: &mut Cursor<'_>) -> Result<Option<T>, PersistError> {
-    match read_byte(cursor)? {
+fn read_optional<T: Form>(cursor: &mut Cursor<'_>) -> codec::Result<Option<T>> {
+    match cursor.byte()? {
         0 => Ok(None),
         _ => T::read(cursor).map(Some),
     }
@@ -110,92 +111,94 @@ fn read_optional<T: Form>(cursor: &mut Cursor<'_>) -> Result<Option<T>, PersistE
 impl Form for Answer {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
-            Self::Done => write_byte(out, 0),
+            Self::Done => {
+                out.byte(0);
+            }
             Self::Chunk(chunk) => {
-                write_byte(out, 1);
+                out.byte(1);
                 write_optional(out, chunk.as_ref());
             }
             Self::Message(record) => {
-                write_byte(out, 2);
+                out.byte(2);
                 write_optional(out, record.as_ref());
             }
             Self::Journey(record) => {
-                write_byte(out, 3);
+                out.byte(3);
                 write_optional(out, record.as_ref());
             }
             Self::Claim(claim) => {
-                write_byte(out, 4);
+                out.byte(4);
                 write_optional(out, claim.as_ref());
             }
             Self::Yes(yes) => {
-                write_byte(out, 5);
-                write_byte(out, u8::from(*yes));
+                out.byte(5);
+                out.byte(u8::from(*yes));
             }
             Self::Count(count) => {
-                write_byte(out, 6);
-                write_u32(out, *count);
+                out.byte(6);
+                out.u32_be(*count);
             }
             Self::Audit(entry) => {
-                write_byte(out, 7);
+                out.byte(7);
                 write_optional(out, entry.as_ref());
             }
             Self::Administration(record) => {
-                write_byte(out, 8);
+                out.byte(8);
                 write_optional(out, record.as_ref());
             }
             Self::Refused(scope, reason) => {
-                write_byte(out, 9);
-                write_text(out, scope);
-                write_text(out, reason);
+                out.byte(9);
+                field::text(out, scope);
+                field::text(out, reason);
             }
             Self::Failed(reason) => {
-                write_byte(out, 10);
-                write_text(out, reason);
+                out.byte(10);
+                field::text(out, reason);
             }
             Self::Held(queue) => {
-                write_byte(out, 11);
+                out.byte(11);
                 queue.write(out);
             }
             Self::DeadQueue(queue) => {
-                write_byte(out, 12);
+                out.byte(12);
                 queue.write(out);
             }
             Self::Dead(entry) => {
-                write_byte(out, 13);
+                out.byte(13);
                 entry.write(out);
             }
             Self::Replayed(replayed) => {
-                write_byte(out, 14);
+                out.byte(14);
                 replayed.write(out);
             }
             Self::Claims(held) => {
-                write_byte(out, 15);
+                out.byte(15);
                 held.write(out);
             }
             Self::Records(records) => {
-                write_byte(out, 16);
-                write_u32(out, u32::try_from(records.len()).unwrap_or(u32::MAX));
+                out.byte(16);
+                out.u32_be(u32::try_from(records.len()).unwrap_or(u32::MAX));
                 for record in records {
-                    write_u128(out, *record);
+                    out.u128_be(*record);
                 }
             }
             Self::Stream(stream) => {
-                write_byte(out, 17);
+                out.byte(17);
                 write_optional(out, stream.as_ref());
             }
             Self::Bytes(bytes) => {
-                write_byte(out, 18);
-                write_byte(out, u8::from(bytes.is_some()));
+                out.byte(18);
+                out.byte(u8::from(bytes.is_some()));
                 if let Some(bytes) = bytes {
-                    write_bytes(out, bytes);
+                    field::counted(out, bytes);
                 }
             }
             Self::FailedQueue(queue) => {
-                write_byte(out, 19);
+                out.byte(19);
                 queue.write(out);
             }
             Self::DueQueue(queue) => {
-                write_byte(out, 20);
+                out.byte(20);
                 queue.write(out);
             }
             // Numbered from 21 on.
@@ -203,42 +206,42 @@ impl Form for Answer {
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(match read_byte(cursor)? {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Ok(match cursor.byte()? {
             0 => Self::Done,
             1 => Self::Chunk(read_optional(cursor)?),
             2 => Self::Message(read_optional(cursor)?),
             3 => Self::Journey(read_optional(cursor)?),
             4 => Self::Claim(read_optional(cursor)?),
-            5 => Self::Yes(read_byte(cursor)? != 0),
-            6 => Self::Count(read_u32(cursor)?),
+            5 => Self::Yes(cursor.byte()? != 0),
+            6 => Self::Count(cursor.u32_be()?),
             7 => Self::Audit(read_optional(cursor)?),
             8 => Self::Administration(read_optional(cursor)?),
-            9 => Self::Refused(read_text(cursor)?, read_text(cursor)?),
-            10 => Self::Failed(read_text(cursor)?),
+            9 => Self::Refused(field::read_text(cursor)?, field::read_text(cursor)?),
+            10 => Self::Failed(field::read_text(cursor)?),
             11 => Self::Held(HeldQueue::read(cursor)?),
             12 => Self::DeadQueue(DeadQueue::read(cursor)?),
             13 => Self::Dead(DeadEntry::read(cursor)?),
             14 => Self::Replayed(Replayed::read(cursor)?),
             15 => Self::Claims(Vec::read(cursor)?),
             16 => Self::Records(
-                (0..read_u32(cursor)?)
-                    .map(|_| read_u128(cursor))
+                (0..cursor.u32_be()?)
+                    .map(|_| cursor.u128_be())
                     .collect::<Result<_, _>>()?,
             ),
             17 => Self::Stream(read_optional(cursor)?),
-            18 => Self::Bytes(match read_byte(cursor)? {
+            18 => Self::Bytes(match cursor.byte()? {
                 0 => None,
-                _ => Some(read_bytes(cursor)?),
+                _ => Some(field::read_counted(cursor)?.to_vec()),
             }),
             19 => Self::FailedQueue(FailedQueue::read(cursor)?),
             20 => Self::DueQueue(DueQueue::read(cursor)?),
             21 => Self::Standing(Standing::read(cursor)?),
-            22 => Self::Standby(read_text(cursor)?),
+            22 => Self::Standby(field::read_text(cursor)?),
             23 => Self::Instance(read_optional(cursor)?),
             24 => Self::Secret(read_optional(cursor)?),
             25 => Self::Secrets(Vec::read(cursor)?),
-            other => return Err(malformed(format!("no answer is numbered {other}"))),
+            other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }
 }

@@ -2,15 +2,14 @@
 //! `secret` table, each value sealed by Xmip before the record is written
 //! (`super::super::secret::sealed`), the record sealed whole again as every
 //! record here, and found by its name's index entry.
+use codec::form::Form;
 use xcore::lock::Locked;
 
-use xcore::SecretName;
-
-use super::super::record::Form;
 use super::super::row::Value;
 use super::super::secret::{KeptSecret, SEALING, SECRET, SecretEntry, SecretRecord};
 use super::Embedded;
 use crate::{Engine, PersistError};
+use xcore::SecretName;
 
 /// The table and the index a secret is found by.
 const BY_NAME: (&str, &str) = ("secret", "secret_name");
@@ -78,6 +77,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(SECRET, &id.to_be_bytes())?
             .map(|bytes| KeptSecret::from_bytes(&bytes))
             .transpose()
+            .map_err(PersistError::from)
     }
 }
 

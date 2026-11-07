@@ -7,15 +7,15 @@
 //! equality, as its column keeps it, in the clear; never by a pattern. A
 //! time is a span, both ends included.
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
-use super::record::{
-    AdministrationKind, Form, malformed, read_byte, read_text, read_u32, read_u64, read_u128,
-    write_byte, write_text, write_u32, write_u64, write_u128,
-};
+use super::record::AdministrationKind;
 use super::row::Value;
 use super::schema::Database;
-use crate::PersistError;
 
 /// From one time to another, both included, in nanoseconds since the Unix
 /// epoch.
@@ -192,14 +192,14 @@ impl Ask {
 
 impl Form for Span {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.from_unix_nanos);
-        write_u64(out, self.to_unix_nanos);
+        out.u64_be(self.from_unix_nanos);
+        out.u64_be(self.to_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            from_unix_nanos: read_u64(cursor)?,
-            to_unix_nanos: read_u64(cursor)?,
+            from_unix_nanos: cursor.u64_be()?,
+            to_unix_nanos: cursor.u64_be()?,
         })
     }
 }
@@ -208,14 +208,14 @@ impl Form for Ask {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
             Self::MessagesInState { state, updated } => {
-                write_byte(out, 1);
-                write_text(out, state);
+                out.byte(1);
+                field::text(out, state);
                 updated.write(out);
             }
             Self::MessagesAtSendPort { send_port, state } => {
-                write_byte(out, 2);
-                write_text(out, send_port);
-                write_text(out, state);
+                out.byte(2);
+                field::text(out, send_port);
+                field::text(out, state);
             }
             Self::JourneysAfter { journey: id }
             | Self::JourneysHolding { message: id }
@@ -223,13 +223,13 @@ impl Form for Ask {
             | Self::AuditOfJourney { journey: id }
             | Self::AuditOfMessage { message: id }
             | Self::AuditOfStream { stream: id } => {
-                write_byte(out, self.number());
-                write_u128(out, *id);
+                out.byte(self.number());
+                out.u128_be(*id);
             }
             Self::MessagesCreated { created: span }
             | Self::AuditOccurred { occurred: span }
             | Self::AuditFailed { occurred: span } => {
-                write_byte(out, self.number());
+                out.byte(self.number());
                 span.write(out);
             }
             Self::MessagesFromParty {
@@ -244,8 +244,8 @@ impl Form for Ask {
                 artifact: text,
                 occurred: span,
             } => {
-                write_byte(out, self.number());
-                write_text(out, text);
+                out.byte(self.number());
+                field::text(out, text);
                 span.write(out);
             }
             Self::Held { queue, held: span }
@@ -253,72 +253,72 @@ impl Form for Ask {
                 queue,
                 queued: span,
             } => {
-                write_byte(out, self.number());
-                write_u128(out, *queue);
+                out.byte(self.number());
+                out.u128_be(*queue);
                 span.write(out);
             }
             Self::AdministrationUpdated { kind, updated } => {
-                write_byte(out, 16);
+                out.byte(16);
                 kind.write(out);
                 updated.write(out);
             }
             Self::AuditChain { writer, from } => {
-                write_byte(out, self.number());
-                write_text(out, writer);
-                write_u64(out, *from);
+                out.byte(self.number());
+                field::text(out, writer);
+                out.u64_be(*from);
             }
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(match read_byte(cursor)? {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Ok(match cursor.byte()? {
             1 => Self::MessagesInState {
-                state: read_text(cursor)?,
+                state: field::read_text(cursor)?,
                 updated: Span::read(cursor)?,
             },
             2 => Self::MessagesAtSendPort {
-                send_port: read_text(cursor)?,
-                state: read_text(cursor)?,
+                send_port: field::read_text(cursor)?,
+                state: field::read_text(cursor)?,
             },
             3 => Self::JourneysAfter {
-                journey: read_u128(cursor)?,
+                journey: cursor.u128_be()?,
             },
             4 => Self::JourneysHolding {
-                message: read_u128(cursor)?,
+                message: cursor.u128_be()?,
             },
             5 => Self::MessagesCreated {
                 created: Span::read(cursor)?,
             },
             6 => Self::MessagesFromParty {
-                party: read_text(cursor)?,
+                party: field::read_text(cursor)?,
                 created: Span::read(cursor)?,
             },
             7 => Self::MessagesOfContract {
-                contract: read_text(cursor)?,
+                contract: field::read_text(cursor)?,
                 created: Span::read(cursor)?,
             },
             8 => Self::MessagesAfter {
-                message: read_u128(cursor)?,
+                message: cursor.u128_be()?,
             },
             9 => Self::Held {
-                queue: read_u128(cursor)?,
+                queue: cursor.u128_be()?,
                 held: Span::read(cursor)?,
             },
             10 => Self::DeadMessages {
-                queue: read_u128(cursor)?,
+                queue: cursor.u128_be()?,
                 queued: Span::read(cursor)?,
             },
             11 => Self::AuditOccurred {
                 occurred: Span::read(cursor)?,
             },
             12 => Self::AuditOfJourney {
-                journey: read_u128(cursor)?,
+                journey: cursor.u128_be()?,
             },
             13 => Self::AuditOfMessage {
-                message: read_u128(cursor)?,
+                message: cursor.u128_be()?,
             },
             14 => Self::AuditOfArtifact {
-                artifact: read_text(cursor)?,
+                artifact: field::read_text(cursor)?,
                 occurred: Span::read(cursor)?,
             },
             15 => Self::AuditFailed {
@@ -329,13 +329,13 @@ impl Form for Ask {
                 updated: Span::read(cursor)?,
             },
             17 => Self::AuditOfStream {
-                stream: read_u128(cursor)?,
+                stream: cursor.u128_be()?,
             },
             18 => Self::AuditChain {
-                writer: read_text(cursor)?,
-                from: read_u64(cursor)?,
+                writer: field::read_text(cursor)?,
+                from: cursor.u64_be()?,
             },
-            other => return Err(malformed(format!("no question is numbered {other}"))),
+            other => return Err(CodecError::new(format!("no question is numbered {other}"))),
         })
     }
 }
@@ -369,15 +369,15 @@ impl Ask {
 impl Form for Query {
     fn write(&self, out: &mut Vec<u8>) {
         self.ask.write(out);
-        write_u32(out, self.most);
-        write_byte(out, u8::from(self.newest_first));
+        out.u32_be(self.most);
+        out.byte(u8::from(self.newest_first));
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             ask: Ask::read(cursor)?,
-            most: read_u32(cursor)?,
-            newest_first: read_byte(cursor)? != 0,
+            most: cursor.u32_be()?,
+            newest_first: cursor.byte()? != 0,
         })
     }
 }

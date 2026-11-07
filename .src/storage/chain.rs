@@ -29,13 +29,15 @@
 //! here is found by the kept table's index on the writer and the number
 //! ([`super::Ask::AuditChain`]) and digested by [`chain_digest`].
 
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use sha2::{Digest as _, Sha256};
 use xcore::StreamId;
 
 use super::audit_entry::AuditEntry;
 use super::facts::AuditFacts;
 use super::kept_audit::KeptAudit;
-use super::record::{Form, malformed, write_u32};
+use super::record::malformed;
 use super::stream::{DIGEST, StreamRecord};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
@@ -56,7 +58,7 @@ pub fn canonical_form(kept: &KeptAudit, streams: &[StreamRecord]) -> Vec<u8> {
         ..kept.clone()
     };
     let mut out = unsealed.bytes();
-    write_u32(&mut out, u32::try_from(streams.len()).unwrap_or(u32::MAX));
+    out.u32_be(u32::try_from(streams.len()).unwrap_or(u32::MAX));
     for stream in streams {
         stream.write(&mut out);
     }

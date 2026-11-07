@@ -3,12 +3,13 @@
 //! 2026-10-01; ADR-0070).
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::AuditId;
 
 use super::audited::Audited;
 use super::facts::AuditFacts;
-use super::record::{Form, read_byte, read_bytes, read_u128, write_byte, write_bytes, write_u128};
-use crate::PersistError;
 
 /// An audit record as its writer said it: written to the runtime database
 /// first and moved to the audit database by the audit keeper
@@ -39,13 +40,13 @@ impl AuditEntry {
 
 impl Form for AuditEntry {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.id.value());
+        out.u128_be(self.id.value());
         write_body(out, &self.body, self.audited.as_ref());
         self.facts.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let id = AuditId::new(read_u128(cursor)?);
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let id = AuditId::new(cursor.u128_be()?);
         let AuditBody { body, audited } = AuditBody::read(cursor)?;
         Ok(Self {
             id,
@@ -68,8 +69,8 @@ pub struct AuditBody {
 
 /// The one writing of a body, in a record and in its chunks.
 fn write_body(out: &mut Vec<u8>, body: &[u8], audited: Option<&Audited>) {
-    write_bytes(out, body);
-    write_byte(out, u8::from(audited.is_some()));
+    field::counted(out, body);
+    out.byte(u8::from(audited.is_some()));
     if let Some(audited) = audited {
         audited.write(out);
     }
@@ -80,10 +81,10 @@ impl Form for AuditBody {
         write_body(out, &self.body, self.audited.as_ref());
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            body: read_bytes(cursor)?,
-            audited: match read_byte(cursor)? {
+            body: field::read_counted(cursor)?.to_vec(),
+            audited: match cursor.byte()? {
                 0 => None,
                 _ => Some(Audited::read(cursor)?),
             },

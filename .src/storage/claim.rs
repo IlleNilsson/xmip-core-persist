@@ -3,9 +3,11 @@
 //! *Work moves by claim*). Its writer decides each condition
 //! ([`super::commit`]); what a claim is written as is here.
 
+use codec::form::Form;
+
 use super::commit::{Batch, CLAIM, JOURNEY, MESSAGE};
 use super::hand_on::HandOn;
-use super::record::{Claim, Form, malformed, read_byte};
+use super::record::{Claim, malformed};
 use super::{failed, hold};
 use crate::{EncryptedStore, Engine, PersistError};
 
@@ -43,7 +45,7 @@ impl Stored {
 
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, PersistError> {
         let mut cursor = codec::cursor::Cursor::new(bytes);
-        let standing = match read_byte(&mut cursor)? {
+        let standing = match cursor.byte()? {
             0 => Standing::Held,
             1 => Standing::Released,
             2 => Standing::HandedOn,

@@ -6,13 +6,13 @@
 
 use std::time::{Duration, Instant};
 
+use codec::form::Form;
 use secret::KekName;
 use xcore::JourneyId;
 
 use super::super::columns::Columns;
 use super::super::commit::Batch;
 use super::super::hold::{self, Hold, KINDS};
-use super::super::record::Form;
 use super::super::schema::Database;
 use super::{Places, entry_key, page, places, places_key, take_out};
 use crate::fixture::Counted;

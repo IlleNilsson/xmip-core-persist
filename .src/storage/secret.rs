@@ -21,14 +21,14 @@
 
 use std::sync::Arc;
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::{Failure, Secret, SecretKind, SecretName, Secrets};
 
 use super::XmipStorage;
-use super::record::{
-    Form, malformed, read_bytes, read_text, read_u64, read_u128, write_bytes, write_text,
-    write_u64, write_u128,
-};
 use crate::PersistError;
 
 mod sealed;
@@ -75,56 +75,57 @@ impl SecretRecord {
 }
 
 fn write_kind(out: &mut Vec<u8>, kind: SecretKind) {
-    write_text(out, kind.word());
+    field::text(out, kind.word());
 }
 
-fn read_kind(cursor: &mut Cursor<'_>) -> Result<SecretKind, PersistError> {
-    let word = read_text(cursor)?;
-    SecretKind::named(&word).ok_or_else(|| malformed(format!("no secret kind is '{word}'")))
+fn read_kind(cursor: &mut Cursor<'_>) -> codec::Result<SecretKind> {
+    let word = field::read_text(cursor)?;
+    SecretKind::named(&word).ok_or_else(|| CodecError::new(format!("no secret kind is '{word}'")))
 }
 
-fn read_name(cursor: &mut Cursor<'_>) -> Result<SecretName, PersistError> {
-    SecretName::new(read_text(cursor)?).map_err(malformed)
+fn read_name(cursor: &mut Cursor<'_>) -> codec::Result<SecretName> {
+    SecretName::new(field::read_text(cursor)?).map_err(CodecError::new)
 }
 
 impl Form for SecretRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.id);
-        write_text(out, self.secret.name().as_str());
+        out.u128_be(self.id);
+        field::text(out, self.secret.name().as_str());
         write_kind(out, self.secret.kind());
-        write_bytes(out, self.secret.value());
-        write_u64(out, self.set_unix_nanos);
-        write_text(out, &self.set_by);
+        field::counted(out, self.secret.value());
+        out.u64_be(self.set_unix_nanos);
+        field::text(out, &self.set_by);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let id = read_u128(cursor)?;
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let id = cursor.u128_be()?;
         let name = read_name(cursor)?;
         let kind = read_kind(cursor)?;
-        let secret = Secret::new(name, kind, read_bytes(cursor)?).map_err(malformed)?;
+        let secret = Secret::new(name, kind, field::read_counted(cursor)?.to_vec())
+            .map_err(CodecError::new)?;
         Ok(Self {
             id,
             secret,
-            set_unix_nanos: read_u64(cursor)?,
-            set_by: read_text(cursor)?,
+            set_unix_nanos: cursor.u64_be()?,
+            set_by: field::read_text(cursor)?,
         })
     }
 }
 
 impl Form for SecretEntry {
     fn write(&self, out: &mut Vec<u8>) {
-        write_text(out, self.name.as_str());
+        field::text(out, self.name.as_str());
         write_kind(out, self.kind);
-        write_u64(out, self.set_unix_nanos);
-        write_text(out, &self.set_by);
+        out.u64_be(self.set_unix_nanos);
+        field::text(out, &self.set_by);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             name: read_name(cursor)?,
             kind: read_kind(cursor)?,
-            set_unix_nanos: read_u64(cursor)?,
-            set_by: read_text(cursor)?,
+            set_unix_nanos: cursor.u64_be()?,
+            set_by: field::read_text(cursor)?,
         })
     }
 }

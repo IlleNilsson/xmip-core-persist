@@ -28,15 +28,15 @@
 //! (`runtime-model.md` section 9, *Duplicates are a business decision*).
 
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::audit_entry::AuditEntry;
 use super::claim;
 use super::commit::{Batch, JOURNEY, MESSAGE, PUBLICATION};
 use super::dead::{self, DeadMessage};
 use super::hold::{self, Hold};
-use super::record::{
-    Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u64, write_byte, write_u64,
-};
+use super::record::{Claim, JourneyRecord, MessageRecord};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// A Message, the Journeys it opened, the ones held, its Dead Message Queue
@@ -137,27 +137,27 @@ impl Form for Publication {
         self.message.write(out);
         self.journeys.write(out);
         self.held.write(out);
-        write_byte(out, u8::from(self.dead.is_some()));
+        out.byte(u8::from(self.dead.is_some()));
         if let Some(dead) = &self.dead {
             dead.write(out);
         }
         self.audit.write(out);
         self.claims.write(out);
-        write_u64(out, self.lease_nanos);
+        out.u64_be(self.lease_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             message: MessageRecord::read(cursor)?,
             journeys: Vec::read(cursor)?,
             held: Vec::read(cursor)?,
-            dead: match read_byte(cursor)? {
+            dead: match cursor.byte()? {
                 0 => None,
                 _ => Some(DeadMessage::read(cursor)?),
             },
             audit: AuditEntry::read(cursor)?,
             claims: Vec::read(cursor)?,
-            lease_nanos: read_u64(cursor)?,
+            lease_nanos: cursor.u64_be()?,
         })
     }
 }

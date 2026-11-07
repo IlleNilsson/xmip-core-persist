@@ -10,8 +10,10 @@
 //! serialization, which the Ledger path decides; Xmip Storage keeps it as
 //! it is given, byte for byte.
 
+use codec::CodecError;
 use codec::cursor::Cursor;
 use codec::field;
+use codec::form::Form;
 use codec::writer::ByteWriter;
 use xcore::{JourneyId, MessageId, StreamId};
 
@@ -122,11 +124,11 @@ impl AdministrationKind {
         }
     }
 
-    fn numbered(number: u8) -> Result<Self, PersistError> {
+    fn numbered(number: u8) -> codec::Result<Self> {
         Self::ALL
             .into_iter()
             .find(|kind| kind.number() == number)
-            .ok_or_else(|| malformed(format!("no administration kind is numbered {number}")))
+            .ok_or_else(|| CodecError::new(format!("no administration kind is numbered {number}")))
     }
 }
 
@@ -141,135 +143,41 @@ pub struct AdministrationRecord {
     pub updated_unix_nanos: u64,
 }
 
-/// A record's one binary form.
-pub trait Form: Sized {
-    /// Written after what `out` holds.
-    fn write(&self, out: &mut Vec<u8>);
-
-    /// Read from where `cursor` is.
-    ///
-    /// # Errors
-    ///
-    /// [`PersistError::Record`] where the bytes are not one.
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError>;
-
-    /// The record alone, as bytes.
-    fn bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.write(&mut out);
-        out
-    }
-
-    /// The record `bytes` hold, and nothing after it.
-    ///
-    /// # Errors
-    ///
-    /// [`PersistError::Record`] where they are not one, or hold more.
-    fn from_bytes(bytes: &[u8]) -> Result<Self, PersistError> {
-        let mut cursor = Cursor::new(bytes);
-        let record = Self::read(&mut cursor)?;
-        if cursor.is_empty() {
-            Ok(record)
-        } else {
-            Err(malformed("bytes after the record"))
-        }
-    }
-}
-
+/// A record that would not encode or decode, in words: what is not a
+/// [`Form`]'s refusal. A refusal of one becomes a [`PersistError::Record`]
+/// through `From`, once, where the bytes came in.
 pub(crate) fn malformed(reason: impl Into<String>) -> PersistError {
     PersistError::Record {
         reason: reason.into(),
     }
 }
 
-fn read<T>(result: codec::Result<T>) -> Result<T, PersistError> {
-    result.map_err(|error| malformed(error.to_string()))
-}
-
-pub(crate) fn write_u128(out: &mut Vec<u8>, value: u128) {
-    out.u128_be(value);
-}
-
-pub(crate) fn read_u128(cursor: &mut Cursor<'_>) -> Result<u128, PersistError> {
-    read(cursor.u128_be())
-}
-
-pub(crate) fn write_i128(out: &mut Vec<u8>, value: i128) {
-    out.i128_be(value);
-}
-
-pub(crate) fn read_i128(cursor: &mut Cursor<'_>) -> Result<i128, PersistError> {
-    read(cursor.i128_be())
-}
-
-pub(crate) fn write_u32(out: &mut Vec<u8>, value: u32) {
-    out.u32_be(value);
-}
-
-pub(crate) fn read_u32(cursor: &mut Cursor<'_>) -> Result<u32, PersistError> {
-    read(cursor.u32_be())
-}
-
-pub(crate) fn write_u64(out: &mut Vec<u8>, value: u64) {
-    out.u64_be(value);
-}
-
-pub(crate) fn read_u64(cursor: &mut Cursor<'_>) -> Result<u64, PersistError> {
-    read(cursor.u64_be())
-}
-
-pub(crate) fn write_byte(out: &mut Vec<u8>, value: u8) {
-    out.byte(value);
-}
-
-pub(crate) fn read_byte(cursor: &mut Cursor<'_>) -> Result<u8, PersistError> {
-    read(cursor.byte())
-}
-
-/// Bytes, counted ([`codec::field::counted`]).
-pub(crate) fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    field::counted(out, bytes);
-}
-
-pub(crate) fn read_bytes(cursor: &mut Cursor<'_>) -> Result<Vec<u8>, PersistError> {
-    Ok(read(field::read_counted(cursor))?.to_vec())
-}
-
-pub(crate) fn write_text(out: &mut Vec<u8>, text: &str) {
-    field::text(out, text);
-}
-
-pub(crate) fn read_text(cursor: &mut Cursor<'_>) -> Result<String, PersistError> {
-    read(field::read_text(cursor))
-}
-
 impl Form for StreamChunk {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.stream.value());
-        write_u32(out, self.index);
-        write_bytes(out, &self.bytes);
+        out.u128_be(self.stream.value()).u32_be(self.index);
+        field::counted(out, &self.bytes);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            stream: StreamId::new(read_u128(cursor)?),
-            index: read_u32(cursor)?,
-            bytes: read_bytes(cursor)?,
+            stream: StreamId::new(cursor.u128_be()?),
+            index: cursor.u32_be()?,
+            bytes: field::read_counted(cursor)?.to_vec(),
         })
     }
 }
 
 impl Form for MessageRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.message.value());
-        write_bytes(out, &self.body);
+        out.u128_be(self.message.value());
+        field::counted(out, &self.body);
         self.facts.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            message: MessageId::new(read_u128(cursor)?),
-            body: read_bytes(cursor)?,
+            message: MessageId::new(cursor.u128_be()?),
+            body: field::read_counted(cursor)?.to_vec(),
             facts: MessageFacts::read(cursor)?,
         })
     }
@@ -277,15 +185,15 @@ impl Form for MessageRecord {
 
 impl Form for JourneyRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.journey.value());
-        write_bytes(out, &self.body);
+        out.u128_be(self.journey.value());
+        field::counted(out, &self.body);
         self.facts.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            journey: JourneyId::new(read_u128(cursor)?),
-            body: read_bytes(cursor)?,
+            journey: JourneyId::new(cursor.u128_be()?),
+            body: field::read_counted(cursor)?.to_vec(),
             facts: JourneyFacts::read(cursor)?,
         })
     }
@@ -293,80 +201,55 @@ impl Form for JourneyRecord {
 
 impl Form for Claim {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.journey.value());
-        write_text(out, &self.holder);
-        write_u128(out, self.token);
-        write_i128(out, self.until_unix_nanos);
-        write_u64(out, self.fence);
+        out.u128_be(self.journey.value());
+        field::text(out, &self.holder);
+        out.u128_be(self.token)
+            .i128_be(self.until_unix_nanos)
+            .u64_be(self.fence);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            journey: JourneyId::new(read_u128(cursor)?),
-            holder: read_text(cursor)?,
-            token: read_u128(cursor)?,
-            until_unix_nanos: read_i128(cursor)?,
+            journey: JourneyId::new(cursor.u128_be()?),
+            holder: field::read_text(cursor)?,
+            token: cursor.u128_be()?,
+            until_unix_nanos: cursor.i128_be()?,
             // A claim kept before fences were written ends here: it was
             // taken with none (`versioned`: a value added is read as
             // nothing where a record written before lacks it).
             fence: if cursor.is_empty() {
                 0
             } else {
-                read_u64(cursor)?
+                cursor.u64_be()?
             },
         })
     }
 }
 
-/// A record boxed is the record: an answer keeps a large one on the heap.
-impl<T: Form> Form for Box<T> {
-    fn write(&self, out: &mut Vec<u8>) {
-        (**self).write(out);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        T::read(cursor).map(Box::new)
-    }
-}
-
-impl<T: Form> Form for Vec<T> {
-    fn write(&self, out: &mut Vec<u8>) {
-        write_u32(out, u32::try_from(self.len()).unwrap_or(u32::MAX));
-        for item in self {
-            item.write(out);
-        }
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let count = read_u32(cursor)?;
-        (0..count).map(|_| T::read(cursor)).collect()
-    }
-}
-
 impl Form for AdministrationKind {
     fn write(&self, out: &mut Vec<u8>) {
-        write_byte(out, self.number());
+        out.byte(self.number());
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Self::numbered(read_byte(cursor)?)
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Self::numbered(cursor.byte()?)
     }
 }
 
 impl Form for AdministrationRecord {
     fn write(&self, out: &mut Vec<u8>) {
         self.kind.write(out);
-        write_u128(out, self.id);
-        write_bytes(out, &self.body);
-        write_u64(out, self.updated_unix_nanos);
+        out.u128_be(self.id);
+        field::counted(out, &self.body);
+        out.u64_be(self.updated_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             kind: AdministrationKind::read(cursor)?,
-            id: read_u128(cursor)?,
-            body: read_bytes(cursor)?,
-            updated_unix_nanos: read_u64(cursor)?,
+            id: cursor.u128_be()?,
+            body: field::read_counted(cursor)?.to_vec(),
+            updated_unix_nanos: cursor.u64_be()?,
         })
     }
 }

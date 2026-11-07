@@ -20,14 +20,14 @@
 //! never by reading the Send Port's whole queue.
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::JourneyId;
 
 use super::commit::Batch;
 use super::hold;
 use super::queue::{self, Kinds, Placed};
-use super::record::{
-    Form, read_i128, read_text, read_u64, read_u128, write_i128, write_text, write_u64, write_u128,
-};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where a hand-on leaves its Message Failed: the queue it waits in for an
@@ -155,53 +155,53 @@ pub(crate) fn read<R: Engine>(
 
 impl Form for Failure {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.queue);
-        write_text(out, &self.reason);
+        out.u128_be(self.queue);
+        field::text(out, &self.reason);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            queue: read_u128(cursor)?,
-            reason: read_text(cursor)?,
+            queue: cursor.u128_be()?,
+            reason: field::read_text(cursor)?,
         })
     }
 }
 
 impl Form for Failed {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.queue);
-        write_u64(out, self.sequence);
-        write_u128(out, self.journey.value());
-        write_u64(out, self.place);
-        write_text(out, &self.reason);
-        write_i128(out, self.failed_unix_nanos);
+        out.u128_be(self.queue);
+        out.u64_be(self.sequence);
+        out.u128_be(self.journey.value());
+        out.u64_be(self.place);
+        field::text(out, &self.reason);
+        out.i128_be(self.failed_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            queue: read_u128(cursor)?,
-            sequence: read_u64(cursor)?,
-            journey: JourneyId::new(read_u128(cursor)?),
-            place: read_u64(cursor)?,
-            reason: read_text(cursor)?,
-            failed_unix_nanos: read_i128(cursor)?,
+            queue: cursor.u128_be()?,
+            sequence: cursor.u64_be()?,
+            journey: JourneyId::new(cursor.u128_be()?),
+            place: cursor.u64_be()?,
+            reason: field::read_text(cursor)?,
+            failed_unix_nanos: cursor.i128_be()?,
         })
     }
 }
 
 impl Form for FailedQueue {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.first);
-        write_u64(out, self.next);
-        write_u64(out, self.count);
+        out.u64_be(self.first);
+        out.u64_be(self.next);
+        out.u64_be(self.count);
         self.failed.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            first: read_u64(cursor)?,
-            next: read_u64(cursor)?,
-            count: read_u64(cursor)?,
+            first: cursor.u64_be()?,
+            next: cursor.u64_be()?,
+            count: cursor.u64_be()?,
             failed: Vec::read(cursor)?,
         })
     }

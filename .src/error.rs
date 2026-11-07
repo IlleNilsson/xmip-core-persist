@@ -51,6 +51,16 @@ impl From<SecretError> for PersistError {
     }
 }
 
+/// Bytes that are not a record's form (`codec::form::Form`): turned into
+/// the store's error once, where the bytes came in, never per field.
+impl From<codec::CodecError> for PersistError {
+    fn from(error: codec::CodecError) -> Self {
+        Self::Record {
+            reason: error.message,
+        }
+    }
+}
+
 impl fmt::Display for PersistError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

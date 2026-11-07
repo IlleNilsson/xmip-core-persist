@@ -8,11 +8,11 @@
 //! chunk at a time (`super::ChunkReader::audit_body`), never whole.
 
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::{AuditId, StreamId};
 
 use super::facts::AuditFacts;
-use super::record::{Form, read_u32, read_u128, write_u32, write_u128};
-use crate::PersistError;
 
 /// Where the audit database keeps the chunks of each kept audit
 /// record's body: the `audit_body_chunk` table.
@@ -30,18 +30,18 @@ pub struct KeptAudit {
 
 impl Form for KeptAudit {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.id.value());
-        write_u32(out, u32::try_from(self.streams.len()).unwrap_or(u32::MAX));
+        out.u128_be(self.id.value());
+        out.u32_be(u32::try_from(self.streams.len()).unwrap_or(u32::MAX));
         for stream in &self.streams {
-            write_u128(out, stream.value());
+            out.u128_be(stream.value());
         }
         self.facts.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let id = AuditId::new(read_u128(cursor)?);
-        let streams = (0..read_u32(cursor)?)
-            .map(|_| read_u128(cursor).map(StreamId::new))
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let id = AuditId::new(cursor.u128_be()?);
+        let streams = (0..cursor.u32_be()?)
+            .map(|_| cursor.u128_be().map(StreamId::new))
             .collect::<Result<_, _>>()?;
         Ok(Self {
             id,

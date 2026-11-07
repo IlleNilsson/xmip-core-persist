@@ -13,15 +13,14 @@
 //! both keep this one form.
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use secret::DataKey;
 use xcore::{Secret, SecretKind, SecretName};
 
 use super::{SecretEntry, SecretRecord, read_kind, read_name, write_kind};
 use crate::PersistError;
-use crate::storage::record::{
-    Form, read_bytes, read_text, read_u64, read_u128, write_bytes, write_text, write_u64,
-    write_u128,
-};
 use crate::storage::row::{Columned, Row, Value};
 
 /// What a secret's value is sealed under: the administration database's
@@ -108,22 +107,22 @@ impl KeptSecret {
 
 impl Form for KeptSecret {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.id);
-        write_text(out, self.name.as_str());
+        out.u128_be(self.id);
+        field::text(out, self.name.as_str());
         write_kind(out, self.kind);
-        write_bytes(out, &self.sealed);
-        write_u64(out, self.set_unix_nanos);
-        write_text(out, &self.set_by);
+        field::counted(out, &self.sealed);
+        out.u64_be(self.set_unix_nanos);
+        field::text(out, &self.set_by);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            id: read_u128(cursor)?,
+            id: cursor.u128_be()?,
             name: read_name(cursor)?,
             kind: read_kind(cursor)?,
-            sealed: read_bytes(cursor)?,
-            set_unix_nanos: read_u64(cursor)?,
-            set_by: read_text(cursor)?,
+            sealed: field::read_counted(cursor)?.to_vec(),
+            set_unix_nanos: cursor.u64_be()?,
+            set_by: field::read_text(cursor)?,
         })
     }
 }

@@ -15,13 +15,11 @@
 //! ([`super::columns`]).
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
-use super::record::{
-    Form, read_byte, read_text, read_u32, read_u64, read_u128, write_byte, write_text, write_u32,
-    write_u64, write_u128,
-};
 use super::stream::{DIGEST, read_digest, write_digest};
-use crate::PersistError;
 
 /// A Journey's fields, as its record is written.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -146,71 +144,71 @@ pub struct AuditFacts {
 }
 
 fn write_text_maybe(out: &mut Vec<u8>, text: Option<&str>) {
-    write_byte(out, u8::from(text.is_some()));
+    out.byte(u8::from(text.is_some()));
     if let Some(text) = text {
-        write_text(out, text);
+        field::text(out, text);
     }
 }
 
-fn read_text_maybe(cursor: &mut Cursor<'_>) -> Result<Option<String>, PersistError> {
-    match read_byte(cursor)? {
+fn read_text_maybe(cursor: &mut Cursor<'_>) -> codec::Result<Option<String>> {
+    match cursor.byte()? {
         0 => Ok(None),
-        _ => read_text(cursor).map(Some),
+        _ => field::read_text(cursor).map(Some),
     }
 }
 
 fn write_id_maybe(out: &mut Vec<u8>, id: Option<u128>) {
-    write_byte(out, u8::from(id.is_some()));
+    out.byte(u8::from(id.is_some()));
     if let Some(id) = id {
-        write_u128(out, id);
+        out.u128_be(id);
     }
 }
 
-fn read_id_maybe(cursor: &mut Cursor<'_>) -> Result<Option<u128>, PersistError> {
-    match read_byte(cursor)? {
+fn read_id_maybe(cursor: &mut Cursor<'_>) -> codec::Result<Option<u128>> {
+    match cursor.byte()? {
         0 => Ok(None),
-        _ => read_u128(cursor).map(Some),
+        _ => cursor.u128_be().map(Some),
     }
 }
 
 impl Form for JourneyFacts {
     fn write(&self, out: &mut Vec<u8>) {
-        write_text(out, &self.state);
+        field::text(out, &self.state);
         write_id_maybe(out, self.previous_journey);
         write_text_maybe(out, self.subscription.as_deref());
         write_text_maybe(out, self.cause_work_process.as_deref());
-        write_u32(out, self.depth);
+        out.u32_be(self.depth);
         write_text_maybe(out, self.work_process.as_deref());
         write_text_maybe(out, self.send_port.as_deref());
-        write_u32(out, self.send_location);
-        write_u32(out, self.attempts);
+        out.u32_be(self.send_location);
+        out.u32_be(self.attempts);
         write_id_maybe(out, self.message);
         write_id_maybe(out, self.origin);
-        write_byte(out, u8::from(self.open));
+        out.byte(u8::from(self.open));
         write_id_maybe(out, self.group_delivery);
-        write_byte(out, u8::from(self.group_open));
-        write_u64(out, self.created_unix_nanos);
-        write_u64(out, self.updated_unix_nanos);
+        out.byte(u8::from(self.group_open));
+        out.u64_be(self.created_unix_nanos);
+        out.u64_be(self.updated_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            state: read_text(cursor)?,
+            state: field::read_text(cursor)?,
             previous_journey: read_id_maybe(cursor)?,
             subscription: read_text_maybe(cursor)?,
             cause_work_process: read_text_maybe(cursor)?,
-            depth: read_u32(cursor)?,
+            depth: cursor.u32_be()?,
             work_process: read_text_maybe(cursor)?,
             send_port: read_text_maybe(cursor)?,
-            send_location: read_u32(cursor)?,
-            attempts: read_u32(cursor)?,
+            send_location: cursor.u32_be()?,
+            attempts: cursor.u32_be()?,
             message: read_id_maybe(cursor)?,
             origin: read_id_maybe(cursor)?,
-            open: read_byte(cursor)? != 0,
+            open: cursor.byte()? != 0,
             group_delivery: read_id_maybe(cursor)?,
-            group_open: read_byte(cursor)? != 0,
-            created_unix_nanos: read_u64(cursor)?,
-            updated_unix_nanos: read_u64(cursor)?,
+            group_open: cursor.byte()? != 0,
+            created_unix_nanos: cursor.u64_be()?,
+            updated_unix_nanos: cursor.u64_be()?,
         })
     }
 }
@@ -218,52 +216,52 @@ impl Form for JourneyFacts {
 impl Form for MessageFacts {
     fn write(&self, out: &mut Vec<u8>) {
         write_id_maybe(out, self.previous_message);
-        write_u32(out, self.generation);
+        out.u32_be(self.generation);
         for word in [
             &self.created_by,
             &self.priority,
             &self.execution_profile,
             &self.durability,
         ] {
-            write_text(out, word);
+            field::text(out, word);
         }
-        write_u64(out, self.size_bytes);
+        out.u64_be(self.size_bytes);
         write_text_maybe(out, self.party.as_deref());
         write_text_maybe(out, self.contract.as_deref());
         write_id_maybe(out, self.stream);
-        write_u64(out, self.created_unix_nanos);
+        out.u64_be(self.created_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             previous_message: read_id_maybe(cursor)?,
-            generation: read_u32(cursor)?,
-            created_by: read_text(cursor)?,
-            priority: read_text(cursor)?,
-            execution_profile: read_text(cursor)?,
-            durability: read_text(cursor)?,
-            size_bytes: read_u64(cursor)?,
+            generation: cursor.u32_be()?,
+            created_by: field::read_text(cursor)?,
+            priority: field::read_text(cursor)?,
+            execution_profile: field::read_text(cursor)?,
+            durability: field::read_text(cursor)?,
+            size_bytes: cursor.u64_be()?,
             party: read_text_maybe(cursor)?,
             contract: read_text_maybe(cursor)?,
             stream: read_id_maybe(cursor)?,
-            created_unix_nanos: read_u64(cursor)?,
+            created_unix_nanos: cursor.u64_be()?,
         })
     }
 }
 
 impl Form for AuditFacts {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.occurred_unix_nanos);
+        out.u64_be(self.occurred_unix_nanos);
         for text in [&self.action, &self.phase, &self.severity] {
-            write_text(out, text);
+            field::text(out, text);
         }
-        write_byte(out, u8::from(self.failed));
+        out.byte(u8::from(self.failed));
         write_text_maybe(out, self.text.as_deref());
-        write_text(out, &self.program);
-        write_text(out, &self.host);
-        write_u32(out, self.process);
+        field::text(out, &self.program);
+        field::text(out, &self.host);
+        out.u32_be(self.process);
         write_text_maybe(out, self.location.as_deref());
-        write_byte(out, u8::from(self.hidden));
+        out.byte(u8::from(self.hidden));
         for id in [self.execution, self.journey, self.message] {
             write_id_maybe(out, id);
         }
@@ -276,29 +274,29 @@ impl Form for AuditFacts {
         }
         write_text_maybe(out, self.node.as_deref());
         write_text_maybe(out, self.cluster.as_deref());
-        write_text(out, &self.writer);
-        write_u64(out, self.position);
+        field::text(out, &self.writer);
+        out.u64_be(self.position);
         write_digest(out, &self.previous);
         write_digest(out, &self.digest);
-        write_u64(out, self.body_length);
-        write_u32(out, self.body_chunks);
+        out.u64_be(self.body_length);
+        out.u32_be(self.body_chunks);
         write_digest(out, &self.body_digest);
-        write_u64(out, self.kept_unix_nanos);
+        out.u64_be(self.kept_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            occurred_unix_nanos: read_u64(cursor)?,
-            action: read_text(cursor)?,
-            phase: read_text(cursor)?,
-            severity: read_text(cursor)?,
-            failed: read_byte(cursor)? != 0,
+            occurred_unix_nanos: cursor.u64_be()?,
+            action: field::read_text(cursor)?,
+            phase: field::read_text(cursor)?,
+            severity: field::read_text(cursor)?,
+            failed: cursor.byte()? != 0,
             text: read_text_maybe(cursor)?,
-            program: read_text(cursor)?,
-            host: read_text(cursor)?,
-            process: read_u32(cursor)?,
+            program: field::read_text(cursor)?,
+            host: field::read_text(cursor)?,
+            process: cursor.u32_be()?,
             location: read_text_maybe(cursor)?,
-            hidden: read_byte(cursor)? != 0,
+            hidden: cursor.byte()? != 0,
             execution: read_id_maybe(cursor)?,
             journey: read_id_maybe(cursor)?,
             message: read_id_maybe(cursor)?,
@@ -307,14 +305,14 @@ impl Form for AuditFacts {
             artifact_version: read_text_maybe(cursor)?,
             node: read_text_maybe(cursor)?,
             cluster: read_text_maybe(cursor)?,
-            writer: read_text(cursor)?,
-            position: read_u64(cursor)?,
+            writer: field::read_text(cursor)?,
+            position: cursor.u64_be()?,
             previous: read_digest(cursor)?,
             digest: read_digest(cursor)?,
-            body_length: read_u64(cursor)?,
-            body_chunks: read_u32(cursor)?,
+            body_length: cursor.u64_be()?,
+            body_chunks: cursor.u32_be()?,
             body_digest: read_digest(cursor)?,
-            kept_unix_nanos: read_u64(cursor)?,
+            kept_unix_nanos: cursor.u64_be()?,
         })
     }
 }
