@@ -392,6 +392,7 @@ impl Read for ChunkReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_chunk_not_as_kept_is_evidence_and_storage_not_answering_is_not() {
@@ -406,10 +407,10 @@ mod tests {
         let error = unread(unreachable);
         assert_eq!(error.kind(), io::ErrorKind::Other);
         let inner = error.into_inner().expect("its cause");
-        assert!(matches!(
+        assert_matches!(
             inner.downcast::<PersistError>().as_deref(),
             Ok(PersistError::Unreachable { .. })
-        ));
+        );
     }
 
     #[test]

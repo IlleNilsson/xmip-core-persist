@@ -151,6 +151,7 @@ impl Columned for KeptSecret {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn a_value_is_kept_sealed_and_opens_only_under_its_name_and_kind() {
@@ -183,10 +184,7 @@ mod tests {
             name: SecretName::new("partner-y").expect("a name"),
             ..kept.clone()
         };
-        assert!(matches!(
-            moved.opened(&key),
-            Err(PersistError::Refused { .. })
-        ));
+        assert_matches!(moved.opened(&key), Err(PersistError::Refused { .. }));
         assert!(
             kept.opened(&DataKey::generate()).is_err(),
             "another key opens nothing"
