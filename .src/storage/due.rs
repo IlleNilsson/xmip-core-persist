@@ -23,15 +23,16 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::columns::Columns;
 use super::commit::{Batch, DUE_PLACES, HELD};
 use super::hold::{Held, KINDS};
 use super::queue::{self, entry_key, places_key};
-use super::record::{
-    Form, malformed, read_byte, read_i128, read_u64, write_byte, write_i128, write_u64,
-};
+use super::record::malformed;
 use super::row::{Value, nanos};
 use super::schema::Database;
 use crate::{EncryptedStore, Engine, PersistError};
@@ -303,45 +304,44 @@ fn kept<R: Engine>(
         None => store.get(DUE_PLACES, &key)?,
     };
     bytes.map_or(Ok(DuePlaces::default()), |bytes| {
-        DuePlaces::from_bytes(&bytes)
+        DuePlaces::from_bytes(&bytes).map_err(PersistError::from)
     })
 }
 
 impl Form for DuePlaces {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.fresh);
-        write_u64(out, self.retry.0);
-        write_u64(out, self.retry.1);
-        write_u64(out, self.retrying);
+        out.u64_be(self.fresh);
+        out.u64_be(self.retry.0);
+        out.u64_be(self.retry.1);
+        out.u64_be(self.retrying);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            fresh: read_u64(cursor)?,
-            retry: (read_u64(cursor)?, read_u64(cursor)?),
-            retrying: read_u64(cursor)?,
+            fresh: cursor.u64_be()?,
+            retry: (cursor.u64_be()?, cursor.u64_be()?),
+            retrying: cursor.u64_be()?,
         })
     }
 }
 
 impl Form for DuePart {
     fn write(&self, out: &mut Vec<u8>) {
-        write_byte(
-            out,
-            match self {
-                Self::Due => 0,
-                Self::Waiting => 1,
-                Self::Failed => 2,
-            },
-        );
+        out.byte(match self {
+            Self::Due => 0,
+            Self::Waiting => 1,
+            Self::Failed => 2,
+        });
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        match read_byte(cursor)? {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        match cursor.byte()? {
             0 => Ok(Self::Due),
             1 => Ok(Self::Waiting),
             2 => Ok(Self::Failed),
-            other => Err(malformed(format!("no part of a queue is numbered {other}"))),
+            other => Err(CodecError::new(format!(
+                "no part of a queue is numbered {other}"
+            ))),
         }
     }
 }
@@ -349,22 +349,22 @@ impl Form for DuePart {
 impl Form for DueQueue {
     fn write(&self, out: &mut Vec<u8>) {
         self.held.write(out);
-        write_u64(out, self.retrying);
-        write_byte(out, u8::from(self.next_due_unix_nanos.is_some()));
-        write_i128(out, self.next_due_unix_nanos.unwrap_or_default());
-        write_i128(out, self.read_unix_nanos);
+        out.u64_be(self.retrying);
+        out.byte(u8::from(self.next_due_unix_nanos.is_some()));
+        out.i128_be(self.next_due_unix_nanos.unwrap_or_default());
+        out.i128_be(self.read_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             held: Vec::read(cursor)?,
-            retrying: read_u64(cursor)?,
+            retrying: cursor.u64_be()?,
             next_due_unix_nanos: {
-                let waits = read_byte(cursor)? != 0;
-                let due = read_i128(cursor)?;
+                let waits = cursor.byte()? != 0;
+                let due = cursor.i128_be()?;
                 waits.then_some(due)
             },
-            read_unix_nanos: read_i128(cursor)?,
+            read_unix_nanos: cursor.i128_be()?,
         })
     }
 }

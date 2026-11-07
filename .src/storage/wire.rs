@@ -11,9 +11,14 @@
 //! Storage node per caller in flight, so many requests are in flight at
 //! once and the Storage node's writer shares their sync.
 
+use std::io::{self, Read, Write};
 use std::time::Duration;
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::{AuditId, JourneyId, MessageId, SecretName, StreamId};
 
 use super::audit_entry::AuditEntry;
@@ -24,21 +29,16 @@ use super::instance::Turn;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
-    AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
-    StreamChunk, malformed, read_byte, read_text, read_u32, read_u64, read_u128, write_byte,
-    write_text, write_u32, write_u64, write_u128,
+    AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::secret::SecretRecord;
 use super::standby::Follow;
 use super::stream::StreamRecord;
-use crate::PersistError;
 
 mod answer;
-mod frame;
 mod operation;
 
 pub(crate) use answer::Answer;
-pub(crate) use frame::{receive, send};
 
 /// One operation asked of Xmip Storage, with its fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,70 +96,74 @@ impl Request {
     fn write_late(&self, out: &mut Vec<u8>) {
         match self {
             Self::Query(query) => {
-                write_byte(out, 22);
+                out.byte(22);
                 query.write(out);
             }
             Self::WriteStream(last, stream) => {
-                write_byte(out, 23);
+                out.byte(23);
                 last.write(out);
                 stream.write(out);
             }
             Self::ReadStream(id) => {
-                write_byte(out, 24);
-                write_u128(out, id.value());
+                out.byte(24);
+                out.u128_be(id.value());
             }
             Self::ReadKeptAuditChunk(id, stream, index) => {
-                write_byte(out, 25);
-                write_u128(out, id.value());
-                write_byte(out, u8::from(stream.is_some()));
-                write_u128(out, stream.map_or(0, StreamId::value));
-                write_u32(out, *index);
+                out.byte(25);
+                out.u128_be(id.value());
+                out.byte(u8::from(stream.is_some()));
+                out.u128_be(stream.map_or(0, StreamId::value));
+                out.u32_be(*index);
             }
             Self::ReadKeptAuditStream(id, stream) => {
-                write_byte(out, 26);
-                write_u128(out, id.value());
-                write_u128(out, stream.value());
+                out.byte(26);
+                out.u128_be(id.value());
+                out.u128_be(stream.value());
             }
             Self::ReadFailed(queue, from, most) => {
-                write_byte(out, 27);
-                write_u128(out, *queue);
-                write_u64(out, *from);
-                write_u32(out, *most);
+                out.byte(27);
+                out.u128_be(*queue);
+                out.u64_be(*from);
+                out.u32_be(*most);
             }
             Self::ReadDue(queue, part, (due, place), most) => {
-                write_byte(out, 28);
-                write_u128(out, *queue);
+                out.byte(28);
+                out.u128_be(*queue);
                 part.write(out);
-                write_u64(out, *due);
-                write_u64(out, *place);
-                write_u32(out, *most);
+                out.u64_be(*due);
+                out.u64_be(*place);
+                out.u32_be(*most);
             }
-            Self::Standing => write_byte(out, 29),
+            Self::Standing => {
+                out.byte(29);
+            }
             Self::Follow(follow) => {
-                write_byte(out, 30);
+                out.byte(30);
                 follow.write(out);
             }
             Self::Turn(turn) => {
-                write_byte(out, 31);
+                out.byte(31);
                 turn.write(out);
             }
             Self::ReadInstance(id) => {
-                write_byte(out, 32);
-                write_u128(out, *id);
+                out.byte(32);
+                out.u128_be(*id);
             }
             Self::ReadInstanceKey(id) => {
-                write_byte(out, 33);
-                write_u128(out, *id);
+                out.byte(33);
+                out.u128_be(*id);
             }
             Self::WriteSecret(secret) => {
-                write_byte(out, 34);
+                out.byte(34);
                 secret.write(out);
             }
             Self::ReadSecret(name) => {
-                write_byte(out, 35);
-                write_text(out, name.as_str());
+                out.byte(35);
+                field::text(out, name.as_str());
             }
-            Self::ListSecrets => write_byte(out, 36),
+            Self::ListSecrets => {
+                out.byte(36);
+            }
             _ => {}
         }
     }
@@ -177,94 +181,94 @@ impl Form for Request {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
             Self::WriteChunk(chunk) => {
-                write_byte(out, 1);
+                out.byte(1);
                 chunk.write(out);
             }
             Self::ReadChunk(stream, index) => {
-                write_byte(out, 2);
-                write_u128(out, stream.value());
-                write_u32(out, *index);
+                out.byte(2);
+                out.u128_be(stream.value());
+                out.u32_be(*index);
             }
             Self::WriteMessage(message) => {
-                write_byte(out, 3);
+                out.byte(3);
                 message.write(out);
             }
             Self::ReadMessage(id) => {
-                write_byte(out, 4);
-                write_u128(out, id.value());
+                out.byte(4);
+                out.u128_be(id.value());
             }
             Self::WriteJourney(journey) => {
-                write_byte(out, 5);
+                out.byte(5);
                 journey.write(out);
             }
             Self::ReadJourney(id) => {
-                write_byte(out, 6);
-                write_u128(out, id.value());
+                out.byte(6);
+                out.u128_be(id.value());
             }
             Self::Claim(claim, lease) => {
-                write_byte(out, 7);
+                out.byte(7);
                 claim.write(out);
-                write_u64(out, *lease);
+                out.u64_be(*lease);
             }
             Self::Renew(claims, lease) => {
-                write_byte(out, 8);
+                out.byte(8);
                 claims.write(out);
-                write_u64(out, *lease);
+                out.u64_be(*lease);
             }
             Self::Release(claim) => {
-                write_byte(out, 9);
+                out.byte(9);
                 claim.write(out);
             }
             Self::HandOn(hand_on) => {
-                write_byte(out, 10);
+                out.byte(10);
                 hand_on.write(out);
             }
             Self::WriteAudit(entry) => {
-                write_byte(out, 11);
+                out.byte(11);
                 entry.write(out);
             }
             Self::KeepAudit(most, chunk) => {
-                write_byte(out, 12);
-                write_u32(out, *most);
-                write_u64(out, *chunk);
+                out.byte(12);
+                out.u32_be(*most);
+                out.u64_be(*chunk);
             }
             Self::ReadKeptAudit(id) => {
-                write_byte(out, 13);
-                write_u128(out, id.value());
+                out.byte(13);
+                out.u128_be(id.value());
             }
             Self::WriteAdministration(record) => {
-                write_byte(out, 14);
+                out.byte(14);
                 record.write(out);
             }
             Self::ReadAdministration(kind, id) | Self::RemoveAdministration(kind, id) => {
                 let read = matches!(self, Self::ReadAdministration(..));
-                write_byte(out, if read { 15 } else { 16 });
+                out.byte(if read { 15 } else { 16 });
                 kind.write(out);
-                write_u128(out, *id);
+                out.u128_be(*id);
             }
             Self::Publish(publication) => {
-                write_byte(out, 17);
+                out.byte(17);
                 publication.write(out);
             }
             Self::ReadHeld(queue, from, most) => {
-                write_byte(out, 18);
-                write_u128(out, *queue);
-                write_u64(out, *from);
-                write_u32(out, *most);
+                out.byte(18);
+                out.u128_be(*queue);
+                out.u64_be(*from);
+                out.u32_be(*most);
             }
             Self::ReadDead(queue, from, most) => {
-                write_byte(out, 19);
-                write_u128(out, *queue);
-                write_u64(out, *from);
-                write_u32(out, *most);
+                out.byte(19);
+                out.u128_be(*queue);
+                out.u64_be(*from);
+                out.u32_be(*most);
             }
             Self::ReadDeadMessage(queue, message) => {
-                write_byte(out, 20);
-                write_u128(out, *queue);
-                write_u128(out, message.value());
+                out.byte(20);
+                out.u128_be(*queue);
+                out.u128_be(message.value());
             }
             Self::Replay(replay) => {
-                write_byte(out, 21);
+                out.byte(21);
                 replay.write(out);
             }
             // Numbered from 22 on.
@@ -272,60 +276,93 @@ impl Form for Request {
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        Ok(match read_byte(cursor)? {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Ok(match cursor.byte()? {
             1 => Self::WriteChunk(StreamChunk::read(cursor)?),
-            2 => Self::ReadChunk(StreamId::new(read_u128(cursor)?), read_u32(cursor)?),
+            2 => Self::ReadChunk(StreamId::new(cursor.u128_be()?), cursor.u32_be()?),
             3 => Self::WriteMessage(MessageRecord::read(cursor)?),
-            4 => Self::ReadMessage(MessageId::new(read_u128(cursor)?)),
+            4 => Self::ReadMessage(MessageId::new(cursor.u128_be()?)),
             5 => Self::WriteJourney(JourneyRecord::read(cursor)?),
-            6 => Self::ReadJourney(JourneyId::new(read_u128(cursor)?)),
-            7 => Self::Claim(Claim::read(cursor)?, read_u64(cursor)?),
-            8 => Self::Renew(Vec::read(cursor)?, read_u64(cursor)?),
+            6 => Self::ReadJourney(JourneyId::new(cursor.u128_be()?)),
+            7 => Self::Claim(Claim::read(cursor)?, cursor.u64_be()?),
+            8 => Self::Renew(Vec::read(cursor)?, cursor.u64_be()?),
             9 => Self::Release(Claim::read(cursor)?),
             10 => Self::HandOn(HandOn::read(cursor)?),
             11 => Self::WriteAudit(AuditEntry::read(cursor)?),
-            12 => Self::KeepAudit(read_u32(cursor)?, read_u64(cursor)?),
-            13 => Self::ReadKeptAudit(AuditId::new(read_u128(cursor)?)),
+            12 => Self::KeepAudit(cursor.u32_be()?, cursor.u64_be()?),
+            13 => Self::ReadKeptAudit(AuditId::new(cursor.u128_be()?)),
             14 => Self::WriteAdministration(AdministrationRecord::read(cursor)?),
-            15 => Self::ReadAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
-            16 => Self::RemoveAdministration(AdministrationKind::read(cursor)?, read_u128(cursor)?),
+            15 => Self::ReadAdministration(AdministrationKind::read(cursor)?, cursor.u128_be()?),
+            16 => Self::RemoveAdministration(AdministrationKind::read(cursor)?, cursor.u128_be()?),
             17 => Self::Publish(Box::new(Publication::read(cursor)?)),
-            18 => Self::ReadHeld(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
-            19 => Self::ReadDead(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
-            20 => Self::ReadDeadMessage(read_u128(cursor)?, MessageId::new(read_u128(cursor)?)),
+            18 => Self::ReadHeld(cursor.u128_be()?, cursor.u64_be()?, cursor.u32_be()?),
+            19 => Self::ReadDead(cursor.u128_be()?, cursor.u64_be()?, cursor.u32_be()?),
+            20 => Self::ReadDeadMessage(cursor.u128_be()?, MessageId::new(cursor.u128_be()?)),
             21 => Self::Replay(Box::new(Replay::read(cursor)?)),
             22 => Self::Query(Query::read(cursor)?),
             23 => Self::WriteStream(StreamChunk::read(cursor)?, StreamRecord::read(cursor)?),
-            24 => Self::ReadStream(StreamId::new(read_u128(cursor)?)),
+            24 => Self::ReadStream(StreamId::new(cursor.u128_be()?)),
             25 => {
-                let id = AuditId::new(read_u128(cursor)?);
-                let carried = read_byte(cursor)? != 0;
-                let stream = StreamId::new(read_u128(cursor)?);
-                Self::ReadKeptAuditChunk(id, carried.then_some(stream), read_u32(cursor)?)
+                let id = AuditId::new(cursor.u128_be()?);
+                let carried = cursor.byte()? != 0;
+                let stream = StreamId::new(cursor.u128_be()?);
+                Self::ReadKeptAuditChunk(id, carried.then_some(stream), cursor.u32_be()?)
             }
             26 => {
-                let id = AuditId::new(read_u128(cursor)?);
-                Self::ReadKeptAuditStream(id, StreamId::new(read_u128(cursor)?))
+                let id = AuditId::new(cursor.u128_be()?);
+                Self::ReadKeptAuditStream(id, StreamId::new(cursor.u128_be()?))
             }
-            27 => Self::ReadFailed(read_u128(cursor)?, read_u64(cursor)?, read_u32(cursor)?),
+            27 => Self::ReadFailed(cursor.u128_be()?, cursor.u64_be()?, cursor.u32_be()?),
             28 => Self::ReadDue(
-                read_u128(cursor)?,
+                cursor.u128_be()?,
                 DuePart::read(cursor)?,
-                (read_u64(cursor)?, read_u64(cursor)?),
-                read_u32(cursor)?,
+                (cursor.u64_be()?, cursor.u64_be()?),
+                cursor.u32_be()?,
             ),
             29 => Self::Standing,
             30 => Self::Follow(Follow::read(cursor)?),
             31 => Self::Turn(Box::new(Turn::read(cursor)?)),
-            32 => Self::ReadInstance(read_u128(cursor)?),
-            33 => Self::ReadInstanceKey(read_u128(cursor)?),
+            32 => Self::ReadInstance(cursor.u128_be()?),
+            33 => Self::ReadInstanceKey(cursor.u128_be()?),
             34 => Self::WriteSecret(Box::new(SecretRecord::read(cursor)?)),
-            35 => Self::ReadSecret(SecretName::new(read_text(cursor)?).map_err(malformed)?),
+            35 => Self::ReadSecret(
+                SecretName::new(field::read_text(cursor)?).map_err(CodecError::new)?,
+            ),
             36 => Self::ListSecrets,
-            other => return Err(malformed(format!("no operation is numbered {other}"))),
+            other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }
+}
+
+/// Write `record` as one frame (`net::frame`).
+///
+/// # Errors
+///
+/// Where the connection fails, or the record is larger than a frame holds.
+pub(crate) fn send(connection: &mut impl Write, record: &impl Form) -> io::Result<()> {
+    net::frame::write(connection, &record.bytes()).map_err(failed)
+}
+
+/// Read one frame, and the record in it. `None` where the connection ended
+/// cleanly before a frame began.
+///
+/// # Errors
+///
+/// Where the connection fails or ends inside a frame, or the frame is not
+/// a record.
+pub(crate) fn receive<T: Form>(connection: &mut impl Read) -> io::Result<Option<T>> {
+    let Some(bytes) = net::frame::read(connection).map_err(failed)? else {
+        return Ok(None);
+    };
+    T::from_bytes(&bytes)
+        .map(Some)
+        .map_err(|error| io::Error::other(format!("a frame that is not a record: {error}")))
+}
+
+/// A frame's failure as the connection's error, its kind kept where it
+/// was the connection's.
+fn failed(error: net::NetError) -> io::Error {
+    io::Error::new(error.io.unwrap_or(io::ErrorKind::Other), error.message)
 }
 
 #[cfg(test)]

@@ -369,7 +369,8 @@ pub fn kept_as_written(
     storage: &dyn crate::storage::XmipStorage,
     id: xcore::AuditId,
 ) -> Option<crate::storage::AuditEntry> {
-    use crate::storage::{AuditBody, AuditEntry, AuditFacts, ChunkReader, Form};
+    use crate::storage::{AuditBody, AuditEntry, AuditFacts, ChunkReader};
+    use codec::form::Form;
     use std::io::Read;
     let kept = storage.read_kept_audit(id).expect("read")?;
     let mut body = Vec::new();

@@ -33,14 +33,13 @@
 //! the administration database is found under the same.
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::JourneyId;
 
 use super::commit::{Batch, HELD, HELD_JOURNEY, PLACES};
 use super::queue::{self, Kinds};
-use super::record::{
-    Form, read_byte, read_bytes, read_i128, read_u64, read_u128, write_byte, write_bytes,
-    write_i128, write_u64, write_u128,
-};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// A Message to hold: which queue, which Journey, and what the holder
@@ -307,39 +306,39 @@ pub(crate) fn read<R: Engine>(
 
 impl Form for Hold {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.queue);
-        write_u128(out, self.journey.value());
-        write_bytes(out, &self.body);
+        out.u128_be(self.queue);
+        out.u128_be(self.journey.value());
+        field::counted(out, &self.body);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            queue: read_u128(cursor)?,
-            journey: JourneyId::new(read_u128(cursor)?),
-            body: read_bytes(cursor)?,
+            queue: cursor.u128_be()?,
+            journey: JourneyId::new(cursor.u128_be()?),
+            body: field::read_counted(cursor)?.to_vec(),
         })
     }
 }
 
 impl Form for Held {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.sequence);
+        out.u64_be(self.sequence);
         self.hold.write(out);
-        write_u64(out, self.held_unix_nanos);
-        write_byte(out, u8::from(self.failed));
-        write_byte(out, u8::from(self.due_unix_nanos.is_some()));
-        write_i128(out, self.due_unix_nanos.unwrap_or_default());
+        out.u64_be(self.held_unix_nanos);
+        out.byte(u8::from(self.failed));
+        out.byte(u8::from(self.due_unix_nanos.is_some()));
+        out.i128_be(self.due_unix_nanos.unwrap_or_default());
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            sequence: read_u64(cursor)?,
+            sequence: cursor.u64_be()?,
             hold: Hold::read(cursor)?,
-            held_unix_nanos: read_u64(cursor)?,
-            failed: read_byte(cursor)? != 0,
+            held_unix_nanos: cursor.u64_be()?,
+            failed: cursor.byte()? != 0,
             due_unix_nanos: {
-                let waits = read_byte(cursor)? != 0;
-                let due = read_i128(cursor)?;
+                let waits = cursor.byte()? != 0;
+                let due = cursor.i128_be()?;
                 waits.then_some(due)
             },
         })
@@ -348,20 +347,20 @@ impl Form for Held {
 
 impl Form for HeldQueue {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.first);
-        write_u64(out, self.next);
-        write_u64(out, self.count);
+        out.u64_be(self.first);
+        out.u64_be(self.next);
+        out.u64_be(self.count);
         self.held.write(out);
-        write_i128(out, self.read_unix_nanos);
+        out.i128_be(self.read_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            first: read_u64(cursor)?,
-            next: read_u64(cursor)?,
-            count: read_u64(cursor)?,
+            first: cursor.u64_be()?,
+            next: cursor.u64_be()?,
+            count: cursor.u64_be()?,
             held: Vec::read(cursor)?,
-            read_unix_nanos: read_i128(cursor)?,
+            read_unix_nanos: cursor.i128_be()?,
         })
     }
 }

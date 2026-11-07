@@ -3,12 +3,14 @@
 //! (`super::schema::searchable`), in the clear, and the times Xmip Storage
 //! sets as it writes it ([`super::columns`]).
 
+use codec::form::Form;
+
 use super::audited::KeptStream;
 use super::dead::Dead;
 use super::failed::Failed;
 use super::hold::Held;
 use super::kept_audit::KeptAudit;
-use super::record::{AdministrationRecord, Form, JourneyRecord, MessageRecord};
+use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 
 /// A value of a column: a time, a count, a flag, words, an identifier or
 /// bytes, each as it is.

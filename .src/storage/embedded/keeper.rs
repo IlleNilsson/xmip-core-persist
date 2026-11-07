@@ -9,6 +9,7 @@
 //! kept (ADR-0070, amendment 2026-10-10; `super::super::kept_audit`).
 use xcore::lock::Locked;
 
+use codec::form::Form;
 use xcore::{AuditId, StreamId};
 
 use super::super::audit_entry::AuditEntry;
@@ -20,7 +21,7 @@ use super::super::columns::KEPT_AUDIT;
 use super::super::commit::{AUDIT, CHUNK, KEPT, NEXT, Op, STREAM, sequence};
 use super::super::facts::AuditFacts;
 use super::super::kept_audit::{KEPT_AUDIT_BODY, KeptAudit, body_key};
-use super::super::record::{Form, StreamChunk, malformed};
+use super::super::record::{StreamChunk, malformed};
 use super::super::stream::{StreamDigest, StreamRecord};
 use super::Embedded;
 use crate::storage::stream::chunk_key;
@@ -141,6 +142,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(KEPT_AUDIT, &id.value().to_be_bytes())?
             .map(|bytes| KeptAudit::from_bytes(&bytes))
             .transpose()
+            .map_err(PersistError::from)
     }
 
     /// A chunk of a kept record's body: `read_kept_audit_body_chunk`.
@@ -162,6 +164,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(KEPT_AUDIT_STREAMS, &stream_key(id, stream))?
             .map(|bytes| KeptStream::from_bytes(&bytes).map(|kept| kept.stream))
             .transpose()
+            .map_err(PersistError::from)
     }
 
     /// A chunk of a Stream a kept record carries: `read_kept_audit_chunk`.
@@ -175,6 +178,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(KEPT_AUDIT_STREAM, &kept_chunk_key(id, stream, index))?
             .map(|bytes| StreamChunk::from_bytes(&bytes))
             .transpose()
+            .map_err(PersistError::from)
     }
 }
 

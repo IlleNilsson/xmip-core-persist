@@ -20,13 +20,14 @@
 //! Replay asked again after a lost answer writes nothing twice
 //! ([`Replayed::Before`]), and so does the Publication's write asked again.
 
+use codec::form::Form;
 use xcore::{MessageId, StreamId};
 
 use super::audit_entry::AuditEntry;
 use super::commit::{Batch, DEAD, DEAD_MESSAGE, DEAD_PLACES, JOURNEY};
 use super::hold::{self, Hold};
 use super::queue::{self, Kinds, Placed};
-use super::record::{Form, JourneyRecord};
+use super::record::JourneyRecord;
 use crate::{EncryptedStore, Engine, PersistError};
 
 mod form;

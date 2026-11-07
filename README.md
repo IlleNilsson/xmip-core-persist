@@ -214,7 +214,10 @@ and 9).
 - **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
   mutual TLS (`xmip-core-library-tls`, `Identity`), the protocol agreed as
   `xmip-storage/1` by ALPN: a length and a request, a length and an answer,
-  each record in its one binary form; a thread per connection, synchronous.
+  each a frame of `xmip-core-library-net`'s (`net::frame`) holding the
+  record in its one binary form, `xmip-core-library-codec`'s
+  `codec::form::Form`, the form either database seals it in; a thread per
+  connection, synchronous.
 - **`StorageClient`** — a node reaching the Storage nodes its `[storage]
   nodes` lists, round robin, moving to the next when one does not answer and
   passing over one that did not for its pass-over; each connect and read is

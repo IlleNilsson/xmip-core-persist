@@ -29,11 +29,12 @@
 //! ([`super::ChunkReader::audited`]).
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::{AuditId, StreamId};
 
-use super::record::{Form, read_bytes, read_u32, read_u128, write_bytes, write_u32, write_u128};
 use super::stream::StreamRecord;
-use crate::PersistError;
 
 /// Where the audit database keeps the chunks of the Streams a
 /// kept audit record carries.
@@ -64,13 +65,13 @@ pub struct KeptStream {
 
 impl Form for KeptStream {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.audit.value());
+        out.u128_be(self.audit.value());
         self.stream.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            audit: AuditId::new(read_u128(cursor)?),
+            audit: AuditId::new(cursor.u128_be()?),
             stream: StreamRecord::read(cursor)?,
         })
     }
@@ -87,17 +88,17 @@ pub(crate) fn stream_key(audit: AuditId, stream: StreamId) -> Vec<u8> {
 
 impl Form for Audited {
     fn write(&self, out: &mut Vec<u8>) {
-        write_bytes(out, &self.message);
-        write_u32(out, u32::try_from(self.streams.len()).unwrap_or(u32::MAX));
+        field::counted(out, &self.message);
+        out.u32_be(u32::try_from(self.streams.len()).unwrap_or(u32::MAX));
         for stream in &self.streams {
-            write_u128(out, stream.value());
+            out.u128_be(stream.value());
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
-        let message = read_bytes(cursor)?;
-        let streams = (0..read_u32(cursor)?)
-            .map(|_| read_u128(cursor).map(StreamId::new))
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let message = field::read_counted(cursor)?.to_vec();
+        let streams = (0..cursor.u32_be()?)
+            .map(|_| cursor.u128_be().map(StreamId::new))
             .collect::<Result<_, _>>()?;
         Ok(Self { message, streams })
     }

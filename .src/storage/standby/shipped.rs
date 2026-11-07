@@ -2,14 +2,14 @@
 //! connection the standby asked on, and what a Storage node says of its
 //! standing (`super`).
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::copies::DATABASES;
-use crate::storage::record::{
-    Form, malformed, read_byte, read_bytes, read_text, read_u32, read_u64, read_u128, write_byte,
-    write_bytes, write_text, write_u32, write_u64, write_u128,
-};
-use crate::{Change, Entry, PersistError};
+use crate::{Change, Entry};
 
 /// What a Storage node is now, as it answers a node or another Storage
 /// node asking (`Request::Standing`).
@@ -44,24 +44,24 @@ impl Standing {
 
 impl Form for Standing {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.process);
-        write_byte(out, u8::from(self.primary));
-        write_u64(out, self.epoch);
-        write_u128(out, self.history);
+        out.u128_be(self.process);
+        out.byte(u8::from(self.primary));
+        out.u64_be(self.epoch);
+        out.u128_be(self.history);
         for next in self.next {
-            write_u64(out, next);
+            out.u64_be(next);
         }
-        write_byte(out, u8::from(self.copying));
+        out.byte(u8::from(self.copying));
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            process: read_u128(cursor)?,
-            primary: read_byte(cursor)? != 0,
-            epoch: read_u64(cursor)?,
-            history: read_u128(cursor)?,
-            next: [read_u64(cursor)?, read_u64(cursor)?, read_u64(cursor)?],
-            copying: read_byte(cursor)? != 0,
+            process: cursor.u128_be()?,
+            primary: cursor.byte()? != 0,
+            epoch: cursor.u64_be()?,
+            history: cursor.u128_be()?,
+            next: [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
+            copying: cursor.byte()? != 0,
         })
     }
 }
@@ -77,18 +77,18 @@ pub struct Follow {
 
 impl Form for Follow {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u64(out, self.epoch);
-        write_u128(out, self.history);
+        out.u64_be(self.epoch);
+        out.u128_be(self.history);
         for next in self.next {
-            write_u64(out, next);
+            out.u64_be(next);
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            epoch: read_u64(cursor)?,
-            history: read_u128(cursor)?,
-            next: [read_u64(cursor)?, read_u64(cursor)?, read_u64(cursor)?],
+            epoch: cursor.u64_be()?,
+            history: cursor.u128_be()?,
+            next: [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
         })
     }
 }
@@ -114,107 +114,114 @@ pub enum Shipped {
 }
 
 fn write_change(out: &mut Vec<u8>, (key, value): &Change) {
-    write_bytes(out, key);
-    write_byte(out, u8::from(value.is_some()));
+    field::counted(out, key);
+    out.byte(u8::from(value.is_some()));
     if let Some(value) = value {
-        write_bytes(out, value);
+        field::counted(out, value);
     }
 }
 
-fn read_change(cursor: &mut Cursor<'_>) -> Result<Change, PersistError> {
-    let key = read_bytes(cursor)?;
-    let value = match read_byte(cursor)? {
+fn read_change(cursor: &mut Cursor<'_>) -> codec::Result<Change> {
+    let key = field::read_counted(cursor)?.to_vec();
+    let value = match cursor.byte()? {
         0 => None,
-        _ => Some(read_bytes(cursor)?),
+        _ => Some(field::read_counted(cursor)?.to_vec()),
     };
     Ok((key, value))
 }
 
 fn write_count(out: &mut Vec<u8>, count: usize) {
-    write_u32(out, u32::try_from(count).unwrap_or(u32::MAX));
+    out.u32_be(u32::try_from(count).unwrap_or(u32::MAX));
 }
 
 impl Form for Shipped {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
             Self::Beat(epoch) => {
-                write_byte(out, 0);
-                write_u64(out, *epoch);
+                out.byte(0);
+                out.u64_be(*epoch);
             }
             Self::Copy(database, number, changes) => {
-                write_byte(out, 1);
-                write_byte(out, *database);
-                write_u64(out, *number);
+                out.byte(1);
+                out.byte(*database);
+                out.u64_be(*number);
                 write_count(out, changes.len());
                 for change in changes {
                     write_change(out, change);
                 }
             }
             Self::Whole(history, epoch, keys) => {
-                write_byte(out, 2);
-                write_u128(out, *history);
-                write_u64(out, *epoch);
+                out.byte(2);
+                out.u128_be(*history);
+                out.u64_be(*epoch);
                 write_count(out, keys.len());
                 for key in keys {
-                    write_bytes(out, key);
+                    field::counted(out, key);
                 }
             }
             Self::Entries(database, entries) => {
-                write_byte(out, 3);
-                write_byte(out, *database);
+                out.byte(3);
+                out.byte(*database);
                 write_count(out, entries.len());
                 for (key, value) in entries {
-                    write_bytes(out, key);
-                    write_bytes(out, value);
+                    field::counted(out, key);
+                    field::counted(out, value);
                 }
             }
             Self::Copied(database, next) => {
-                write_byte(out, 4);
-                write_byte(out, *database);
-                write_u64(out, *next);
+                out.byte(4);
+                out.byte(*database);
+                out.u64_be(*next);
             }
             Self::Declined(reason) => {
-                write_byte(out, 5);
-                write_text(out, reason);
+                out.byte(5);
+                field::text(out, reason);
             }
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         let database = |cursor: &mut Cursor<'_>| {
-            let database = read_byte(cursor)?;
+            let database = cursor.byte()?;
             if usize::from(database) < DATABASES {
                 Ok(database)
             } else {
-                Err(malformed(format!("no database is numbered {database}")))
+                Err(CodecError::new(format!(
+                    "no database is numbered {database}"
+                )))
             }
         };
-        Ok(match read_byte(cursor)? {
-            0 => Self::Beat(read_u64(cursor)?),
+        Ok(match cursor.byte()? {
+            0 => Self::Beat(cursor.u64_be()?),
             1 => {
-                let (database, number) = (database(cursor)?, read_u64(cursor)?);
-                let changes = (0..read_u32(cursor)?)
+                let (database, number) = (database(cursor)?, cursor.u64_be()?);
+                let changes = (0..cursor.u32_be()?)
                     .map(|_| read_change(cursor))
                     .collect::<Result<_, _>>()?;
                 Self::Copy(database, number, changes)
             }
             2 => {
-                let (history, epoch) = (read_u128(cursor)?, read_u64(cursor)?);
-                let keys = (0..read_u32(cursor)?)
-                    .map(|_| read_bytes(cursor))
+                let (history, epoch) = (cursor.u128_be()?, cursor.u64_be()?);
+                let keys = (0..cursor.u32_be()?)
+                    .map(|_| field::read_counted(cursor).map(<[u8]>::to_vec))
                     .collect::<Result<_, _>>()?;
                 Self::Whole(history, epoch, keys)
             }
             3 => {
                 let database = database(cursor)?;
-                let entries = (0..read_u32(cursor)?)
-                    .map(|_| Ok((read_bytes(cursor)?, read_bytes(cursor)?)))
-                    .collect::<Result<_, PersistError>>()?;
+                let entries = (0..cursor.u32_be()?)
+                    .map(|_| {
+                        Ok((
+                            field::read_counted(cursor)?.to_vec(),
+                            field::read_counted(cursor)?.to_vec(),
+                        ))
+                    })
+                    .collect::<codec::Result<_>>()?;
                 Self::Entries(database, entries)
             }
-            4 => Self::Copied(database(cursor)?, read_u64(cursor)?),
-            5 => Self::Declined(read_text(cursor)?),
-            other => return Err(malformed(format!("no frame is numbered {other}"))),
+            4 => Self::Copied(database(cursor)?, cursor.u64_be()?),
+            5 => Self::Declined(field::read_text(cursor)?),
+            other => return Err(CodecError::new(format!("no frame is numbered {other}"))),
         })
     }
 }

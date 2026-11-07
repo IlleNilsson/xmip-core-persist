@@ -17,6 +17,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use codec::form::Form;
 use secret::{KekName, KeyStore};
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
 
@@ -34,8 +35,7 @@ use super::kept_audit::KeptAudit;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
-    AdministrationKind, AdministrationRecord, Claim, Form, JourneyRecord, MessageRecord,
-    StreamChunk,
+    AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::row;
 use super::schema::{Database, DatabaseVersion};
@@ -172,6 +172,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(kind, key)?
             .map(|bytes| T::from_bytes(&bytes))
             .transpose()
+            .map_err(PersistError::from)
     }
 }
 

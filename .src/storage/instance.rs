@@ -21,13 +21,12 @@
 //! belongs to.
 
 use codec::cursor::Cursor;
+use codec::field;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::commit::Batch;
 use super::hand_on::HandOn;
-use super::record::{
-    Form, read_byte, read_bytes, read_text, read_u64, read_u128, write_byte, write_bytes,
-    write_text, write_u64, write_u128,
-};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where the Process Instance table keeps an Instance, by its identifier.
@@ -68,20 +67,20 @@ pub struct InstanceKey {
 
 impl Form for InstanceRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.instance);
-        write_text(out, &self.work_process);
-        write_u64(out, self.turns);
-        write_byte(out, u8::from(self.ended));
-        write_bytes(out, &self.body);
+        out.u128_be(self.instance);
+        field::text(out, &self.work_process);
+        out.u64_be(self.turns);
+        out.byte(u8::from(self.ended));
+        field::counted(out, &self.body);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            instance: read_u128(cursor)?,
-            work_process: read_text(cursor)?,
-            turns: read_u64(cursor)?,
-            ended: read_byte(cursor)? != 0,
-            body: read_bytes(cursor)?,
+            instance: cursor.u128_be()?,
+            work_process: field::read_text(cursor)?,
+            turns: cursor.u64_be()?,
+            ended: cursor.byte()? != 0,
+            body: field::read_counted(cursor)?.to_vec(),
         })
     }
 }
@@ -89,27 +88,27 @@ impl Form for InstanceRecord {
 impl Form for InstanceWrite {
     fn write(&self, out: &mut Vec<u8>) {
         self.record.write(out);
-        write_u64(out, self.over);
+        out.u64_be(self.over);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             record: InstanceRecord::read(cursor)?,
-            over: read_u64(cursor)?,
+            over: cursor.u64_be()?,
         })
     }
 }
 
 impl Form for InstanceKey {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.key);
-        write_u128(out, self.instance);
+        out.u128_be(self.key);
+        out.u128_be(self.instance);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            key: read_u128(cursor)?,
-            instance: read_u128(cursor)?,
+            key: cursor.u128_be()?,
+            instance: cursor.u128_be()?,
         })
     }
 }
@@ -153,6 +152,7 @@ fn owner<R: Engine>(
         .read(store, INSTANCE_KEY, &key.to_be_bytes())?
         .map(|bytes| InstanceKey::from_bytes(&bytes).map(|found| found.instance))
         .transpose()
+        .map_err(PersistError::from)
 }
 
 /// `writes` and `keys` written in `batch`, and each of `unkeyed` taken out
@@ -197,7 +197,7 @@ impl Form for Turn {
         self.unkeyed.write(out);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             hand_on: HandOn::read(cursor)?,
             instances: Vec::read(cursor)?,
@@ -236,6 +236,7 @@ pub(crate) fn read_instance<R: Engine>(
         .get(INSTANCE, &instance.to_be_bytes())?
         .map(|bytes| InstanceRecord::from_bytes(&bytes))
         .transpose()
+        .map_err(PersistError::from)
 }
 
 /// The Instance the key `key` belongs to, where one does.
@@ -247,6 +248,7 @@ pub(crate) fn read_instance_key<R: Engine>(
         .get(INSTANCE_KEY, &key.to_be_bytes())?
         .map(|bytes| InstanceKey::from_bytes(&bytes).map(|found| found.instance))
         .transpose()
+        .map_err(PersistError::from)
 }
 
 #[cfg(test)]

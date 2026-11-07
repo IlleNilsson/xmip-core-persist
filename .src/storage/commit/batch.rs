@@ -6,7 +6,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::super::record::Form;
+use codec::form::Form;
+
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// One batch being decided: what it has written so far, by place — or one

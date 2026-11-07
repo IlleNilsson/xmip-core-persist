@@ -30,15 +30,16 @@
 use std::io::{self, Read};
 use std::sync::Arc;
 
+use codec::CodecError;
 use codec::cursor::Cursor;
+use codec::form::Form;
 use codec::hex;
+use codec::writer::ByteWriter;
 use sha2::{Digest as _, Sha256};
 use xcore::{AuditId, StreamId};
 
 use super::XmipStorage;
-use super::record::{
-    Form, StreamChunk, malformed, read_u32, read_u64, read_u128, write_u32, write_u64, write_u128,
-};
+use super::record::StreamChunk;
 use crate::PersistError;
 
 /// How long a SHA-256 digest is, in bytes.
@@ -62,20 +63,20 @@ pub struct StreamRecord {
 
 impl Form for StreamRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u128(out, self.stream.value());
-        write_u64(out, self.length);
-        write_u32(out, self.chunks);
+        out.u128_be(self.stream.value());
+        out.u64_be(self.length);
+        out.u32_be(self.chunks);
         write_digest(out, &self.digest);
-        write_u64(out, self.written_unix_nanos);
+        out.u64_be(self.written_unix_nanos);
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            stream: StreamId::new(read_u128(cursor)?),
-            length: read_u64(cursor)?,
-            chunks: read_u32(cursor)?,
+            stream: StreamId::new(cursor.u128_be()?),
+            length: cursor.u64_be()?,
+            chunks: cursor.u32_be()?,
             digest: read_digest(cursor)?,
-            written_unix_nanos: read_u64(cursor)?,
+            written_unix_nanos: cursor.u64_be()?,
         })
     }
 }
@@ -93,11 +94,9 @@ pub(crate) fn write_digest(out: &mut Vec<u8>, digest: &[u8; DIGEST]) {
     out.extend_from_slice(digest);
 }
 
-pub(crate) fn read_digest(cursor: &mut Cursor<'_>) -> Result<[u8; DIGEST], PersistError> {
-    let bytes = cursor
-        .take(DIGEST)
-        .map_err(|error| malformed(error.to_string()))?;
-    <[u8; DIGEST]>::try_from(bytes).map_err(|_| malformed("a digest cut short"))
+pub(crate) fn read_digest(cursor: &mut Cursor<'_>) -> codec::Result<[u8; DIGEST]> {
+    let bytes = cursor.take(DIGEST)?;
+    <[u8; DIGEST]>::try_from(bytes).map_err(|_| CodecError::new("a digest cut short"))
 }
 
 /// The SHA-256 of a Stream's bytes, taken a chunk at a time as they pass:

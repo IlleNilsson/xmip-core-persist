@@ -23,11 +23,13 @@
 //! go, in that same write, and the next of each sequence heads it.
 
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 use xcore::JourneyId;
 
 use super::commit::{Batch, JOURNEY};
 use super::hold::{self, Hold};
-use super::record::{Form, JourneyRecord, read_u32, read_u128, write_u32, write_u128};
+use super::record::JourneyRecord;
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where a holder's count of open Journeys and its places are kept.
@@ -42,18 +44,18 @@ struct Origin {
 
 impl Form for Origin {
     fn write(&self, out: &mut Vec<u8>) {
-        write_u32(out, self.open);
-        write_u32(out, u32::try_from(self.queues.len()).unwrap_or(u32::MAX));
+        out.u32_be(self.open);
+        out.u32_be(u32::try_from(self.queues.len()).unwrap_or(u32::MAX));
         for queue in &self.queues {
-            write_u128(out, *queue);
+            out.u128_be(*queue);
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            open: read_u32(cursor)?,
-            queues: (0..read_u32(cursor)?)
-                .map(|_| read_u128(cursor))
+            open: cursor.u32_be()?,
+            queues: (0..cursor.u32_be()?)
+                .map(|_| cursor.u128_be())
                 .collect::<Result<_, _>>()?,
         })
     }

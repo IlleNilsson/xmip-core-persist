@@ -36,6 +36,7 @@ use waiting::{Answer, Decides, Reply, Waiting};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use codec::form::Form;
 use std::time::Duration;
 use xcore::Clock;
 use xcore::spent::Spent;
@@ -47,7 +48,7 @@ use super::dead::{self, Replay, Replayed};
 use super::durable::Durable;
 use super::hand_on::HandOn;
 use super::publication::{self, Decided, Publication};
-use super::record::{Claim, Form, malformed};
+use super::record::{Claim, malformed};
 use super::row;
 use crate::{EncryptedStore, Engine, PersistError};
 

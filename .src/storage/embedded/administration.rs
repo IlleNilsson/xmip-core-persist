@@ -2,10 +2,11 @@
 //! shared and kept over time, each record under its kind and identifier,
 //! written by one writer at a time in this process (`deployment-model.md`
 //! section 7).
+use codec::form::Form;
 use xcore::lock::Locked;
 
 use super::super::columns::{ADMINISTRATION, Columns};
-use super::super::record::{AdministrationKind, AdministrationRecord, Form};
+use super::super::record::{AdministrationKind, AdministrationRecord};
 use super::super::row;
 use super::Embedded;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
@@ -50,6 +51,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             .get(&kind_of(kind), &id.to_be_bytes())?
             .map(|bytes| AdministrationRecord::from_bytes(&bytes))
             .transpose()
+            .map_err(PersistError::from)
     }
 }
 

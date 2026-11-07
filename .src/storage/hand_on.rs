@@ -3,14 +3,12 @@
 //! decides as one write ([`super::claim::hand_on`]).
 
 use codec::cursor::Cursor;
+use codec::form::Form;
+use codec::writer::ByteWriter;
 
 use super::failed::Failure;
 use super::hold::Hold;
-use super::record::{
-    Claim, Form, JourneyRecord, MessageRecord, read_byte, read_u32, read_u64, read_u128,
-    write_byte, write_u32, write_u64, write_u128,
-};
-use crate::PersistError;
+use super::record::{Claim, JourneyRecord, MessageRecord};
 
 /// One step handed on: its result, what it made and the Journeys of the
 /// Messages that go on from it, written with the claim released, as one
@@ -76,23 +74,23 @@ impl Form for HandOn {
         write_queues(out, &self.leaves);
         self.queued.write(out);
         write_queues(out, &self.requeued);
-        write_byte(out, u8::from(self.failed.is_some()));
+        out.byte(u8::from(self.failed.is_some()));
         if let Some(failure) = &self.failed {
             failure.write(out);
         }
         write_queues(out, &self.cleared);
-        write_byte(out, u8::from(self.waits.is_some()));
+        out.byte(u8::from(self.waits.is_some()));
         if let Some(wait) = &self.waits {
-            write_u128(out, wait.queue);
-            write_u64(out, wait.after_nanos);
+            out.u128_be(wait.queue);
+            out.u64_be(wait.after_nanos);
         }
-        write_byte(out, u8::from(self.kept_for_nanos.is_some()));
+        out.byte(u8::from(self.kept_for_nanos.is_some()));
         if let Some(nanos) = self.kept_for_nanos {
-            write_u64(out, nanos);
+            out.u64_be(nanos);
         }
     }
 
-    fn read(cursor: &mut Cursor<'_>) -> Result<Self, PersistError> {
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             claim: Claim::read(cursor)?,
             result: JourneyRecord::read(cursor)?,
@@ -101,35 +99,35 @@ impl Form for HandOn {
             leaves: read_queues(cursor)?,
             queued: Vec::read(cursor)?,
             requeued: read_queues(cursor)?,
-            failed: match read_byte(cursor)? {
+            failed: match cursor.byte()? {
                 0 => None,
                 _ => Some(Failure::read(cursor)?),
             },
             cleared: read_queues(cursor)?,
-            waits: match read_byte(cursor)? {
+            waits: match cursor.byte()? {
                 0 => None,
                 _ => Some(Wait {
-                    queue: read_u128(cursor)?,
-                    after_nanos: read_u64(cursor)?,
+                    queue: cursor.u128_be()?,
+                    after_nanos: cursor.u64_be()?,
                 }),
             },
-            kept_for_nanos: match read_byte(cursor)? {
+            kept_for_nanos: match cursor.byte()? {
                 0 => None,
-                _ => Some(read_u64(cursor)?),
+                _ => Some(cursor.u64_be()?),
             },
         })
     }
 }
 
 fn write_queues(out: &mut Vec<u8>, queues: &[u128]) {
-    write_u32(out, u32::try_from(queues.len()).unwrap_or(u32::MAX));
+    out.u32_be(u32::try_from(queues.len()).unwrap_or(u32::MAX));
     for queue in queues {
-        write_u128(out, *queue);
+        out.u128_be(*queue);
     }
 }
 
-fn read_queues(cursor: &mut Cursor<'_>) -> Result<Vec<u128>, PersistError> {
-    (0..read_u32(cursor)?).map(|_| read_u128(cursor)).collect()
+fn read_queues(cursor: &mut Cursor<'_>) -> codec::Result<Vec<u128>> {
+    (0..cursor.u32_be()?).map(|_| cursor.u128_be()).collect()
 }
 
 #[cfg(test)]
