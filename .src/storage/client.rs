@@ -360,6 +360,7 @@ pub fn statement(storage: &Arc<dyn XmipStorage>) -> Arc<dyn XmipStorage> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::net::TcpListener;
 
     use secret::{Held, KekName};
@@ -450,10 +451,7 @@ mod tests {
         assert!(client.release(&claim).expect("released"));
         second.stop();
         let gone = client.read_journey(journey(b"").journey);
-        assert!(
-            matches!(gone, Err(PersistError::Unreachable { .. })),
-            "{gone:?}"
-        );
+        assert_matches!(gone, Err(PersistError::Unreachable { .. }), "{gone:?}");
     }
 
     #[test]
@@ -499,10 +497,7 @@ mod tests {
             second.stop();
         }
         let gone = statement.read_journey(journey(b"").journey);
-        assert!(
-            matches!(gone, Err(PersistError::Unreachable { .. })),
-            "{gone:?}"
-        );
+        assert_matches!(gone, Err(PersistError::Unreachable { .. }), "{gone:?}");
         client
             .write_journey(&journey(b"carried on"))
             .expect("the next statement asks the node left");
@@ -802,8 +797,9 @@ mod tests {
         let stranger =
             StorageClient::new(&nodes, &theirs.issue(&ours), TIMEOUT, PASS_OVER).expect("client");
         let refused = stranger.write_journey(&journey(b"from a stranger"));
-        assert!(
-            matches!(refused, Err(PersistError::Unreachable { .. })),
+        assert_matches!(
+            refused,
+            Err(PersistError::Unreachable { .. }),
             "{refused:?}"
         );
         assert_eq!(

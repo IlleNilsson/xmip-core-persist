@@ -391,6 +391,7 @@ mod tests {
     use super::*;
     use crate::fixture::{Memory, conformance};
     use secret::Held;
+    use std::assert_matches;
 
     fn kek() -> KekName {
         KekName::new("runtime").expect("name")
@@ -477,10 +478,10 @@ mod tests {
             .expect("read")
             .expect("there");
         store.engine.write(b"\0index\0a2", &entry).expect("moved");
-        assert!(matches!(
+        assert_matches!(
             store.scan_index(b"a", b"a\xFF", 10, false),
             Err(PersistError::Refused { .. })
-        ));
+        );
         store
             .apply_indexed(&[], &[(b"a2".to_vec(), None)])
             .expect("removed");
@@ -500,10 +501,10 @@ mod tests {
         let to = store.lookup_key("journey", b"8");
         let moved = store.engine.read(&from).expect("read").expect("there");
         store.engine.write(&to, &moved).expect("moved");
-        assert!(matches!(
+        assert_matches!(
             store.get("journey", b"8"),
             Err(PersistError::Refused { .. })
-        ));
+        );
     }
 
     #[test]

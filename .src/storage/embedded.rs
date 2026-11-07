@@ -404,6 +404,7 @@ mod tests {
     use crate::storage::commit::{AUDIT, KEPT, sequence};
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use secret::Held;
+    use std::assert_matches;
 
     /// A clock a test moves by hand.
     #[derive(Default)]
@@ -1423,8 +1424,9 @@ mod tests {
         other.message.body = b"another order".to_vec();
         other.held[0].queue = 8;
         let refused = node.publish(other);
-        assert!(
-            matches!(&refused, Err(PersistError::Failed { reason }) if reason.contains("before")),
+        assert_matches!(
+            &refused,
+            Err(PersistError::Failed { reason }) if reason.contains("before"),
             "{refused:?}"
         );
         let message = node.read_message(MessageId::new(1)).expect("read");
