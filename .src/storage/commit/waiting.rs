@@ -10,9 +10,13 @@
 //! **A leader leads until its own write is answered**, then hands the lead
 //! to the first write still waiting, whose caller it wakes to lead the
 //! next batch, so no caller decides others' writes for long. A batch that
-//! panics answers its writes with an error and the writer reads its audit
-//! sequence again from what was written; the lead goes on, and no caller
-//! waits for an answer that never comes.
+//! panics answers its writes with an error, and no caller waits for an
+//! answer that never comes. One that panics before it reaches the engine
+//! leaves nothing of itself: the writer reads its audit sequence again from
+//! what was written, and the lead goes on. One that panics once it may be in
+//! the engine stops the Storage node: its writes told failed, the store
+//! refusing every read and write until it is opened anew over its log
+//! (`super`, fail-stop), since nothing tells which of its writes are kept.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
@@ -38,7 +42,8 @@ pub(super) trait Decides {
     fn commit(&mut self, group: Vec<(Op, Reply)>);
 
     /// After a batch that panicked: what the writer keeps in memory read
-    /// again from what was written.
+    /// again from what was written — or, where the batch may be in the
+    /// engine, the Storage node stopped.
     fn recover(&mut self);
 }
 
@@ -108,7 +113,7 @@ impl Waiting {
                 }
             };
             // A batch that panics has dropped its replies, each its
-            // caller's error; the writer is read again and leads on.
+            // caller's error; the writer recovers, or stops the node.
             if catch_unwind(AssertUnwindSafe(|| writer.commit(group))).is_err() {
                 writer.recover();
             }
@@ -147,7 +152,8 @@ impl Waiting {
 fn failed() -> PersistError {
     PersistError::engine(
         "xmip-storage",
-        "the writer failed deciding the batch this write was in",
+        "the writer panicked deciding the batch this write was in; where the batch \
+         had reached the engine, the Storage node stopped",
     )
 }
 

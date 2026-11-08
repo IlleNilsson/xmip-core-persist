@@ -12,6 +12,11 @@
 //! (`Engine::sync`; `RocksDB` writes its log at a sync alone,
 //! `manual_wal_flush`), and a batch's [`Durable`] reaches this thread only
 //! once the batch is written, so the sync that tells it holds it.
+//!
+//! A sync that fails tells every batch it was for, and stops the store
+//! (`EncryptedStore::sync`): every later batch is refused before it is
+//! written, and every sync after it fails at once, so nothing is told
+//! durable over writes the failed sync may have lost.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};

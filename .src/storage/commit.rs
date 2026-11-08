@@ -22,6 +22,11 @@
 //! caller waiting for its write to be durable waits on it
 //! ([`Committer::submit`]), and a Publication's send is prepared meanwhile
 //! ([`Committer::ahead`]; ADR-0018, amendments 2026-10-20 and 2026-10-21).
+//! A batch that writes nothing — a request asked again, found written —
+//! is durable with the latest batch handed to the sync, which holds what
+//! it found. **A failed sync stops the Storage node** (`EncryptedStore::sync`),
+//! as a batch that panics once in the engine does: nothing is read or
+//! written again until the node is opened anew over its log (fail-stop).
 
 mod batch;
 mod syncer;
@@ -146,6 +151,8 @@ impl Committer {
             columns,
             syncer,
             epoch,
+            last: Durable::kept(),
+            under_way: None,
         };
         Ok(Self {
             waiting: Waiting::new(Box::new(writer)),
@@ -184,6 +191,11 @@ struct Writer<R> {
     syncer: Syncer,
     /// The Storage epoch its node is the primary in: a claim's fence.
     epoch: Arc<AtomicU64>,
+    /// The latest batch handed to the sync: what a batch that writes
+    /// nothing is durable with.
+    last: Durable,
+    /// The batch in the engine and not yet handed to the sync.
+    under_way: Option<Durable>,
 }
 
 impl<R: Engine> Decides for Writer<R> {
@@ -192,6 +204,14 @@ impl<R: Engine> Decides for Writer<R> {
     }
 
     fn recover(&mut self) {
+        // Written, and answered to some of its callers or none: nothing
+        // tells what any was told, so the node stops (fail-stop).
+        if let Some(durable) = self.under_way.take() {
+            let why = "the writer panicked after a batch was written";
+            durable.tell(Err(why.to_string()));
+            self.store.stop(why.to_string());
+            return;
+        }
         if let Ok(next) = sequence(&self.store, NEXT) {
             self.next = next;
         }
@@ -236,11 +256,19 @@ impl<R: Engine> Writer<R> {
             );
         }
         let empty = batch.changes.is_empty();
+        // Nothing of its own to sync: durable once the latest batch is.
+        let durable = if empty {
+            self.last.clone()
+        } else {
+            Durable::pending()
+        };
         let written = if empty {
             Ok(())
         } else if let Err(failed) = settled {
             Err(failed)
         } else {
+            // From here on the batch may be in the engine, whatever stops it.
+            self.under_way = Some(durable.clone());
             // Each searchable record stamped on this clock, and its index
             // entries in the same write (`super::columns`), unsynced: it
             // is answered first, and synced after. Each record a change
@@ -254,16 +282,15 @@ impl<R: Engine> Writer<R> {
                 })
         };
         if written.is_err() {
+            // Refused whole: nothing of it is in the engine.
             self.next = before;
+            self.under_way = None;
         }
-        let durable = if empty || written.is_err() {
-            Durable::kept()
-        } else {
-            Durable::pending()
-        };
         // What the batch took outside its I/O, shared by its writes.
         drop(entered);
-        durable.worked_each(spent.own(Duration::ZERO) / writes.max(1));
+        if !empty {
+            durable.worked_each(spent.own(Duration::ZERO) / writes.max(1));
+        }
         for (reply, done) in decided {
             let answer = match (&written, done) {
                 (Ok(()), done) => done.map(|done| (done, durable.clone())),
@@ -271,7 +298,8 @@ impl<R: Engine> Writer<R> {
             };
             let _ = reply.send(Answer::Decided(answer));
         }
-        if durable.told().is_none() {
+        if let Some(durable) = self.under_way.take() {
+            self.last = durable.clone();
             self.syncer.written(durable);
         }
     }
@@ -368,3 +396,6 @@ impl<R: Engine> Writer<R> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

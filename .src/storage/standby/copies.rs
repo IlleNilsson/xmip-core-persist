@@ -10,6 +10,13 @@
 //! sealed record — so a standby keeping the same data key holds the same
 //! records without opening one (`super`). A store's own keys, its data key
 //! among them, are never copied ([`OWN`]).
+//!
+//! **A write is handed to a standby only once it is synced.** Each
+//! database keeps how far its writes are on disk — every write numbered
+//! before a sync began once the sync returns, every write before a write
+//! durable on return once that returns — and [`Copies::since`] hands on
+//! nothing past it: a standby never holds a write its primary could still
+//! lose, as it would, promoted, over one its primary's process took with it.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -18,17 +25,13 @@ use xcore::lock::Locked;
 
 use xcore::wake::Revision;
 
+use super::position::position;
 use crate::encrypted_store::OWN;
 use crate::{Change, Engine, Entry, PersistError};
 
 /// The databases a Storage node keeps, in every list here: the runtime,
 /// the administration and the audit database.
 pub const DATABASES: usize = 3;
-
-/// Where a standby keeps, in each database, how far it has copied: the
-/// history it follows and the number of the next write it takes, written in
-/// the same batch as every write it copies.
-pub(crate) const POSITION: &[u8] = b"\0xmip-core-persist/position\0";
 
 /// One write as kept: its number, and its changes.
 pub type Copy = (u64, Arc<[Change]>);
@@ -38,6 +41,9 @@ pub type Copy = (u64, Arc<[Change]>);
 struct Kept {
     /// The number the next write takes.
     next: u64,
+    /// The number of the first write not known to be on disk: every write
+    /// before it is synced, and may be handed on.
+    synced: u64,
     writes: VecDeque<Copy>,
     bytes: usize,
 }
@@ -96,6 +102,7 @@ impl Copies {
             kept: next.map(|next| {
                 Mutex::new(Kept {
                     next,
+                    synced: next,
                     ..Kept::default()
                 })
             }),
@@ -128,6 +135,7 @@ impl Copies {
         for (kept, next) in kept.iter_mut().zip(next) {
             **kept = Kept {
                 next,
+                synced: next,
                 ..Kept::default()
             };
         }
@@ -140,13 +148,14 @@ impl Copies {
     /// `write` done to `database`, and where it wrote, the changes
     /// `changes` makes kept under the next number — both under the
     /// database's lock, so the numbers are the order the engine took them.
+    /// A write `durable` on return makes every write before it synced.
     ///
     /// # Errors
     ///
     /// The write's own; nothing is kept then.
     pub(crate) fn written(
         &self,
-        database: usize,
+        (database, durable): (usize, bool),
         write: impl FnOnce() -> Result<bool, PersistError>,
         changes: impl FnOnce() -> Vec<Change>,
     ) -> Result<bool, PersistError> {
@@ -161,10 +170,36 @@ impl Copies {
             .collect();
         if !copied.is_empty() {
             kept.keep(copied.into(), self.most);
-            drop(kept);
+        }
+        let advanced = durable && kept.synced < kept.next;
+        if durable {
+            kept.synced = kept.next;
+        }
+        drop(kept);
+        if advanced {
             self.tell();
         }
         Ok(true)
+    }
+
+    /// `engine`, the database at `database`, synced: every write numbered
+    /// before the sync began may then be handed to a standby.
+    ///
+    /// # Errors
+    ///
+    /// The sync's own; nothing more is handed on then.
+    pub(crate) fn sync(&self, database: usize, engine: &dyn Engine) -> Result<(), PersistError> {
+        let upto = self.kept(database).next;
+        engine.sync()?;
+        let mut kept = self.kept(database);
+        let was = kept.synced;
+        kept.synced = was.max(upto.min(kept.next));
+        let advanced = kept.synced > was;
+        drop(kept);
+        if advanced {
+            self.tell();
+        }
+        Ok(())
     }
 
     /// The write `number` of `database`, its primary's, written to `engine`
@@ -199,15 +234,15 @@ impl Copies {
         Ok(())
     }
 
-    /// The writes of `database` from the number `from` on, up to `most`
-    /// bytes but at least one where there is one.
+    /// The writes of `database` from the number `from` on that are synced,
+    /// up to `most` bytes but at least one where there is one.
     ///
     /// # Errors
     ///
     /// [`Behind::Past`] where what follows `from` is no longer kept.
     pub fn since(&self, database: usize, from: u64, most: usize) -> Result<Vec<Copy>, Behind> {
         let kept = self.kept(database);
-        if from >= kept.next {
+        if from >= kept.synced {
             return Ok(Vec::new());
         }
         let first = kept.writes.front().map_or(kept.next, |(number, _)| *number);
@@ -216,7 +251,9 @@ impl Copies {
         }
         let mut bytes = 0;
         let mut taken = Vec::new();
-        for (number, changes) in kept.writes.iter().skip_while(|(n, _)| *n < from) {
+        let limit = kept.synced;
+        let synced = kept.writes.iter().take_while(|(n, _)| *n < limit);
+        for (number, changes) in synced.skip_while(|(n, _)| *n < from) {
             if bytes >= most && !taken.is_empty() {
                 break;
             }
@@ -261,34 +298,6 @@ impl Copies {
     }
 }
 
-/// The position record: `history`, and `next`, the number of the next
-/// write a standby takes.
-pub(crate) fn position(history: u128, next: u64) -> Change {
-    let mut value = history.to_be_bytes().to_vec();
-    value.extend_from_slice(&next.to_be_bytes());
-    (POSITION.to_vec(), Some(value))
-}
-
-/// The history and the next number `engine`'s position record holds, or
-/// `None` where it holds none: it never copied, or it was a primary since.
-///
-/// # Errors
-///
-/// Where the engine cannot be read.
-pub(crate) fn positioned(engine: &dyn Engine) -> Result<Option<(u128, u64)>, PersistError> {
-    let Some(value) = engine.read(POSITION)? else {
-        return Ok(None);
-    };
-    let (history, next) = value.split_at_checked(16).unwrap_or((&[], &[]));
-    let (Ok(history), Ok(next)) = (<[u8; 16]>::try_from(history), <[u8; 8]>::try_from(next)) else {
-        return Ok(None);
-    };
-    Ok(Some((
-        u128::from_be_bytes(history),
-        u64::from_be_bytes(next),
-    )))
-}
-
 /// An engine whose every write is numbered and kept in `copies` as it is
 /// written: a Storage node's database as its standbys copy it.
 pub struct Copied<E> {
@@ -308,12 +317,15 @@ impl<E: Engine> Copied<E> {
         }
     }
 
+    /// `write`, durable on return or not, numbered and kept.
     fn written(
         &self,
+        durable: bool,
         write: impl FnOnce() -> Result<bool, PersistError>,
         changes: impl FnOnce() -> Vec<Change>,
     ) -> Result<bool, PersistError> {
-        self.copies.written(self.database, write, changes)
+        self.copies
+            .written((self.database, durable), write, changes)
     }
 }
 
@@ -328,32 +340,33 @@ impl<E: Engine> Engine for Copied<E> {
 
     fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
         let write = || self.engine.write(key, value).map(|()| true);
-        self.written(write, || vec![(key.to_vec(), Some(value.to_vec()))])
+        self.written(true, write, || vec![(key.to_vec(), Some(value.to_vec()))])
             .map(drop)
     }
 
     fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
         let write = || self.engine.write_new(key, value);
-        self.written(write, || vec![(key.to_vec(), Some(value.to_vec()))])
+        self.written(true, write, || vec![(key.to_vec(), Some(value.to_vec()))])
     }
 
     fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
         let write = || self.engine.remove(key).map(|()| true);
-        self.written(write, || vec![(key.to_vec(), None)]).map(drop)
+        self.written(true, write, || vec![(key.to_vec(), None)])
+            .map(drop)
     }
 
     fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
         let write = || self.engine.apply(batch).map(|()| true);
-        self.written(write, || batch.to_vec()).map(drop)
+        self.written(true, write, || batch.to_vec()).map(drop)
     }
 
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
         let write = || self.engine.apply_deferred(batch).map(|()| true);
-        self.written(write, || batch.to_vec()).map(drop)
+        self.written(false, write, || batch.to_vec()).map(drop)
     }
 
     fn sync(&self) -> Result<(), PersistError> {
-        self.engine.sync()
+        self.copies.sync(self.database, &self.engine)
     }
 
     fn scan(
@@ -373,6 +386,7 @@ impl<E: Engine> Engine for Copied<E> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::position::positioned;
     use super::*;
     use crate::fixture::Memory;
 
@@ -398,6 +412,38 @@ mod tests {
         assert_eq!(kept[2].1.as_ref(), [(b"a".to_vec(), None)]);
         assert_eq!(copies.next(), [4, 1, 1]);
         assert_eq!(copies.since(0, 4, usize::MAX), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn no_write_is_handed_to_a_standby_before_it_is_synced() {
+        let hooks = Arc::new(crate::fixture::Hooks::default());
+        let copies = Arc::new(Copies::new(5, [1, 1, 1], 1 << 20));
+        let beneath = crate::fixture::Hooked::new(Memory::default(), &hooks);
+        let engine = Copied::new(beneath, 0, Arc::clone(&copies));
+        let numbers = |from| -> Vec<u64> {
+            let kept = copies.since(0, from, usize::MAX).expect("kept");
+            kept.iter().map(|(number, _)| *number).collect()
+        };
+        let change = |key: &[u8]| vec![(key.to_vec(), Some(b"v".to_vec()))];
+        engine.apply_deferred(&change(b"a")).expect("written");
+        engine.apply_deferred(&change(b"b")).expect("written");
+        assert_eq!(numbers(1), [0_u64; 0], "nothing unsynced is handed on");
+        hooks.fail_syncs(true);
+        assert!(engine.sync().is_err(), "a sync that fails");
+        assert_eq!(numbers(1), [0_u64; 0], "nor after a sync that failed");
+        hooks.fail_syncs(false);
+        let seen = copies.count();
+        engine.sync().expect("synced");
+        assert!(copies.count() > seen, "a standby's shipping is told");
+        assert_eq!(numbers(1), [1, 2]);
+        engine.apply_deferred(&change(b"c")).expect("written");
+        assert_eq!(numbers(3), [0_u64; 0]);
+        engine.write(b"d", b"v").expect("written, durable");
+        assert_eq!(
+            numbers(3),
+            [3, 4],
+            "a durable write syncs what is before it"
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@ use xcore::lock::ReadWriteLocked;
 use secret::DataKey;
 
 use super::super::wire::{self, Request};
-use super::copies::{DATABASES, position};
+use super::copies::DATABASES;
+use super::position::position;
 use super::{COPYING, Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
 use crate::{Change, PersistError};
@@ -59,7 +60,7 @@ impl StorageNode {
                 .ok_or("the primary ended the connection")?;
             match frame {
                 Shipped::Beat(epoch) => {
-                    self.heard(epoch);
+                    self.heard(epoch).map_err(|e| e.to_string())?;
                     self.synced(&mut dirty).map_err(|e| e.to_string())?;
                     synced = Instant::now();
                 }
@@ -69,7 +70,7 @@ impl StorageNode {
                         .copied(self.engines[at].as_ref(), (at, number), changes.into())
                         .map_err(|e| e.to_string())?;
                     dirty[at] = true;
-                    self.heard(0);
+                    self.heard(0).map_err(|e| e.to_string())?;
                 }
                 Shipped::Whole(history, epoch, keys) => {
                     // Nothing held is any history's until the copy is whole,
@@ -79,7 +80,7 @@ impl StorageNode {
                         .map_err(|e| e.to_string())?;
                     self.copies.restart(0, [1; DATABASES]);
                     self.wiped(&keys).map_err(|e| e.to_string())?;
-                    self.heard(epoch);
+                    self.heard(epoch).map_err(|e| e.to_string())?;
                     whole = Some(Whole {
                         history,
                         next: [None; DATABASES],
@@ -114,25 +115,25 @@ impl StorageNode {
         Ok(())
     }
 
-    /// The primary heard, in `epoch` where it says one.
-    fn heard(&self, epoch: u64) {
-        let later = {
-            let mut held = self.held.write_locked();
-            held.heard = Instant::now();
-            let later = epoch > held.epoch;
-            held.epoch = held.epoch.max(epoch);
-            later.then_some(held.epoch)
-        };
-        if let Some(epoch) = later {
-            let _ = self.engines[0].write(super::EPOCH, &epoch.to_be_bytes());
-        }
+    /// The primary heard, in `epoch` where it says one: a later epoch kept
+    /// first, durable.
+    ///
+    /// # Errors
+    ///
+    /// Where a later epoch could not be kept: the standby stops following.
+    fn heard(&self, epoch: u64) -> Result<(), PersistError> {
+        self.keep_epoch(epoch)?;
+        self.held.write_locked().heard = Instant::now();
+        Ok(())
     }
 
-    /// Each database written since its last sync synced.
+    /// Each database written since its last sync synced, its copies so far
+    /// on disk (`Copies::sync`).
     fn synced(&self, dirty: &mut [bool; DATABASES]) -> Result<(), PersistError> {
-        for (engine, dirty) in self.engines.iter().zip(dirty.iter_mut()) {
+        let databases = self.engines.iter().zip(dirty.iter_mut()).enumerate();
+        for (at, (engine, dirty)) in databases {
             if *dirty {
-                engine.sync()?;
+                self.copies.sync(at, engine.as_ref())?;
                 *dirty = false;
             }
         }

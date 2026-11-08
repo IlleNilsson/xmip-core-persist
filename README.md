@@ -42,7 +42,10 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   not hashed, so it sorts: the caller builds it from its values in the
   clear; its value is the record's identifier, sealed with the whole key as
   associated data.
-- **`fixture`**, behind the `test-support` feature — an engine in memory and
+- **`fixture`**, behind the `test-support` feature — an engine in memory,
+  `Hooked`, an engine a test steers through its `Hooks` (a sync held until
+  let go or failed, a durable write failed, a panic once an unsynced write
+  is in), and
   `conformance`, the one set of checks every engine runs against itself:
   a record back through the encryption after a reopen, index entries found
   by a value within a time, oldest or newest first, their values in the
@@ -197,8 +200,10 @@ and 9).
   decided leads it on its own thread, the writes arriving meanwhile wait
   for the next, and once its own write is answered it hands the lead to
   the first still waiting (`storage::commit::Waiting`; ADR-0018,
-  amendment 2026-11-01). A batch that panics answers its writes with an
-  error, and the lead goes on. A Publication is handed over by value
+  amendment 2026-11-01). A batch that panics before it reaches the engine
+  answers its writes with an error, and the lead goes on; one that panics
+  once it may be in the engine stops the Storage node, as a failed sync
+  does. A Publication is handed over by value
   (`XmipStorage::publish`). A batch is written, answered, then synced: every write but a Publication
   is waited on until durable, and a Publication is answered with its claims
   and its durability (`storage::Durable`), so its sends are prepared while
@@ -211,6 +216,19 @@ and 9).
   amendment 2026-10-21).
   Each operation is decided on a stage of its own over the batch, and the
   batch takes the stage only once the whole operation has been decided.
+  A batch that writes nothing — a Publication, a hand-on or a claim asked
+  again and found written — is durable with the latest batch handed to the
+  sync, never before what it found is. **A sync that fails stops the
+  Storage node** (fail-stop, `EncryptedStore::sync`): the writes before it
+  are in the engine, readable and perhaps answered, and may or may not
+  reach the disk, so every read and write through the store is refused
+  from then on, and the node holds what its log holds once it is opened
+  again. A lease, a due time and every stamp the writer decides are on
+  Xmip Storage's clock: the wall clock read once as the node opens its
+  databases, counted on by the monotonic clock
+  (`xcore::Clock::monotonic_nanos`), so a wall clock stepped while it is
+  the primary moves no lease; a node promoted opens it anew, on its own
+  wall clock.
 - **`StorageServer`** — a Storage node serving `XmipStorage` over Xmip's
   mutual TLS (`xmip-core-library-tls`, `Identity`), the protocol agreed as
   `xmip-storage/1` by ALPN: a length and a request, a length and an answer,
@@ -238,10 +256,14 @@ and 9).
   Storage nodes a cluster lists, over its three engines: it asks every one
   listed what it is (`Standing`), follows a primary that answers, and where
   none does the standby holding most of the latest epoch is promoted, the
-  first listed of equals. `Copied` numbers every write an engine takes, in
+  first listed of equals. Each epoch is written, durable, before a role is
+  taken in it, and a promotion whose epoch cannot be written fails.
+  `Copied` numbers every write an engine takes, in
   the order taken, into `Copies`, the writes kept for a standby behind; a
   standby asks to follow (wire operation 30) and is handed them in order
-  (`Shipped`), or each database whole first where it cannot take them on,
+  once they are synced on the primary, never before (`Copies::since`, up
+  to how far each database is synced) (`Shipped`), or each database whole
+  first, synced before it is said whole, where it cannot take them on,
   with its data key handed inside the mutual TLS and wrapped under its own
   key-encryption key (ADR-0063, amendment 2026-10-22). `StorageServer::several`
   serves one; `StorageNode::served` refuses every operation while it is not
@@ -282,6 +304,55 @@ and 9).
   embedded Storage node brings each database to `VERSION` as it opens
   (`Embedded::versions`) and refuses one that holds a newer version, in
   words naming both (`PersistError::Schema`).
+
+## What a failover loses
+
+A Storage node alone loses nothing it acknowledged: a write is answered
+once it is in the engine and waited on until it is synced, and a
+Publication's sends let a far end see its Message only once it is durable,
+so what a killed process takes with it was never acknowledged. A Storage
+node killed between a Publication's answer and its sync leaves exactly
+what was synced before (the runtime's `tests/ledger/unsynced.rs`).
+
+Between a primary and its standbys it is otherwise. The promotion asks no
+witness and counts no quorum, and the copy is asynchronous, so a failover
+today loses and duplicates the following.
+
+- **What the primary synced and had not handed on is lost.** The primary
+  answers a write once it is synced on its own disk; a standby is handed it
+  after that, at once while writes come and within a beat
+  (`storage_beat`) while none do, and syncs what it took every ten
+  milliseconds while copies come and at each beat. A primary killed, or
+  cut off, loses every write synced on
+  it and not yet synced on the standby promoted: acknowledged Messages
+  with their Journeys and audit records, hand-ons, claims, administration
+  and audit records alike. A sender whose Message is lost so is not asked
+  again: the Message is gone.
+- **What a former primary holds alone is lost.** One that comes back
+  follows the new primary, copied whole, and what only it held goes.
+- **Two primaries at once.** With no witness, a standby that hears no
+  primary for its silence (`storage_silence`) is promoted while a primary
+  it cannot reach may still serve the nodes that reach it. Both take writes,
+  each in its own epoch, until the former primary asks the others — once
+  every silence — meets the later epoch and steps down; every write it took
+  in its epoch after the promotion is lost when it follows. A node that met
+  the later epoch asks no primary of an earlier one; one that has not met
+  it keeps writing to the former primary until it does.
+- **Sends are duplicated.** A Message sent and not handed on in the
+  primary's last writes is, on the standby promoted, still queued or
+  claimed; once its claim lapses there it is claimed and sent again, so the
+  far end receives it twice, and tells by the deduplication key every send
+  carries. A claim's lease is counted on the promoted node's own clock,
+  based on its wall clock at the promotion: it lapses as much early or late
+  as the two machines' wall clocks differ, and the new epoch's fence
+  refuses the former holder's hand-on and renewal either way, so its work
+  is redone, never written twice.
+- **A Publication asked again is decided again.** One whose answer was
+  lost is asked again by its node; where the first was lost in the
+  failover, the standby promoted writes it anew, and where it was handed
+  on, it writes nothing and answers its claims (`Decided::Before`).
+- **A standby whose whole copy was cut short is never promoted**: it says
+  so in its standing until a whole copy is in.
 
 ## A record that fails its tag
 
