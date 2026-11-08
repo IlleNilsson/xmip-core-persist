@@ -1,6 +1,7 @@
 //! How the Storage nodes settle which is the primary (`super`): each asks
 //! every one listed what it is now, follows a primary that answers, and is
-//! promoted where none does and it is the one to be.
+//! promoted only where every one listed answered, none is a primary, and
+//! it is the one to be. A primary that does not answer is waited for.
 
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
@@ -57,12 +58,18 @@ impl StorageNode {
         }
     }
 
-    /// Whether, where no primary answered, this node is the one promoted:
-    /// the standby holding most of the latest epoch, the first listed of
-    /// equals, none whose whole copy is under way or was cut short; at once
-    /// where each one listed before it answered, else once no primary was
-    /// heard for the silence allowed.
+    /// Whether this node is the one promoted: only where every Storage node
+    /// listed answered and none of them is a primary, and then the one
+    /// holding most of the latest epoch, the first listed of equals, none
+    /// whose whole copy is under way or was cut short. A primary that does
+    /// not answer is waited for, never replaced: with no witness, a primary
+    /// cut off from the others would serve on beside the one promoted (the
+    /// owner, 2026-11-08; ADR-0056, amendment 2026-11-08).
     fn promotes(&self, answered: &[Answered]) -> bool {
+        let every = (0..self.listed.len()).all(|place| answered.iter().any(|a| a.place == place));
+        if !every || answered.iter().any(|a| a.standing.primary) {
+            return false;
+        }
         let Some(me) = answered.iter().find(|a| a.standing.process == self.process) else {
             return false;
         };
@@ -75,11 +82,7 @@ impl StorageNode {
                 .cmp(&(other.standing.epoch, other.standing.held()))
                 .then(other.place.cmp(&one.place))
         });
-        if best.map(|best| best.place) != Some(me.place) {
-            return false;
-        }
-        let before_answered = (0..me.place).all(|place| answered.iter().any(|a| a.place == place));
-        before_answered || self.held().heard.elapsed() >= self.timings.silence
+        best.map(|best| best.place) == Some(me.place)
     }
 
     /// Promoted in `epoch`: the epoch kept first, durable, then its
@@ -152,12 +155,11 @@ impl StorageNode {
             .collect()
     }
 
-    /// What the Storage node at `address` is, asked within the silence a
-    /// standby allows its primary: one that does not answer by then is no
-    /// primary to follow. Windows takes about two seconds to refuse a
-    /// connection to a loopback port nobody listens on, so a shorter bound
-    /// is what lets a promotion follow its primary's stop within the
-    /// silence.
+    /// What the Storage node at `address` is, asked within the silence: one
+    /// that does not answer by then did not answer. Windows takes about two
+    /// seconds to refuse a connection to a loopback port nobody listens on,
+    /// so a shorter bound is what keeps each round of asking, and the
+    /// settling once every one listed answers again, within the silence.
     fn ask_standing(&self, address: &str) -> Result<Standing, String> {
         let mut connection = self.connect(address, self.timings.silence)?;
         wire::send(&mut connection, &Request::Standing).map_err(|e| e.to_string())?;

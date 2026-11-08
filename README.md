@@ -252,11 +252,14 @@ and 9).
   node that is itself the Storage node calls its `Embedded` in process
   instead: both are `XmipStorage`, so nothing above knows which it has.
 - **`standby`** — embedded Storage nodes as a primary and its standbys
-  (ADR-0056, amendment 2026-10-22, drafted). `StorageNode` is one of the
-  Storage nodes a cluster lists, over its three engines: it asks every one
-  listed what it is (`Standing`), follows a primary that answers, and where
-  none does the standby holding most of the latest epoch is promoted, the
-  first listed of equals. Each epoch is written, durable, before a role is
+  (ADR-0056, amendments 2026-10-22, drafted, and 2026-11-08). `StorageNode`
+  is one of the Storage nodes a cluster lists, over its three engines: it
+  asks every one listed what it is (`Standing`), follows a primary that
+  answers, and is promoted only where every one listed answered and none
+  of them is a primary — the one holding most of the latest epoch, the
+  first listed of equals. A primary that is gone is waited for, never
+  replaced: automatic failover returns with a witness (the owner,
+  2026-11-08). Each epoch is written, durable, before a role is
   taken in it, and a promotion whose epoch cannot be written fails.
   `Copied` numbers every write an engine takes, in
   the order taken, into `Copies`, the writes kept for a standby behind; a
@@ -314,31 +317,32 @@ so what a killed process takes with it was never acknowledged. A Storage
 node killed between a Publication's answer and its sync leaves exactly
 what was synced before (the runtime's `tests/ledger/unsynced.rs`).
 
-Between a primary and its standbys it is otherwise. The promotion asks no
-witness and counts no quorum, and the copy is asynchronous, so a failover
-today loses and duplicates the following.
+Between a primary and its standbys it is otherwise. **Failover waits for
+the primary to return.** There is no witness and no quorum, so a standby
+is promoted only where every Storage node listed answers and none of them
+is a primary (the owner, 2026-11-08; ADR-0056, amendment 2026-11-08): a
+primary that is gone — stopped, killed or cut off — is not replaced, and
+until it is back the nodes that cannot reach it store nothing, each
+publishing Done at `<node>/storage`. Automatic failover
+returns with a witness (open problem 45). Since the copy is asynchronous,
+the primary's return can still lose and duplicate the following.
 
-- **What the primary synced and had not handed on is lost.** The primary
-  answers a write once it is synced on its own disk; a standby is handed it
-  after that, at once while writes come and within a beat
+- **What a killed primary synced and had not handed on is lost.** The
+  primary answers a write once it is synced on its own disk; a standby is
+  handed it after that, at once while writes come and within a beat
   (`storage_beat`) while none do, and syncs what it took every ten
-  milliseconds while copies come and at each beat. A primary killed, or
-  cut off, loses every write synced on
-  it and not yet synced on the standby promoted: acknowledged Messages
-  with their Journeys and audit records, hand-ons, claims, administration
-  and audit records alike. A sender whose Message is lost so is not asked
-  again: the Message is gone.
-- **What a former primary holds alone is lost.** One that comes back
-  follows the new primary, copied whole, and what only it held goes.
-- **Two primaries at once.** With no witness, a standby that hears no
-  primary for its silence (`storage_silence`) is promoted while a primary
-  it cannot reach may still serve the nodes that reach it. Both take writes,
-  each in its own epoch, until the former primary asks the others — once
-  every silence — meets the later epoch and steps down; every write it took
-  in its epoch after the promotion is lost when it follows. A node that met
-  the later epoch asks no primary of an earlier one; one that has not met
-  it keeps writing to the former primary until it does.
-- **Sends are duplicated.** A Message sent and not handed on in the
+  milliseconds while copies come and at each beat. A primary stopped in
+  order hands on everything first. One killed gave up its positions when
+  it was promoted, so once it is back and every one listed answers, a
+  standby holding more is promoted and the former primary follows it,
+  copied whole: every write synced on it and not yet synced on that
+  standby is lost — acknowledged Messages with their Journeys and audit
+  records, hand-ons, claims, administration and audit records alike. A
+  sender whose Message is lost so is not asked again: the Message is gone.
+- **No second primary.** A primary cut off from its standbys serves on
+  alone, and they wait; none is promoted beside it, so no two epochs take
+  writes at once.
+- **Sends are duplicated.** A Message sent and not handed on in a killed
   primary's last writes is, on the standby promoted, still queued or
   claimed; once its claim lapses there it is claimed and sent again, so the
   far end receives it twice, and tells by the deduplication key every send
@@ -348,8 +352,8 @@ today loses and duplicates the following.
   refuses the former holder's hand-on and renewal either way, so its work
   is redone, never written twice.
 - **A Publication asked again is decided again.** One whose answer was
-  lost is asked again by its node; where the first was lost in the
-  failover, the standby promoted writes it anew, and where it was handed
+  lost is asked again by its node; where the first was lost with a killed
+  primary, the standby promoted writes it anew, and where it was handed
   on, it writes nothing and answers its claims (`Decided::Before`).
 - **A standby whose whole copy was cut short is never promoted**: it says
   so in its standing until a whole copy is in.
