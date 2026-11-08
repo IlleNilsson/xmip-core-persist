@@ -32,6 +32,7 @@ use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
 use super::instance::{InstanceRecord, Turn};
 use super::kept_audit::KeptAudit;
+use super::monotonic_clock::MonotonicClock;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
@@ -105,8 +106,8 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         )
     }
 
-    /// The node over three stores already open, telling time by `clock`,
-    /// each brought to this build's schema version first.
+    /// The node over three stores already open, its time `clock` counted on
+    /// monotonically (`MonotonicClock`), each brought to this build's schema.
     ///
     /// # Errors
     ///
@@ -121,6 +122,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     ) -> Result<Self, PersistError> {
         let now = row::nanos(clock.unix_timestamp_nanos());
         let versions = versioned::each((&runtime, &administration, &audit), now)?;
+        let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new(clock));
         let runtime = Arc::new(runtime);
         let runtime_columns = Arc::new(Columns::of(Database::Runtime));
         let epoch = Arc::new(AtomicU64::new(0));

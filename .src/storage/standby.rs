@@ -32,17 +32,21 @@
 //! standby, and asks the next listed (`client`).
 //!
 //! **Asynchronous, so a promotion can lose the last writes.** The primary
-//! answers before its standbys have a write; a primary stopped in order
-//! hands on everything it wrote first, and one killed loses what it had not
-//! handed on. A former primary that comes back follows the new one, copied
-//! whole: what it held alone is gone with it. A standby whose whole copy
-//! was cut short holds part of a Ledger: it says so in its standing until a
-//! whole copy is in, and is never promoted meanwhile.
+//! answers before its standbys have a write, and hands one on only once it
+//! is synced ([`copies`]); a primary stopped in order hands on everything it
+//! wrote first, and one killed loses what it had not handed on. A former
+//! primary that comes back follows the new one, copied whole: what it held
+//! alone is gone with it. A standby whose whole copy was cut short holds
+//! part of a Ledger: it says so in its standing until a whole copy is in,
+//! and is never promoted meanwhile. Each epoch is kept, durable, before a
+//! role is taken in it; a promotion whose epoch cannot be kept fails. What
+//! a failover loses and duplicates is the README's *What a failover loses*.
 
 mod copies;
 mod delegated;
 mod finding;
 mod follow;
+mod position;
 mod served;
 mod ship;
 mod shipped;
@@ -51,7 +55,7 @@ pub use copies::{Behind, Copied, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
 pub use shipped::{Follow, Shipped, Standing};
 
-pub(crate) use copies::POSITION;
+pub(crate) use position::POSITION;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -175,7 +179,7 @@ impl StorageNode {
     ) -> Result<Arc<Self>, PersistError> {
         let positions = engines
             .iter()
-            .map(|engine| copies::positioned(engine.as_ref()))
+            .map(|engine| position::positioned(engine.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
         let history = positions.first().copied().flatten().map(|(h, _)| h);
         let same = positions
@@ -298,21 +302,43 @@ impl StorageNode {
         }
     }
 
-    /// `role` held from now, in `epoch`, the epoch kept where it is later
-    /// than the one kept.
-    fn take_up(&self, role: Role, epoch: u64) {
-        let kept = {
+    /// `epoch` written, durable on return, where it is later than the one
+    /// held, and held from then: before any role is taken in it, so a node
+    /// started again never holds an epoch before one it took a role in.
+    ///
+    /// # Errors
+    ///
+    /// Where it could not be written; the epoch held is as it was then.
+    fn keep_epoch(&self, epoch: u64) -> Result<(), PersistError> {
+        if epoch <= self.held().epoch {
+            return Ok(());
+        }
+        self.engines[0].write(EPOCH, &epoch.to_be_bytes())?;
+        let mut held = self.held.write_locked();
+        held.epoch = held.epoch.max(epoch);
+        Ok(())
+    }
+
+    /// `role` held from now, in `epoch`, the epoch kept first where it is
+    /// later than the one kept ([`StorageNode::keep_epoch`]).
+    ///
+    /// # Errors
+    ///
+    /// Where the epoch could not be kept; no role is taken then.
+    fn take_up(&self, role: Role, epoch: u64) -> Result<(), PersistError> {
+        self.keep_epoch(epoch)?;
+        self.stand(role);
+        Ok(())
+    }
+
+    /// `role` held from now, in the epoch held.
+    fn stand(&self, role: Role) {
+        {
             let mut held = self.held.write_locked();
-            let later = epoch > held.epoch;
-            held.epoch = held.epoch.max(epoch);
             if !matches!(role, Role::Finding) {
                 held.heard = Instant::now();
             }
             held.role = role;
-            later.then_some(held.epoch)
-        };
-        if let Some(epoch) = kept {
-            let _ = self.engines[0].write(EPOCH, &epoch.to_be_bytes());
         }
         let _settling = self.settling.locked();
         self.settled.notify_all();

@@ -1,5 +1,5 @@
 //! What every engine is proved with, for tests only: an engine in memory,
-//! and the one set of checks every engine technology runs against itself.
+//! one a test steers ([`Hooked`]), and the checks every engine runs.
 //!
 //! The checks are here rather than in each engine's tests, so `rocksdb` and
 //! `sqlite` prove the same things by the same code (ADR-0044). Behind the
@@ -14,8 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 pub mod crowd;
+mod hooked;
 mod viewed;
 
+pub use hooked::{Hooked, Hooks};
 use viewed::{CountedView, MemoryView, ranged};
 
 /// An engine in memory: what the layer hands an engine, and what an

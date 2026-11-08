@@ -10,7 +10,7 @@ use xcore::JourneyId;
 
 use super::{StorageNode, Timings};
 use crate::Engine;
-use crate::fixture::Memory;
+use crate::fixture::{Hooked, Hooks, Memory};
 use crate::storage::authority::Authority;
 use crate::storage::{JourneyFacts, JourneyRecord, StorageClient, StorageServer, XmipStorage};
 
@@ -275,6 +275,35 @@ fn a_standby_whose_whole_copy_was_cut_short_is_never_promoted() {
     assert!(!node.standing().copying);
     node.stop();
     server.stop();
+}
+
+#[test]
+fn a_promotion_whose_epoch_cannot_be_kept_fails_and_takes_no_role() {
+    let authority = Authority::new();
+    let hooks = Arc::new(Hooks::default());
+    let mut own = Own::new();
+    own.engines[0] = Arc::new(Hooked::new(Memory::default(), &hooks));
+    let keys = (
+        Arc::clone(&own.keys),
+        KekName::new("storage").expect("a name"),
+    );
+    let listed = ["127.0.0.1:1".to_string()];
+    let identity = authority.issue(&authority);
+    let node = StorageNode::new(own.engines.clone(), keys, &listed, &identity, timings())
+        .expect("a Storage node");
+    hooks.fail_writes(true);
+    assert!(node.promote(1).is_err(), "the epoch was not kept");
+    assert!(!node.is_primary(), "no role taken in an epoch not kept");
+    assert_eq!(node.standing().epoch, 0, "the epoch held is as it was");
+    assert_eq!(own.engines[0].read(super::EPOCH).expect("read"), None);
+    hooks.fail_writes(false);
+    node.promote(1).expect("promoted once its epoch is kept");
+    assert!(node.is_primary());
+    assert_eq!(
+        own.engines[0].read(super::EPOCH).expect("read"),
+        Some(1_u64.to_be_bytes().to_vec()),
+        "kept before the role was taken"
+    );
 }
 
 #[test]

@@ -128,6 +128,11 @@ impl StorageNode {
                     .collect();
                 send(connection, &Shipped::Entries(number, entries))?;
             }
+            // Every entry handed on was written before this sync began, so
+            // the copy is whole only of what is on disk here.
+            self.copies
+                .sync(database, engine.as_ref())
+                .map_err(failed)?;
             send(connection, &Shipped::Copied(number, from[database]))?;
         }
         Ok(from)

@@ -35,10 +35,14 @@ impl StorageNode {
             });
             if let Some(primary) = primary {
                 let (address, epoch) = (primary.address.clone(), primary.standing.epoch);
-                self.take_up(Role::Standby(address.clone()), epoch);
+                if let Err(problem) = self.take_up(Role::Standby(address.clone()), epoch) {
+                    self.told(&format!("could not follow {address}: {problem}"));
+                    self.rest(self.timings.beat);
+                    continue;
+                }
                 self.follow(&address);
                 if !self.stopping() {
-                    self.take_up(Role::Finding, 0);
+                    self.stand(Role::Finding);
                 }
                 continue;
             }
@@ -78,16 +82,22 @@ impl StorageNode {
         before_answered || self.held().heard.elapsed() >= self.timings.silence
     }
 
-    /// Promoted in `epoch`: its databases opened over what it copied, its
-    /// writes numbered on in the history it followed — a new one where it
-    /// followed none — and its positions given up, so a copy of another
-    /// primary later starts whole.
-    fn promote(&self, epoch: u64) -> Result<(), PersistError> {
+    /// Promoted in `epoch`: the epoch kept first, durable, then its
+    /// databases opened over what it copied, its writes numbered on in the
+    /// history it followed — a new one where it followed none — and its
+    /// positions given up, so a copy of another primary later starts whole.
+    ///
+    /// # Errors
+    ///
+    /// Where a whole copy into it was cut short, the epoch cannot be kept
+    /// or its databases not opened: it is not promoted then.
+    pub(super) fn promote(&self, epoch: u64) -> Result<(), PersistError> {
         if self.is_copying() {
             return Err(PersistError::Failed {
                 reason: "a whole copy into it was cut short; it holds part of a Ledger".to_string(),
             });
         }
+        self.keep_epoch(epoch)?;
         if self.copies.history() == 0 {
             self.copies.restart(
                 u128::from_be_bytes(codec::random::array()),
@@ -107,8 +117,7 @@ impl StorageNode {
             &self.kek,
         )?;
         primary.in_epoch(epoch);
-        self.take_up(Role::Primary(Arc::new(primary)), epoch);
-        Ok(())
+        self.take_up(Role::Primary(Arc::new(primary)), epoch)
     }
 
     /// While the primary: ask the others, each silence, and step down
@@ -123,7 +132,7 @@ impl StorageNode {
         });
         if later {
             self.told("stepped down: another Storage node is the primary of a later epoch");
-            self.take_up(Role::Finding, 0);
+            self.stand(Role::Finding);
         }
     }
 
