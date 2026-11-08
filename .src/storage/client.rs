@@ -39,8 +39,8 @@
 //! operation and says so, and is asked after every node that did not say
 //! it; a new connection first asks what its Storage node is, so a standby
 //! is not asked at all, nor a primary of an epoch before the latest one this
-//! node met. So a node asks the primary, and once the primary is gone, the
-//! standby promoted in its place. What it last came to with each is
+//! node met. So a node asks the primary, and whichever is promoted once
+//! every one listed answers again. What it last came to with each is
 //! [`StorageClient::reached`], which every surface shows.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

@@ -1,5 +1,6 @@
-//! Storage nodes of one cluster settling a primary, a standby copying it
-//! and promoted once it stops, each over Xmip's own mutual TLS on loopback.
+//! Storage nodes of one cluster settling a primary once every one listed
+//! answers, a standby copying it, and the primary gone waited for, never
+//! replaced, each over Xmip's own mutual TLS on loopback.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -41,8 +42,8 @@ impl Own {
     }
 }
 
-/// A Storage node of `listed`, at `listener`, served and started.
-fn started(
+/// A Storage node of `listed`, at `listener`, served, settling nothing yet.
+fn served(
     own: &Own,
     (listener, listed): (TcpListener, &[String]),
     authority: &Authority,
@@ -55,8 +56,35 @@ fn started(
     let node = StorageNode::new(own.engines.clone(), keys, listed, &identity, timings())
         .expect("a Storage node");
     let server = StorageServer::several(&node, listener, &identity).expect("served");
+    (node, server)
+}
+
+/// A Storage node of `listed`, at `listener`, served and started.
+fn started(
+    own: &Own,
+    at: (TcpListener, &[String]),
+    authority: &Authority,
+) -> (Arc<StorageNode>, StorageServer) {
+    let (node, server) = served(own, at, authority);
     node.start(Duration::from_secs(5)).expect("started");
     (node, server)
+}
+
+/// Two Storage nodes of `listed`, each over its own, both served before
+/// either starts: every one listed answers, and they settle at once.
+fn both_started(
+    own: [&Own; 2],
+    (mut bound, listed): (Vec<TcpListener>, &[String]),
+    authority: &Authority,
+) -> [(Arc<StorageNode>, StorageServer); 2] {
+    let second = bound.pop().expect("two");
+    let first = bound.pop().expect("one");
+    let one = served(own[0], (first, listed), authority);
+    let two = served(own[1], (second, listed), authority);
+    for (node, _) in [&one, &two] {
+        node.start(Duration::from_secs(5)).expect("started");
+    }
+    [one, two]
 }
 
 fn listeners(count: usize) -> (Vec<TcpListener>, Vec<String>) {
@@ -68,6 +96,17 @@ fn listeners(count: usize) -> (Vec<TcpListener>, Vec<String>) {
         .map(|l| l.local_addr().expect("an address").to_string())
         .collect();
     (listeners, listed)
+}
+
+/// A node's client of the Storage nodes `listed`.
+fn client(listed: &[String], authority: &Authority) -> StorageClient {
+    StorageClient::new(
+        listed,
+        &authority.issue(authority),
+        timings().timeout,
+        timings().pass_over,
+    )
+    .expect("a client")
 }
 
 fn journey(number: u128, body: &[u8]) -> JourneyRecord {
@@ -91,23 +130,51 @@ fn until(within: Duration, holds: impl Fn() -> bool) -> bool {
 }
 
 #[test]
-fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops() {
+fn the_first_listed_alone_is_not_promoted_until_every_one_listed_answers() {
     let authority = Authority::new();
     let (mut bound, listed) = listeners(2);
-    let (first, second) = (Own::new(), Own::new());
     let second_listener = bound.pop().expect("two");
-    let (one, one_server) = started(&first, (bound.pop().expect("one"), &listed), &authority);
-    let (two, two_server) = started(&second, (second_listener, &listed), &authority);
+    let first_listener = bound.pop().expect("one");
+    // The second is not listening yet: it does not answer.
+    drop(second_listener);
+    let (first, second) = (Own::new(), Own::new());
+    let (one, one_server) = served(&first, (first_listener, &listed), &authority);
+    one.start(timings().silence).expect("started");
+    std::thread::sleep(timings().silence * 3);
+    assert!(one.is_finding(), "{}", one.said());
+    assert_eq!(one.standing().epoch, 0, "nothing promoted");
+
+    let listener = TcpListener::bind(&listed[1]).expect("bound");
+    let (two, two_server) = started(&second, (listener, &listed), &authority);
+    assert!(
+        until(Duration::from_secs(5), || one.is_primary()),
+        "{}",
+        one.said()
+    );
+    assert!(
+        until(Duration::from_secs(5), || !two.is_finding()),
+        "{}",
+        two.said()
+    );
+    assert!(!two.is_primary(), "{}", two.said());
+    two.stop();
+    two_server.stop();
+    one.stop();
+    one_server.stop();
+}
+
+#[test]
+fn a_standby_is_not_promoted_while_its_primary_is_gone_and_one_is_once_every_one_answers() {
+    let authority = Authority::new();
+    let (bound, listed) = listeners(2);
+    let (first, second) = (Own::new(), Own::new());
+    let first_address = listed[0].clone();
+    let [(one, one_server), (two, two_server)] =
+        both_started([&first, &second], (bound, &listed), &authority);
     assert!(one.is_primary(), "{}", one.said());
     assert!(!two.is_primary(), "{}", two.said());
 
-    let client = StorageClient::new(
-        &listed,
-        &authority.issue(&authority),
-        timings().timeout,
-        timings().pass_over,
-    )
-    .expect("a client");
+    let client = client(&listed, &authority);
     for number in 0..50 {
         client
             .write_journey(&journey(number, b"before"))
@@ -126,15 +193,43 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
         )
         .expect("asked")
         .expect("taken");
+    let epoch = one.standing().epoch;
     one.stop();
     one_server.stop();
 
+    // No witness: the primary gone is waited for, never replaced.
+    assert!(
+        until(Duration::from_secs(5), || two.is_finding()),
+        "{}",
+        two.said()
+    );
+    std::thread::sleep(timings().silence * 3);
+    assert!(!two.is_primary(), "{}", two.said());
+    assert_eq!(two.standing().epoch, epoch, "nothing promoted");
+    assert!(
+        client.read_journey(journey(1, b"").journey).is_err(),
+        "no primary answers"
+    );
+
+    // The former primary back: every one listed answers, none a primary,
+    // and the standby, holding more — the former primary gave up its
+    // positions when promoted — is promoted; the former primary follows.
+    let listener = TcpListener::bind(&first_address).expect("bound again");
+    let (again, again_server) = started(&first, (listener, &listed), &authority);
     assert!(
         until(Duration::from_secs(5), || two.is_primary()),
         "{}",
         two.said()
     );
-    assert_eq!(two.standing().epoch, one.standing().epoch + 1);
+    assert_eq!(two.standing().epoch, epoch + 1);
+    assert!(
+        until(Duration::from_secs(5), || again.standing().next
+            == two.standing().next),
+        "{} / {}",
+        two.said(),
+        again.said()
+    );
+    assert!(!again.is_primary(), "{}", again.said());
     std::thread::sleep(lease * 2);
     let after = client
         .claim(
@@ -171,149 +266,70 @@ fn the_first_listed_is_primary_the_next_copies_it_and_is_promoted_once_it_stops(
         reached[1].1.as_ref().is_some_and(|r| r.answered),
         "{reached:?}"
     );
+    again.stop();
+    again_server.stop();
     two.stop();
     two_server.stop();
 }
 
 #[test]
-fn a_standby_started_late_is_copied_whole_and_a_former_primary_follows_the_new_one() {
+fn the_primary_serves_on_while_a_standby_is_gone_and_one_started_empty_is_copied_whole() {
     let authority = Authority::new();
-    let (mut bound, listed) = listeners(2);
+    let (bound, listed) = listeners(2);
     let (first, second) = (Own::new(), Own::new());
-    let second_listener = bound.pop().expect("two");
-    let first_listener = bound.pop().expect("one");
-    let first_address = listed[0].clone();
-    let (one, one_server) = started(&first, (first_listener, &listed), &authority);
-    let client = StorageClient::new(
-        &listed,
-        &authority.issue(&authority),
-        timings().timeout,
-        timings().pass_over,
-    )
-    .expect("a client");
+    let second_address = listed[1].clone();
+    let [(one, one_server), (two, two_server)] =
+        both_started([&first, &second], (bound, &listed), &authority);
+    two.stop();
+    two_server.stop();
+    let client = client(&listed, &authority);
     for number in 0..20 {
         client
             .write_journey(&journey(number, b"early"))
-            .expect("written");
+            .expect("written, the standby gone");
     }
-    let (two, two_server) = started(&second, (second_listener, &listed), &authority);
+    assert!(one.is_primary(), "{}", one.said());
+
+    // The standby replaced by one started empty, late: copied whole.
+    let listener = TcpListener::bind(&second_address).expect("bound again");
+    let (late, late_server) = started(&Own::new(), (listener, &listed), &authority);
+    assert!(!late.is_primary(), "{}", late.said());
     assert!(
-        until(Duration::from_secs(5), || two.standing().next
+        until(Duration::from_secs(5), || late.standing().next
             == one.standing().next),
         "{} / {}",
         one.said(),
-        two.said()
+        late.said()
     );
     assert!(
-        !two.standing().copying,
+        !late.standing().copying,
         "a whole copy taken is no longer under way"
-    );
-    one.stop();
-    one_server.stop();
-    assert!(
-        until(Duration::from_secs(5), || two.is_primary()),
-        "{}",
-        two.said()
     );
     let read = client.read_journey(journey(7, b"").journey).expect("read");
     assert_eq!(read.map(|r| r.body), Some(b"early".to_vec()));
     client
         .write_journey(&journey(21, b"later"))
         .expect("written");
-
-    // The former primary comes back over what it kept, and follows.
-    let listener = TcpListener::bind(&first_address).expect("bound again");
-    let (again, again_server) = started(&first, (listener, &listed), &authority);
-    assert!(!again.is_primary(), "{}", again.said());
     assert!(
-        until(Duration::from_secs(5), || again.standing().next
-            == two.standing().next),
-        "{} / {}",
-        two.said(),
-        again.said()
+        until(Duration::from_secs(5), || late.standing().next
+            == one.standing().next),
+        "copied on after the whole copy: {} / {}",
+        one.said(),
+        late.said()
     );
-    two.stop();
-    two_server.stop();
-    assert!(
-        until(Duration::from_secs(5), || again.is_primary()),
-        "{}",
-        again.said()
-    );
-    let read = client.read_journey(journey(21, b"").journey).expect("read");
-    assert_eq!(read.map(|r| r.body), Some(b"later".to_vec()));
-    again.stop();
-    again_server.stop();
-}
-
-#[test]
-fn a_standby_whose_whole_copy_was_cut_short_is_never_promoted() {
-    let authority = Authority::new();
-    let (mut bound, listed) = listeners(1);
-    let own = Own::new();
-    // What a whole copy cut short between pages leaves: part of a Ledger,
-    // no position, and the copy still under way.
-    own.engines[0].write(super::COPYING, &[1]).expect("written");
-    own.engines[1]
-        .write(b"part", b"of a Ledger")
-        .expect("written");
-    let (node, server) = started(&own, (bound.pop().expect("one"), &listed), &authority);
-    std::thread::sleep(timings().silence * 3);
-    assert!(!node.is_primary(), "{}", node.said());
-    assert!(node.standing().copying);
-    node.stop();
-    server.stop();
-
-    // An empty Storage node is a new cluster's, and is promoted.
-    let (mut bound, listed) = listeners(1);
-    let fresh = Own::new();
-    let (node, server) = started(&fresh, (bound.pop().expect("one"), &listed), &authority);
-    assert!(
-        until(Duration::from_secs(5), || node.is_primary()),
-        "{}",
-        node.said()
-    );
-    assert!(!node.standing().copying);
-    node.stop();
-    server.stop();
-}
-
-#[test]
-fn a_promotion_whose_epoch_cannot_be_kept_fails_and_takes_no_role() {
-    let authority = Authority::new();
-    let hooks = Arc::new(Hooks::default());
-    let mut own = Own::new();
-    own.engines[0] = Arc::new(Hooked::new(Memory::default(), &hooks));
-    let keys = (
-        Arc::clone(&own.keys),
-        KekName::new("storage").expect("a name"),
-    );
-    let listed = ["127.0.0.1:1".to_string()];
-    let identity = authority.issue(&authority);
-    let node = StorageNode::new(own.engines.clone(), keys, &listed, &identity, timings())
-        .expect("a Storage node");
-    hooks.fail_writes(true);
-    assert!(node.promote(1).is_err(), "the epoch was not kept");
-    assert!(!node.is_primary(), "no role taken in an epoch not kept");
-    assert_eq!(node.standing().epoch, 0, "the epoch held is as it was");
-    assert_eq!(own.engines[0].read(super::EPOCH).expect("read"), None);
-    hooks.fail_writes(false);
-    node.promote(1).expect("promoted once its epoch is kept");
-    assert!(node.is_primary());
-    assert_eq!(
-        own.engines[0].read(super::EPOCH).expect("read"),
-        Some(1_u64.to_be_bytes().to_vec()),
-        "kept before the role was taken"
-    );
+    late.stop();
+    late_server.stop();
+    one.stop();
+    one_server.stop();
 }
 
 #[test]
 fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
     let authority = Authority::new();
-    let (mut bound, listed) = listeners(2);
+    let (bound, listed) = listeners(2);
     let (first, second) = (Own::new(), Own::new());
-    let second_listener = bound.pop().expect("two");
-    let (one, one_server) = started(&first, (bound.pop().expect("one"), &listed), &authority);
-    let (two, two_server) = started(&second, (second_listener, &listed), &authority);
+    let [(one, one_server), (two, two_server)] =
+        both_started([&first, &second], (bound, &listed), &authority);
     let refused = two.served().read_journey(journey(1, b"").journey);
     let Err(crate::PersistError::Standby { reason }) = refused else {
         panic!("{refused:?}");
@@ -336,3 +352,5 @@ fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
     one.stop();
     one_server.stop();
 }
+
+mod refused;

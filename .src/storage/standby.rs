@@ -1,8 +1,8 @@
 //! A Storage node among several, each keeping the databases itself: one
 //! is the primary, serving every operation, and the others are standbys,
-//! each copying the primary's writes behind it, in order, and promoted when
-//! the primary is gone (ADR-0056, amendment 2026-10-22, drafted: the
-//! owner's design of 2026-10-01 — *one primary Storage node takes every
+//! each copying the primary's writes behind it, in order (ADR-0056,
+//! amendments 2026-10-22, drafted, and 2026-11-08: the owner's design of
+//! 2026-10-01 — *one primary Storage node takes every
 //! write; standby Storage nodes copy asynchronously behind*, the last
 //! writes not yet copied lost if the primary dies — built for embedded
 //! Storage nodes, which round robin alone cannot share a Ledger between).
@@ -12,13 +12,16 @@
 //! same order everywhere, the list a node reaches them through. Each asks
 //! every one listed what it is now ([`Standing`]); it finds itself among
 //! them by the process it answers as, never by a name. A primary that
-//! answers is followed. Where none answers, the standby holding most of
-//! the newest epoch is promoted — the first listed of equals — at once
-//! where every one listed before it answered, else once no primary has
-//! been heard for the silence its configuration allows. Each promotion
-//! raises the epoch, and a primary that finds one of a later epoch steps
-//! down; a node keeps the latest epoch it met, and a primary of an earlier
-//! one is not asked (`client`).
+//! answers is followed. **One is promoted only where every one listed
+//! answered and none of them is a primary**: the one holding most of the
+//! latest epoch, the first listed of equals. A primary that is gone is not
+//! replaced; the others wait for it to come back, since with no witness a
+//! primary cut off from them would serve on beside the one promoted, and
+//! automatic failover returns with a witness (the owner, 2026-11-08;
+//! ADR-0056, amendment 2026-11-08). Each promotion raises the epoch, and a
+//! primary that finds one of a later epoch steps down; a node keeps the
+//! latest epoch it met, and a primary of an earlier one is not asked
+//! (`client`).
 //!
 //! **A standby copies the engines' writes, not the operations**
 //! ([`copies`]): each write as the primary's engine took it, a keyed hash
@@ -31,16 +34,18 @@
 //! first. A standby serves no operation: a node asking one is told it is a
 //! standby, and asks the next listed (`client`).
 //!
-//! **Asynchronous, so a promotion can lose the last writes.** The primary
+//! **Asynchronous, so a standby can lack the last writes.** The primary
 //! answers before its standbys have a write, and hands one on only once it
 //! is synced ([`copies`]); a primary stopped in order hands on everything it
-//! wrote first, and one killed loses what it had not handed on. A former
-//! primary that comes back follows the new one, copied whole: what it held
-//! alone is gone with it. A standby whose whole copy was cut short holds
-//! part of a Ledger: it says so in its standing until a whole copy is in,
-//! and is never promoted meanwhile. Each epoch is kept, durable, before a
-//! role is taken in it; a promotion whose epoch cannot be kept fails. What
-//! a failover loses and duplicates is the README's *What a failover loses*.
+//! wrote first, and one killed loses what it had not handed on: it gave up
+//! its positions when it was promoted, so once it is back and every one
+//! listed answers, a standby holding more is promoted, and the former
+//! primary follows it, copied whole. A standby whose whole copy was cut
+//! short holds part of a Ledger: it says so in its standing until a whole
+//! copy is in, and is never promoted meanwhile. Each epoch is kept,
+//! durable, before a role is taken in it; a promotion whose epoch cannot be
+//! kept fails. What a failover loses and duplicates is the README's *What a
+//! failover loses*.
 
 mod copies;
 mod delegated;
@@ -84,8 +89,10 @@ const COPYING: &[u8] = b"\0xmip-core-persist/copying\0";
 /// hand, where the node's `[tuning] storage_beat` does not say.
 pub const BEAT: Duration = Duration::from_millis(100);
 
-/// How long a standby hears nothing of a primary before it is promoted,
-/// where the node's `[tuning] storage_silence` does not say.
+/// How long a Storage node waits to hear from another — the standing it
+/// asks for, its primary's next write or beat — and how often a primary
+/// asks the others what they are, where the node's `[tuning]
+/// storage_silence` does not say.
 pub const SILENCE: Duration = Duration::from_secs(1);
 
 /// The most bytes of each database's writes a Storage node keeps for a
@@ -97,7 +104,9 @@ pub const KEPT: usize = 64 * 1024 * 1024;
 pub struct Timings {
     /// How often a primary beats to an idle standby.
     pub beat: Duration,
-    /// How long a standby goes without a primary before it is promoted.
+    /// How long it waits to hear from another — a standing asked, its
+    /// primary's next write or beat — and how often a primary asks the
+    /// others what they are.
     pub silence: Duration,
     /// What bounds each connect and each read of another.
     pub timeout: Duration,
@@ -126,8 +135,6 @@ enum Role {
 struct Held {
     epoch: u64,
     role: Role,
-    /// When a primary was last heard, or this node started.
-    heard: Instant,
 }
 
 /// A Storage node of several: primary or standby, as they settle it.
@@ -209,7 +216,6 @@ impl StorageNode {
             held: RwLock::new(Held {
                 epoch,
                 role: Role::Finding,
-                heard: Instant::now(),
             }),
             settled: Condvar::new(),
             settling: Mutex::new(()),
@@ -333,13 +339,7 @@ impl StorageNode {
 
     /// `role` held from now, in the epoch held.
     fn stand(&self, role: Role) {
-        {
-            let mut held = self.held.write_locked();
-            if !matches!(role, Role::Finding) {
-                held.heard = Instant::now();
-            }
-            held.role = role;
-        }
+        self.held.write_locked().role = role;
         let _settling = self.settling.locked();
         self.settled.notify_all();
     }

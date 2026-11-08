@@ -3,7 +3,6 @@
 //! whole of each database where it cannot take them on from there — until
 //! the primary goes silent, declines or the node stops.
 use std::time::{Duration, Instant};
-use xcore::lock::ReadWriteLocked;
 
 use secret::DataKey;
 
@@ -60,7 +59,7 @@ impl StorageNode {
                 .ok_or("the primary ended the connection")?;
             match frame {
                 Shipped::Beat(epoch) => {
-                    self.heard(epoch).map_err(|e| e.to_string())?;
+                    self.keep_epoch(epoch).map_err(|e| e.to_string())?;
                     self.synced(&mut dirty).map_err(|e| e.to_string())?;
                     synced = Instant::now();
                 }
@@ -70,7 +69,6 @@ impl StorageNode {
                         .copied(self.engines[at].as_ref(), (at, number), changes.into())
                         .map_err(|e| e.to_string())?;
                     dirty[at] = true;
-                    self.heard(0).map_err(|e| e.to_string())?;
                 }
                 Shipped::Whole(history, epoch, keys) => {
                     // Nothing held is any history's until the copy is whole,
@@ -80,7 +78,7 @@ impl StorageNode {
                         .map_err(|e| e.to_string())?;
                     self.copies.restart(0, [1; DATABASES]);
                     self.wiped(&keys).map_err(|e| e.to_string())?;
-                    self.heard(epoch).map_err(|e| e.to_string())?;
+                    self.keep_epoch(epoch).map_err(|e| e.to_string())?;
                     whole = Some(Whole {
                         history,
                         next: [None; DATABASES],
@@ -112,18 +110,6 @@ impl StorageNode {
                 synced = Instant::now();
             }
         }
-        Ok(())
-    }
-
-    /// The primary heard, in `epoch` where it says one: a later epoch kept
-    /// first, durable.
-    ///
-    /// # Errors
-    ///
-    /// Where a later epoch could not be kept: the standby stops following.
-    fn heard(&self, epoch: u64) -> Result<(), PersistError> {
-        self.keep_epoch(epoch)?;
-        self.held.write_locked().heard = Instant::now();
         Ok(())
     }
 
