@@ -289,7 +289,7 @@ impl<R: Engine> Writer<R> {
         // What the batch took outside its I/O, shared by its writes.
         drop(entered);
         if !empty {
-            durable.worked_each(spent.own(Duration::ZERO) / writes.max(1));
+            durable.worked_by(spent.own(Duration::ZERO), writes);
         }
         for (reply, done) in decided {
             let answer = match (&written, done) {
