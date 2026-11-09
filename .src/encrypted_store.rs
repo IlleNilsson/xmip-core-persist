@@ -15,8 +15,9 @@ use viewed::Now;
 pub use viewed::{IndexScan, Viewed};
 // Every write the engine is asked for, timed as the I/O of the Message the
 // asking thread works for, if it works for one (`xcore::spent`): the
-// Ledger's appends and its syncs, never the sealing before them.
-use xcore::spent::on_io;
+// Ledger's appends and its syncs, never the sealing before them; a sync's
+// wait the disk's time beside it (`on_sync`).
+use xcore::spent::{on_io, on_sync};
 
 /// Where the store's own data key is kept, wrapped, in the engine: the one
 /// engine key that is not a keyed hash. A keyed hash is thirty-two bytes,
@@ -241,7 +242,7 @@ impl<E: Engine> EncryptedStore<E> {
     /// has stopped.
     pub fn sync(&self) -> Result<(), PersistError> {
         self.alive()?;
-        let synced = on_io(|| self.engine.sync());
+        let synced = on_sync(|| self.engine.sync());
         if let Err(failed) = &synced {
             self.stop(format!("a sync failed: {failed}"));
         }

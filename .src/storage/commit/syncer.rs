@@ -21,6 +21,8 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
+use std::time::Duration;
+use xcore::spent::Spent;
 
 use super::super::durable::Durable;
 use crate::{EncryptedStore, Engine, PersistError};
@@ -74,13 +76,23 @@ impl Drop for Syncer {
 }
 
 /// One sync for every batch written while the last ran, until the writer
-/// is gone.
+/// is gone. What it waited for the disk is counted on an account of its
+/// own (`xcore::spent::on_sync`) and shared equally by every write it made
+/// durable, as the writer's work on a batch is ([`Durable::synced`]).
 fn sync<R: Engine>(store: &EncryptedStore<R>, inbox: &Receiver<Durable>) {
     while let Ok(first) = inbox.recv() {
         let mut written = vec![first];
         written.extend(inbox.try_iter());
+        let account = Spent::begin();
+        let entered = account.entered();
         let synced = store.sync().map_err(|failed| failed.to_string());
+        drop(entered);
+        let writes = written.iter().fold(0_u32, |writes, durable| {
+            writes.saturating_add(durable.writes())
+        });
+        let each = account.disk_sync(Duration::ZERO) / writes.max(1);
         for durable in written {
+            durable.synced_each(each);
             durable.tell(synced.clone());
         }
     }

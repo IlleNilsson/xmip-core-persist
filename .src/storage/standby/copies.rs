@@ -190,7 +190,7 @@ impl Copies {
     /// The sync's own; nothing more is handed on then.
     pub(crate) fn sync(&self, database: usize, engine: &dyn Engine) -> Result<(), PersistError> {
         let upto = self.kept(database).next;
-        engine.sync()?;
+        xcore::spent::on_sync(|| engine.sync())?;
         let mut kept = self.kept(database);
         let was = kept.synced;
         kept.synced = was.max(upto.min(kept.next));
