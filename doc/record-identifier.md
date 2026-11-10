@@ -2,7 +2,7 @@
 
 Moved here from the estate root on 2026-09-12 (ADR-0020 clause 3: the document lives where its subject lives).
 The paragraph that named the generation sites of 2026-08-26 is gone with the
-crates it named (`doc/planning/allocation.xmip`); every store keys by `Uuid::now_v7()`.
+crates it named (`doc/planning/allocation.toml`); every store keys by `Uuid::now_v7()`.
 
 
 **Since 2026-09-25 the engine does not see this key.** ADR-0063 encrypts
