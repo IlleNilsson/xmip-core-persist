@@ -279,7 +279,12 @@ and 9).
   kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
   `mariadb`, as each domain's own table in the configuration names it in
   `storage` (the owner, 2026-10-10: *I would do it like runtime, storage,
-  connection string*) — and a database server Xmip Storage is in front of
+  connection string*), read once by `database::technology`, which refuses a
+  word that names none and an embedded engine the domain's database is not
+  kept on, and which `database::problems`, what a node starting is held to,
+  and the runtime's `storage::keeping`, what a Quest probes a node's
+  configuration by, both call (ADR-0072, amendment 2026-11-10) — and a
+  database server Xmip Storage is in front of
   (option A): the one reading of a connection, in the server's own form
   (`host=… port=… dbname=… user=…` for PostgreSQL,
   `Server=…,<port>;Database=…;User Id=…` for SQL Server,

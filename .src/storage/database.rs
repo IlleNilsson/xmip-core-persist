@@ -244,6 +244,39 @@ pub struct Domain<'a> {
     pub connection: &'a str,
 }
 
+/// What `domain`'s table keeps its database on: the technology its
+/// `storage` names, where that is a database server or the embedded engine
+/// its database is kept on ([`Technology::embedded`]). The one reading of
+/// the word, which [`problems`] holds a node starting to, and whatever
+/// reads where a domain is kept from a configuration calls too.
+///
+/// # Errors
+///
+/// Where `storage` names none Xmip Storage keeps a database on, or an
+/// embedded engine its database is not kept on; in words opening with the
+/// table it is about.
+pub fn technology(domain: &Domain<'_>) -> Result<Technology, String> {
+    let said = |problem: String| format!("[{}] {problem}", domain.database.word());
+    let Some(technology) = Technology::named(domain.storage) else {
+        let words: Vec<&str> = Technology::ALL.iter().map(|t| t.word()).collect();
+        return Err(said(format!(
+            "storage: '{}' is none Xmip Storage keeps a database on; write {}",
+            domain.storage,
+            words.join(", ")
+        )));
+    };
+    match technology {
+        Technology::Server(_) => Ok(technology),
+        embedded if embedded != Technology::embedded(domain.database) => Err(said(format!(
+            "storage: the {} database is kept on {} where it is embedded, not {}",
+            domain.database.word(),
+            Technology::embedded(domain.database).word(),
+            embedded.word()
+        ))),
+        embedded => Ok(embedded),
+    }
+}
+
 /// What is wrong with the data domains' tables a configuration holds, and,
 /// where one names a database server, with the secret the password is kept
 /// under; in words, each opening with the table it is about. Two domains
@@ -254,32 +287,16 @@ pub fn problems(named: &[Domain<'_>], password: Option<&str>) -> Vec<String> {
     let mut servers: Vec<(Database, Connection)> = Vec::new();
     for domain in named {
         let said = |problem: String| format!("[{}] {problem}", domain.database.word());
-        let Some(technology) = Technology::named(domain.storage) else {
-            let words: Vec<&str> = Technology::ALL.iter().map(|t| t.word()).collect();
-            problems.push(said(format!(
-                "storage: '{}' is none Xmip Storage keeps a database on; write {}",
-                domain.storage,
-                words.join(", ")
-            )));
-            continue;
-        };
-        match technology {
-            Technology::Server(server) => match Connection::read(server, domain.connection) {
+        match technology(domain) {
+            Err(problem) => problems.push(problem),
+            Ok(Technology::Server(server)) => match Connection::read(server, domain.connection) {
                 Ok(connection) => servers.push((domain.database, connection)),
                 Err(problem) => problems.push(said(format!("connection: {problem}"))),
             },
-            embedded if embedded != Technology::embedded(domain.database) => {
-                problems.push(said(format!(
-                    "storage: the {} database is kept on {} where it is embedded, not {}",
-                    domain.database.word(),
-                    Technology::embedded(domain.database).word(),
-                    embedded.word()
-                )));
-            }
-            _ if domain.connection.trim().is_empty() => {
+            Ok(_) if domain.connection.trim().is_empty() => {
                 problems.push(said("connection names no path".to_string()));
             }
-            _ => {}
+            Ok(_) => {}
         }
     }
     for (at, (database, connection)) in servers.iter().enumerate() {
@@ -441,5 +458,37 @@ mod tests {
         assert!(refused[0].contains("kept on rocksdb"), "{refused:?}");
         assert!(refused[1].contains("rocksdb, sqlite, postgresql, mssql, mariadb"));
         assert!(refused[2].starts_with("[audit] connection names no path"));
+    }
+
+    #[test]
+    fn the_technology_a_table_names_is_read_in_the_words_problems_gives() {
+        for (domain, technology) in [
+            (
+                named(Database::Runtime, "rocksdb", "runtime"),
+                Technology::RocksDb,
+            ),
+            (
+                named(Database::Audit, "sqlite", "audit.sqlite"),
+                Technology::Sqlite,
+            ),
+            (
+                named(Database::Administration, "mariadb", ""),
+                Technology::Server(Server::MariaDb),
+            ),
+        ] {
+            assert_eq!(super::technology(&domain), Ok(technology));
+        }
+        for wrong in [
+            named(Database::Runtime, "postgres", "host=db-1 dbname=x"),
+            named(Database::Runtime, "sqlite", "runtime.sqlite"),
+        ] {
+            let refused = technology(&wrong).expect_err("no technology it is kept on");
+            assert_eq!(
+                problems(&[wrong], None),
+                std::slice::from_ref(&refused),
+                "one writer"
+            );
+            assert!(refused.starts_with("[runtime] storage: "), "{refused}");
+        }
     }
 }
