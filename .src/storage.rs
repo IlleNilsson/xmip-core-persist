@@ -90,7 +90,7 @@ pub use record::{
     AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 pub use secret::{SecretEntry, SecretRecord, StoredSecrets};
-pub use server::{ALPN, StorageServer};
+pub use server::{ALPN, Peer, StorageServer};
 pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
 

@@ -235,7 +235,14 @@ and 9).
   each a frame of `xmip-core-library-net`'s (`net::frame`) holding the
   record in its one binary form, `xmip-core-library-codec`'s
   `codec::form::Form`, the form either database seals it in; a thread per
-  connection, synchronous.
+  connection, synchronous. It counts what each node's requests came to, from
+  their answers — the Publications it wrote (a Publish, a Work Process's
+  Turn) and the Journeys it took and handed on (a HandOn, a Turn), never a
+  claim lost or given back, a request refused or one a standby answered —
+  against the node its certificate was issued for, its common name read by
+  `tls::Name`, a person's connection never; and hands the counts out
+  (`StorageServer::peers`), the traffic between nodes measured where it
+  passes (ADR-0052, amendment 2026-11-11).
 - **`StorageClient`** — a node reaching the Storage nodes its `[storage]
   nodes` lists, round robin, moving to the next when one does not answer and
   passing over one that did not for its pass-over; each connect and read is
