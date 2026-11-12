@@ -34,6 +34,7 @@ use super::record::{
 use super::secret::SecretRecord;
 use super::standby::Follow;
 use super::stream::StreamRecord;
+use super::watch::Position;
 
 mod answer;
 mod operation;
@@ -85,6 +86,12 @@ pub(crate) enum Request {
     WriteSecret(Box<SecretRecord>),
     ReadSecret(SecretName),
     ListSecrets,
+    /// A wait on queues by the token its node ends it with, for the holder
+    /// whose claims are its node's (empty for none), each queue with where
+    /// it was last seen, for at most so many nanoseconds (`super::watch`).
+    Wait(u128, String, Vec<Position>, u64),
+    /// The wait asked with this token ended, its waiter stopped.
+    EndWait(u128),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -164,12 +171,32 @@ impl Request {
             Self::ListSecrets => {
                 out.byte(36);
             }
+            Self::Wait(token, holder, seen, bound) => {
+                out.byte(37);
+                out.u128_be(*token);
+                field::text(out, holder);
+                seen.write(out);
+                out.u64_be(*bound);
+            }
+            Self::EndWait(token) => {
+                out.byte(38);
+                out.u128_be(*token);
+            }
             _ => {}
         }
     }
 
     pub(crate) fn claim(claim: Claim, lease: Duration) -> Self {
         Self::Claim(claim, nanos(lease))
+    }
+
+    pub(crate) fn wait(
+        (token, holder): (u128, Option<&str>),
+        seen: &[Position],
+        bound: Duration,
+    ) -> Self {
+        let holder = holder.unwrap_or_default().to_string();
+        Self::Wait(token, holder, seen.to_vec(), nanos(bound))
     }
 
     pub(crate) fn renew(claims: Vec<Claim>, lease: Duration) -> Self {
@@ -329,6 +356,11 @@ impl Form for Request {
                 SecretName::new(field::read_text(cursor)?).map_err(CodecError::new)?,
             ),
             36 => Self::ListSecrets,
+            37 => {
+                let (token, holder) = (cursor.u128_be()?, field::read_text(cursor)?);
+                Self::Wait(token, holder, Vec::read(cursor)?, cursor.u64_be()?)
+            }
+            38 => Self::EndWait(cursor.u128_be()?),
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }
@@ -492,6 +524,35 @@ mod tests {
         ];
         for answer in answers {
             assert_eq!(Answer::from_bytes(&answer.bytes()).expect("answer"), answer);
+        }
+    }
+
+    #[test]
+    fn a_wait_on_queues_and_its_answer_cross_a_frame_as_they_were() {
+        let seen = [
+            Position { queue: 7, next: 3 },
+            Position { queue: 9, next: 0 },
+        ];
+        let holder = configure::fixture::test_cluster().node_scope(0);
+        let request = Request::wait(
+            (u128::MAX - 5, Some(holder.as_str())),
+            &seen,
+            Duration::from_secs(1),
+        );
+        assert_eq!(request.operation(), ("read", "wait_queues"));
+        let ended = Request::EndWait(u128::MAX - 5);
+        assert_eq!(ended.operation(), ("read", "end_wait"));
+        for request in [request, ended] {
+            assert_eq!(
+                Request::from_bytes(&request.bytes()).expect("read"),
+                request
+            );
+        }
+        for answer in [
+            Answer::Positions(vec![Position { queue: 7, next: 4 }]),
+            Answer::Positions(Vec::new()),
+        ] {
+            assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
         }
     }
 

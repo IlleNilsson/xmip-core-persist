@@ -98,7 +98,24 @@ and 9).
   batch is decided, by one range from where it was, so no read steps over
   what `RocksDB` keeps of entries taken out (ADR-0013, amendment
   2026-10-21); a Message marked failed waits for no retry, its due time
-  taken out with the mark; claim a
+  taken out with the mark; wait on queues (`wait_queues`, `Position`,
+  `Waiter`; `storage/watch.rs`; open problem 46, ADR-0018, amendment
+  2026-11-12): each queue named with where its waiter last saw it stand,
+  the place its next entry takes, answered at once where one stands
+  elsewhere, else the moment a Publication, a hand-on, a turn or a Replay
+  puts an entry in one — told by the embedded Storage node's one writer to
+  every waiter on that queue as soon as the batch is readable, but quietly,
+  never woken, to the node's own (`Waiter::of`) whose claims in that write
+  hold every Message it put there (`storage/watch/moved.rs`), the writer
+  keeping where it left each queue waited on so a wait reads the store only
+  for a queue none waited on before — and with none once its bound passes,
+  or the Storage node's `HOLD` (`[tuning] storage_wait`), never an error; a
+  waiter stopped ends its wait at once in process, and over the wire at
+  the Storage node holding it, by the wait's token asked over another
+  connection (wire operation 38), no node looking whether its waiter
+  stopped; a Storage node that stops, or a primary that steps down, refuses
+  every wait it holds as a standby's (`PersistError::Standby`), so the node
+  waiting asks the next at once; claim a
   Message by its Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
@@ -242,7 +259,14 @@ and 9).
   against the node its certificate was issued for, its common name read by
   `tls::Name`, a person's connection never; and hands the counts out
   (`StorageServer::peers`), the traffic between nodes measured where it
-  passes (ADR-0052, amendment 2026-11-11).
+  passes (ADR-0052, amendment 2026-11-11). A wait on queues (wire operation
+  37, by a token its node chose and for the holder its claims name,
+  answered with positions, answer 26) is held
+  as a `Waiter` of its own, at most `StorageServer::hold_waits` (the Storage
+  node's `[tuning] storage_wait`, `storage::HOLD`, a minute, by default),
+  ended by its token (wire operation 38, an end that overtakes its wait
+  kept for it) and refused as a standby's as the server stops, so a stop
+  never waits one out and the node waiting asks the next Storage node.
 - **`StorageClient`** — a node reaching the Storage nodes its `[storage]
   nodes` lists, round robin, moving to the next when one does not answer and
   passing over one that did not for its pass-over; each connect and read is
@@ -277,7 +301,10 @@ and 9).
   with its data key handed inside the mutual TLS and wrapped under its own
   key-encryption key (ADR-0063, amendment 2026-10-22). `StorageServer::several`
   serves one; `StorageNode::served` refuses every operation while it is not
-  the primary (`PersistError::Standby`), and `StorageNode::reaching` is the
+  the primary (`PersistError::Standby`) — a wait on queues held by no loan,
+  so a primary's stop waits for none, and refused as it stops or steps down,
+  its node's own wait asked again at once of the new primary — and
+  `StorageNode::reaching` is the
   node's own Xmip Storage, its databases while primary and the primary over
   the wire while not. A stop serves nothing more, waits for every operation
   under way, and hands on everything written before the standbys'

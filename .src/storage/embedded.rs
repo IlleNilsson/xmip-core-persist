@@ -18,8 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use codec::form::Form;
-use secret::{KekName, KeyStore};
-use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId, SystemClock};
+use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId};
 
 use super::audit_entry::AuditEntry;
 use super::claim::lease_nanos;
@@ -32,15 +31,15 @@ use super::hand_on::HandOn;
 use super::hold::{self, HeldQueue};
 use super::instance::{InstanceRecord, Turn};
 use super::kept_audit::KeptAudit;
-use super::monotonic_clock::MonotonicClock;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
     AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::row;
-use super::schema::{Database, DatabaseVersion};
+use super::schema::DatabaseVersion;
 use super::stream::{StreamRecord, chunk_key};
+use super::watch::{Position, Waiter, Watch};
 use super::{FailedQueue, SecretEntry, SecretRecord, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError};
 use xcore::SecretName;
@@ -48,6 +47,7 @@ use xcore::SecretName;
 mod administration;
 mod epoch;
 mod keeper;
+mod opened;
 mod searched;
 mod secrets;
 mod submitted;
@@ -81,75 +81,11 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     /// The Storage epoch it is the primary in: the high half of every
     /// claim's fence ([`Embedded::in_epoch`]).
     epoch: Arc<AtomicU64>,
+    /// Who waits on which queue, told by its writer (`super::watch`).
+    watch: Arc<Watch>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// The node's databases over `runtime`, `administration` and `audit`,
-    /// each sealed under its own data key wrapped by `keys` under `kek`.
-    ///
-    /// # Errors
-    ///
-    /// Where a store does not open — its key does not unwrap, its engine
-    /// refuses — or the writer cannot start.
-    pub fn open(
-        runtime: R,
-        administration: A,
-        audit: A,
-        keys: &dyn KeyStore,
-        kek: &KekName,
-    ) -> Result<Self, PersistError> {
-        Self::over(
-            EncryptedStore::open(runtime, keys, kek)?,
-            EncryptedStore::open(administration, keys, kek)?,
-            EncryptedStore::open(audit, keys, kek)?,
-            Arc::new(SystemClock),
-        )
-    }
-
-    /// The node over three stores already open, its time `clock` counted on
-    /// monotonically (`MonotonicClock`), each brought to this build's schema.
-    ///
-    /// # Errors
-    ///
-    /// Where a database holds a schema version newer than this build's
-    /// ([`PersistError::Schema`]), a store cannot record its version, or
-    /// the writer cannot start.
-    pub fn over(
-        runtime: EncryptedStore<R>,
-        administration: EncryptedStore<A>,
-        audit: EncryptedStore<A>,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Self, PersistError> {
-        let now = row::nanos(clock.unix_timestamp_nanos());
-        let versions = versioned::each((&runtime, &administration, &audit), now)?;
-        let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new(clock));
-        let runtime = Arc::new(runtime);
-        let runtime_columns = Arc::new(Columns::of(Database::Runtime));
-        let epoch = Arc::new(AtomicU64::new(0));
-        let committer = Committer::start(
-            Arc::clone(&runtime),
-            (
-                Arc::clone(&clock),
-                Arc::clone(&runtime_columns),
-                Arc::clone(&epoch),
-            ),
-        )?;
-        Ok(Self {
-            epoch,
-            runtime_columns,
-            administration_columns: Columns::of(Database::Administration),
-            audit_columns: Columns::of(Database::Audit),
-            runtime,
-            administration,
-            audit,
-            committer,
-            clock,
-            administering: Mutex::new(()),
-            keeping: Mutex::new(()),
-            versions,
-        })
-    }
-
     /// The runtime database's store, for a test that reaches past the
     /// operations to the engine.
     #[must_use]
@@ -167,6 +103,13 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     #[must_use]
     pub fn audit(&self) -> &EncryptedStore<A> {
         &self.audit
+    }
+
+    /// Every wait on its queues refused from now on, `why`, the one under
+    /// way among them: as a Storage node of several is the primary no more,
+    /// so each node waiting asks the next at once (`super::watch`).
+    pub(crate) fn refuse_waits(&self, why: &str) {
+        self.watch.refuse(why);
     }
 
     fn read<T: Form>(&self, kind: &str, key: &[u8]) -> Result<Option<T>, PersistError> {
@@ -270,6 +213,15 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         message: MessageId,
     ) -> Result<DeadEntry, PersistError> {
         dead::read_one(&self.runtime, queue, message)
+    }
+
+    fn wait_queues(
+        &self,
+        seen: &[Position],
+        bound: Duration,
+        waiter: &Arc<Waiter>,
+    ) -> Result<Vec<Position>, PersistError> {
+        self.watch.wait(&self.runtime, (seen, bound), waiter)
     }
 
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
@@ -398,6 +350,16 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
+    /// How many wait on `queue` now: what a test waits for before it writes,
+    /// so a wait is listed rather than begun after the write.
+    #[must_use]
+    pub fn waiting_on(&self, queue: u128) -> usize {
+        self.watch.waiting_on(queue)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,7 +367,7 @@ mod tests {
     use crate::storage::columns::KEPT_AUDIT;
     use crate::storage::commit::{AUDIT, KEPT, sequence};
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
-    use secret::Held;
+    use secret::{Held, KekName};
     use std::assert_matches;
 
     /// A clock a test moves by hand.

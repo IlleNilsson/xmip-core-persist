@@ -13,8 +13,8 @@ use crate::PersistError;
 use crate::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
     DueQueue, Durable, FailedQueue, HandOn, HeldQueue, InstanceRecord, JourneyRecord, KeptAudit,
-    MessageRecord, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Turn,
-    XmipStorage,
+    MessageRecord, Position, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Turn,
+    Waiter, XmipStorage,
 };
 
 /// What answers now, or why nothing does.
@@ -101,6 +101,30 @@ impl XmipStorage for Delegated {
         most: u32,
     ) -> Result<DueQueue, PersistError> {
         self.now()?.storage.read_due(queue, part, from, most)
+    }
+
+    /// Not lent for the wait: a primary stopping waits for no one waiting
+    /// on its queues. One that steps down or stops refuses each wait on
+    /// them (`super::super::watch`), and the wait is asked again at once of
+    /// what answers now — the new primary, over the wire — where that is
+    /// another.
+    fn wait_queues(
+        &self,
+        seen: &[Position],
+        bound: Duration,
+        waiter: &Arc<Waiter>,
+    ) -> Result<Vec<Position>, PersistError> {
+        let asked = self.now()?.storage;
+        match asked.wait_queues(seen, bound, waiter) {
+            Err(PersistError::Standby { reason }) if !waiter.is_stopped() => {
+                let now = self.now()?.storage;
+                if Arc::ptr_eq(&now, &asked) {
+                    return Err(PersistError::Standby { reason });
+                }
+                now.wait_queues(seen, bound, waiter)
+            }
+            answered => answered,
+        }
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {

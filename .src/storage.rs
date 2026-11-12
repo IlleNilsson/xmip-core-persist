@@ -8,8 +8,9 @@
 //!   Message and a Journey; write a Publication — a Message, its Journeys,
 //!   those held and queued, its node's claims, its Dead Message Queue entry,
 //!   its audit record — as one; read a queue oldest first, or what is due in
-//!   it; read and replay a node's Dead Message Queue; claim, renew and
-//!   release a Message; hand a step on; write an audit record;
+//!   it; wait on queues until a write puts a Message in one (`watch`);
+//!   read and replay a node's Dead Message Queue; claim, renew and release
+//!   a Message; hand a step on; write an audit record;
 //! - **a search** of any of them: the records one index of one table finds,
 //!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records, each with its Streams'
@@ -64,6 +65,7 @@ mod secret;
 mod server;
 pub mod standby;
 mod stream;
+mod watch;
 mod wire;
 
 pub use audit_entry::{AuditBody, AuditEntry};
@@ -90,9 +92,10 @@ pub use record::{
     AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 pub use secret::{SecretEntry, SecretRecord, StoredSecrets};
-pub use server::{ALPN, Peer, StorageServer};
+pub use server::{ALPN, HOLD, Peer, StorageServer};
 pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
+pub use watch::{Position, Waiter};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -219,6 +222,27 @@ pub trait XmipStorage: Send + Sync {
         from: (u64, u64),
         most: u32,
     ) -> Result<DueQueue, PersistError>;
+
+    /// Wait, for at most `bound`, on the queues `seen` names, each with where
+    /// its waiter last saw it stand ([`Position`]): every one that stands
+    /// elsewhere now, as it stands — at once where one does as the wait
+    /// begins, else as soon as a write puts a Message in one, on whichever
+    /// node — or none where nothing moved within `bound`, or within the
+    /// longest a Storage node holds a wait ([`HOLD`]), or `waiter` was
+    /// stopped (`watch`). Every waiter on a queue is woken by a write to it.
+    ///
+    /// # Errors
+    ///
+    /// Where a queue's place cannot be read, or no Storage node answered —
+    /// each that is stopping or the primary no more refuses it
+    /// ([`PersistError::Standby`]), and the next is asked at once: the
+    /// waiter rests its bound and asks again ([`Waiter::rest`]).
+    fn wait_queues(
+        &self,
+        seen: &[Position],
+        bound: Duration,
+        waiter: &Arc<Waiter>,
+    ) -> Result<Vec<Position>, PersistError>;
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place

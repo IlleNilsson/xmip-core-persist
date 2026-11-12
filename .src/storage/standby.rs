@@ -266,6 +266,11 @@ impl StorageNode {
     /// stopped in order has handed on everything — and stop settling.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        // No wait holds a loan: each one on its queues is ended now, so the
+        // node waiting asks the next Storage node at once.
+        if let Some(primary) = self.primary() {
+            primary.refuse_waits("this Storage node is stopping");
+        }
         let deadline = Instant::now() + self.timings.timeout;
         let mut settling = self.settling.locked();
         while self.lent.load(Ordering::SeqCst) > 0 {
@@ -339,7 +344,12 @@ impl StorageNode {
 
     /// `role` held from now, in the epoch held.
     fn stand(&self, role: Role) {
-        self.held.write_locked().role = role;
+        let was = std::mem::replace(&mut self.held.write_locked().role, role);
+        // A primary no more: every wait on its queues refused, so the node
+        // waiting moves to the new primary at once (`super::watch`).
+        if let Role::Primary(primary) = was {
+            primary.refuse_waits("this Storage node is the primary no more");
+        }
         let _settling = self.settling.locked();
         self.settled.notify_all();
     }

@@ -26,8 +26,9 @@ fn writer(memory: &Arc<Memory>, hooks: &Arc<Hooks>, keys: &Keys) -> (Committer, 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let columns = Arc::new(Columns::of(Database::Runtime));
     let epoch = Arc::new(AtomicU64::new(1));
+    let watch = Arc::default();
     let committer =
-        Committer::start(Arc::clone(&store), (clock, columns, epoch)).expect("the writer");
+        Committer::start(Arc::clone(&store), (clock, columns, epoch, watch)).expect("the writer");
     (committer, store)
 }
 

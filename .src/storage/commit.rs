@@ -29,11 +29,16 @@
 //! written again until the node is opened anew over its log (fail-stop).
 
 mod batch;
+mod kinds;
 mod syncer;
 mod waiting;
 
 use batch::again;
 pub(crate) use batch::{Batch, sequence};
+pub(crate) use kinds::{
+    AUDIT, CHUNK, CLAIM, DEAD, DEAD_MESSAGE, DEAD_PLACES, DUE_PLACES, HELD, HELD_JOURNEY, JOURNEY,
+    KEPT, MESSAGE, NEXT, PLACES, PUBLICATION, SEQUENCE, STREAM,
+};
 
 use syncer::Syncer;
 use waiting::{Answer, Decides, Reply, Waiting};
@@ -55,35 +60,8 @@ use super::hand_on::HandOn;
 use super::publication::{self, Decided, Publication};
 use super::record::{Claim, malformed};
 use super::row;
+use super::watch::{self, Watch};
 use crate::{EncryptedStore, Engine, PersistError};
-
-/// The record kinds of the runtime database.
-pub(crate) const CHUNK: &str = "chunk";
-/// A Stream's own record (`super::stream`).
-pub(crate) const STREAM: &str = "stream";
-pub(crate) const MESSAGE: &str = "message";
-pub(crate) const JOURNEY: &str = "journey";
-pub(crate) const CLAIM: &str = "claim";
-pub(crate) const AUDIT: &str = "audit";
-pub(crate) const HELD: &str = "held";
-/// A held Message's place, found by its queue and its Journey.
-pub(crate) const HELD_JOURNEY: &str = "held-journey";
-pub(crate) const PLACES: &str = "held-places";
-/// Where a queue's first entries by when they are due are (`super::due`).
-pub(crate) const DUE_PLACES: &str = "held-due-places";
-/// A node's Dead Message Queue: its entries, each one's place by its
-/// Message, and its places.
-pub(crate) const DEAD: &str = "dead-message";
-pub(crate) const DEAD_MESSAGE: &str = "dead-message-by-message";
-pub(crate) const DEAD_PLACES: &str = "dead-message-places";
-/// That a Publication was written, by its Message: the digest of what was
-/// asked (`super::publication`).
-pub(crate) const PUBLICATION: &str = "publication";
-pub(crate) const SEQUENCE: &str = "audit-sequence";
-/// The sequence's two places: the next audit record's number, and the
-/// first the keeper has not moved.
-pub(crate) const NEXT: &[u8] = b"next";
-pub(crate) const KEPT: &[u8] = b"kept";
 
 /// The most writes one batch takes.
 const GROUP: usize = 1024;
@@ -132,7 +110,8 @@ pub(crate) struct Committer {
 
 impl Committer {
     /// The writer over `store`, telling time by `clock`, keeping `columns`,
-    /// fencing the claims it takes by the Storage `epoch`.
+    /// fencing the claims it takes by the Storage `epoch`, and telling
+    /// `watch` of every queue a batch moves.
     ///
     /// # Errors
     ///
@@ -140,7 +119,7 @@ impl Committer {
     /// started.
     pub(crate) fn start<R: Engine + 'static>(
         store: Arc<EncryptedStore<R>>,
-        (clock, columns, epoch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>),
+        (clock, columns, epoch, watch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>, Arc<Watch>),
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
         let syncer = Syncer::start(Arc::clone(&store))?;
@@ -151,6 +130,7 @@ impl Committer {
             columns,
             syncer,
             epoch,
+            watch,
             last: Durable::kept(),
             under_way: None,
         };
@@ -191,6 +171,8 @@ struct Writer<R> {
     syncer: Syncer,
     /// The Storage epoch its node is the primary in: a claim's fence.
     epoch: Arc<AtomicU64>,
+    /// Who waits on which queue (`super::watch`).
+    watch: Arc<Watch>,
     /// The latest batch handed to the sync: what a batch that writes
     /// nothing is durable with.
     last: Durable,
@@ -248,6 +230,8 @@ impl<R: Engine> Writer<R> {
         }
         // Each queue's first due found again, as the batch leaves it.
         let settled = super::due::settle(&self.store, &mut batch);
+        // Each queue it puts a Message in, as it found them.
+        let moved = watch::moved(&self.store, &batch);
         if self.next != before {
             batch.put(
                 SEQUENCE,
@@ -285,6 +269,9 @@ impl<R: Engine> Writer<R> {
             // Refused whole: nothing of it is in the engine.
             self.next = before;
             self.under_way = None;
+        } else {
+            // Readable now: every node waiting on a queue it moved woken.
+            self.watch.moved(&moved);
         }
         // What the batch took outside its I/O, shared by its writes.
         drop(entered);

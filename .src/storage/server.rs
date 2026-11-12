@@ -33,6 +33,8 @@ use admitted::{RULES, caller};
 use answer::answer;
 pub use counted::Peer;
 use counted::{Asked, Peers};
+pub use waiters::HOLD;
+use waiters::Waiters;
 
 /// The application protocol a node and a Storage node agree in the TLS
 /// handshake: this wire, its first version.
@@ -55,6 +57,7 @@ const WRITE: Duration = Duration::from_secs(30);
 mod admitted;
 mod answer;
 mod counted;
+mod waiters;
 
 type Served = Arc<Mutex<Vec<JoinHandle<()>>>>;
 
@@ -62,6 +65,7 @@ type Served = Arc<Mutex<Vec<JoinHandle<()>>>>;
 pub struct StorageServer {
     address: SocketAddr,
     peers: Arc<Peers>,
+    waiters: Arc<Waiters>,
     stopping: Arc<AtomicBool>,
     accepting: Option<JoinHandle<()>>,
     served: Served,
@@ -85,6 +89,7 @@ impl StorageServer {
             storage,
             node: None,
             peers: Arc::default(),
+            waiters: Arc::default(),
         };
         Self::serving(serving, listener, identity)
     }
@@ -106,6 +111,7 @@ impl StorageServer {
             storage: node.served(),
             node: Some(Arc::clone(node)),
             peers: Arc::default(),
+            waiters: Arc::default(),
         };
         Self::serving(serving, listener, identity)
     }
@@ -116,6 +122,7 @@ impl StorageServer {
         identity: &tls::Identity,
     ) -> Result<Self, PersistError> {
         let peers = Arc::clone(&serving.peers);
+        let waiters = Arc::clone(&serving.waiters);
         let storage = Arc::new(serving);
         let failed = |reason: String| PersistError::engine("xmip-storage", reason);
         let config =
@@ -134,6 +141,7 @@ impl StorageServer {
         Ok(Self {
             address,
             peers,
+            waiters,
             stopping,
             accepting: Some(accepting),
             served,
@@ -155,6 +163,13 @@ impl StorageServer {
         self.peers.counted()
     }
 
+    /// Hold no node's wait on its queues longer than `most` from now on,
+    /// answering it with none then, so its node asks again: the Storage
+    /// node's `[tuning] storage_wait` ([`HOLD`] where it does not say).
+    pub fn hold_waits(&self, most: Duration) {
+        self.waiters.hold(most);
+    }
+
     /// Stop: no connection accepted after, every one served ended, every
     /// thread it started finished.
     pub fn stop(mut self) {
@@ -165,6 +180,8 @@ impl StorageServer {
         if self.stopping.swap(true, Ordering::SeqCst) {
             return;
         }
+        // Every wait held ends now, refused, so its node asks the next.
+        self.waiters.stop();
         // The accept is woken by a connection of its own, knocked until it
         // has heard (`net::accepting`).
         if let Some(accepting) = self.accepting.take() {
@@ -191,6 +208,9 @@ struct Serving {
     node: Option<Arc<StorageNode>>,
     /// What each node that called it asked of it (`counted`).
     peers: Arc<Peers>,
+    /// The waits on queues it holds, each ended by its token or as the
+    /// server stops (`waiters`).
+    waiters: Arc<Waiters>,
 }
 
 impl Serving {
@@ -288,7 +308,7 @@ fn serve(
                     "this Storage node is the only one: it hands its writes to none".into(),
                 )
             }
-            request => answer(serving.storage.as_ref(), request),
+            request => answer(serving.storage.as_ref(), request, &serving.waiters),
         };
         // Counted from what it was answered, never as it was asked.
         if let Some(counted) = counted {
@@ -323,5 +343,13 @@ impl Read for Watched<'_> {
                 read => return read,
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl StorageServer {
+    /// How many waits on queues it holds now.
+    pub(crate) fn waits_held(&self) -> usize {
+        self.waiters.held()
     }
 }
