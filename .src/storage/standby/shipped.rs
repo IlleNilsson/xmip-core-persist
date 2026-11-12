@@ -8,6 +8,7 @@ use codec::field;
 use codec::form::Form;
 use codec::writer::ByteWriter;
 
+use super::bootstrap::Bootstrap;
 use super::copies::DATABASES;
 use crate::{Change, Entry};
 
@@ -28,9 +29,9 @@ pub struct Standing {
     pub history: u128,
     /// The number of the next write each database takes.
     pub next: [u64; DATABASES],
-    /// Whether a whole copy into it is under way or was cut short: it holds
-    /// part of a Ledger, and is not promoted.
-    pub copying: bool,
+    /// How far its bootstrap by a whole copy is: it is not promoted until
+    /// ready (ADR-0056, amendment 2026-11-12).
+    pub bootstrap: Bootstrap,
 }
 
 impl Standing {
@@ -51,7 +52,7 @@ impl Form for Standing {
         for next in self.next {
             out.u64_be(next);
         }
-        out.byte(u8::from(self.copying));
+        self.bootstrap.write(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
@@ -61,7 +62,7 @@ impl Form for Standing {
             epoch: cursor.u64_be()?,
             history: cursor.u128_be()?,
             next: [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
-            copying: cursor.byte()? != 0,
+            bootstrap: Bootstrap::read(cursor)?,
         })
     }
 }
@@ -106,9 +107,11 @@ pub enum Shipped {
     Whole(u128, u64, Vec<Vec<u8>>),
     /// Entries of a database copied whole, in the order of their keys.
     Entries(u8, Vec<Entry>),
-    /// A database copied whole up to the write numbered here, its copies
-    /// following from it.
-    Copied(u8, u64),
+    /// A database's pages all handed on: its copies follow from the write
+    /// numbered first, and what the pages hold is one state of the
+    /// primary's once the standby has replayed up to the write numbered
+    /// second (`super::bootstrap`).
+    Copied(u8, u64, u64),
     /// The Storage node asked is not the primary, in words.
     Declined(String),
 }
@@ -168,10 +171,11 @@ impl Form for Shipped {
                     field::counted(out, value);
                 }
             }
-            Self::Copied(database, next) => {
+            Self::Copied(database, from, through) => {
                 out.byte(4);
                 out.byte(*database);
-                out.u64_be(*next);
+                out.u64_be(*from);
+                out.u64_be(*through);
             }
             Self::Declined(reason) => {
                 out.byte(5);
@@ -219,7 +223,7 @@ impl Form for Shipped {
                     .collect::<codec::Result<_>>()?;
                 Self::Entries(database, entries)
             }
-            4 => Self::Copied(database(cursor)?, cursor.u64_be()?),
+            4 => Self::Copied(database(cursor)?, cursor.u64_be()?, cursor.u64_be()?),
             5 => Self::Declined(field::read_text(cursor)?),
             other => return Err(CodecError::new(format!("no frame is numbered {other}"))),
         })
@@ -241,25 +245,31 @@ mod tests {
             ),
             Shipped::Whole(7, 2, vec![vec![1; 32], vec![2; 32], vec![3; 32]]),
             Shipped::Entries(2, vec![(b"k".to_vec(), b"v".to_vec())]),
-            Shipped::Copied(0, 12),
+            Shipped::Copied(0, 12, 15),
             Shipped::Declined("a standby".to_string()),
         ];
         for frame in frames {
             assert_eq!(Shipped::from_bytes(&frame.bytes()).expect("read"), frame);
         }
-        let standing = Standing {
-            process: 5,
-            primary: true,
+        let catching_up = Bootstrap::CatchingUp {
             epoch: 2,
-            history: 8,
-            next: [1, 2, 3],
-            copying: true,
+            through: [4, 2, 3],
         };
-        assert_eq!(
-            Standing::from_bytes(&standing.bytes()).expect("read"),
-            standing
-        );
-        assert_eq!(standing.held(), 6);
+        for bootstrap in [Bootstrap::Ready, Bootstrap::Copying, catching_up] {
+            let standing = Standing {
+                process: 5,
+                primary: false,
+                epoch: 2,
+                history: 8,
+                next: [1, 2, 3],
+                bootstrap,
+            };
+            assert_eq!(
+                Standing::from_bytes(&standing.bytes()).expect("read"),
+                standing
+            );
+            assert_eq!(standing.held(), 6);
+        }
         assert!(Shipped::from_bytes(&[1, 3, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
     }
 }

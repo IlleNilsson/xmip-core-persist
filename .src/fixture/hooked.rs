@@ -1,14 +1,18 @@
 //! An engine a test steers: every call handed to the engine beneath, but a
 //! sync held until the test lets it go, a sync or a durable write failed,
-//! or a panic once an unsynced write is in, on demand. How a test stalls
+//! a panic once an unsynced write is in, one unsynced write refused, or a
+//! write let in between two pages of a scan, on demand. How a test stalls
 //! the Ledger between a write's answer and its sync, kills a process there,
-//! or makes the disk refuse.
+//! makes the disk refuse, or writes while a whole copy is read.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::{Change, Engine, Entry, PersistError, Reads};
+
+/// What a test runs between two pages of a scan.
+type Between = Box<dyn FnOnce() + Send>;
 
 /// What a test tells a [`Hooked`] engine to do.
 #[derive(Default)]
@@ -21,6 +25,10 @@ pub struct Hooks {
     failing_syncs: AtomicBool,
     failing_writes: AtomicBool,
     panicking: AtomicBool,
+    /// The change an unsynced write carrying it is refused for.
+    refused: Mutex<Option<Change>>,
+    /// What the next scan that goes on from a key runs first, once.
+    between: Mutex<Option<Between>>,
 }
 
 impl Hooks {
@@ -50,6 +58,18 @@ impl Hooks {
     /// or none does.
     pub fn panic_after_deferred(&self, panicking: bool) {
         self.panicking.store(panicking, Ordering::SeqCst);
+    }
+
+    /// Every unsynced write carrying `change` fails from now on, nothing of
+    /// it written; or, `None`, none does: a disk refusing one write.
+    pub fn refuse_deferred(&self, change: Option<Change>) {
+        *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = change;
+    }
+
+    /// `then` run once, as the next scan that goes on from a key begins:
+    /// between two pages of a scan read page by page.
+    pub fn between_pages(&self, then: impl FnOnce() + Send + 'static) {
+        *self.between.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(then));
     }
 
     /// Whether a sync waits, by `within`.
@@ -85,6 +105,34 @@ impl Hooks {
             return Err(PersistError::engine("hooked", "the write failed, as told"));
         }
         Ok(())
+    }
+
+    fn deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+        let refused = self.refused.lock().unwrap_or_else(PoisonError::into_inner);
+        if refused
+            .as_ref()
+            .is_some_and(|change| batch.contains(change))
+        {
+            return Err(PersistError::engine(
+                "hooked",
+                "the write was refused, as told",
+            ));
+        }
+        Ok(())
+    }
+
+    fn scanned(&self, first: &[u8]) {
+        if first.is_empty() {
+            return;
+        }
+        let then = self
+            .between
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(then) = then {
+            then();
+        }
     }
 }
 
@@ -139,6 +187,7 @@ impl<E: Engine> Engine for Hooked<E> {
     }
 
     fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+        self.hooks.deferred(batch)?;
         self.engine.apply_deferred(batch)?;
         assert!(
             !self.hooks.panicking.load(Ordering::SeqCst),
@@ -159,6 +208,7 @@ impl<E: Engine> Engine for Hooked<E> {
         most: usize,
         reverse: bool,
     ) -> Result<Vec<Entry>, PersistError> {
+        self.hooks.scanned(first);
         self.engine.scan(first, last, most, reverse)
     }
 

@@ -1,27 +1,44 @@
-//! A Storage node refused a promotion: one holding part of a Ledger, and
-//! one whose epoch cannot be kept.
+//! A Storage node refused a promotion: one started again copying or
+//! catching up, holding what may be part of a Ledger, and one whose epoch
+//! cannot be kept.
 
 use super::*;
+use crate::storage::standby::bootstrap::BOOTSTRAP;
+use codec::form::Form;
 
 #[test]
-fn a_standby_whose_whole_copy_was_cut_short_is_never_promoted() {
+fn a_standby_started_again_copying_or_catching_up_is_never_promoted_alone() {
     let authority = Authority::new();
-    let (mut bound, listed) = listeners(1);
-    let own = Own::new();
-    // What a whole copy cut short between pages leaves: part of a Ledger,
-    // no position, and the copy still under way.
-    own.engines[0]
-        .write(super::super::COPYING, &[1])
-        .expect("written");
-    own.engines[1]
-        .write(b"part", b"of a Ledger")
-        .expect("written");
-    let (node, server) = started(&own, (bound.pop().expect("one"), &listed), &authority);
-    std::thread::sleep(timings().silence * 3);
-    assert!(!node.is_primary(), "{}", node.said());
-    assert!(node.standing().copying);
-    node.stop();
-    server.stop();
+    let catching_up = Bootstrap::CatchingUp {
+        epoch: 1,
+        through: [9, 1, 1],
+    };
+    for bootstrap in [Bootstrap::Copying, catching_up] {
+        let (mut bound, listed) = listeners(1);
+        let own = Own::new();
+        // What a whole copy cut short leaves, or one whose pages are in and
+        // whose catch-up is not: what may be part of a Ledger.
+        own.engines[0]
+            .write(BOOTSTRAP, &bootstrap.bytes())
+            .expect("written");
+        own.engines[1]
+            .write(b"part", b"of a Ledger")
+            .expect("written");
+        let (node, server) = started(&own, (bound.pop().expect("one"), &listed), &authority);
+        std::thread::sleep(timings().silence * 3);
+        assert!(!node.is_primary(), "{}", node.said());
+        assert_eq!(node.standing().bootstrap, bootstrap);
+        let said = node.said();
+        assert!(said.contains("not promoted until ready"), "{said}");
+        let refused = node.promote(node.standing().epoch + 1);
+        let Err(crate::PersistError::Failed { reason }) = refused else {
+            panic!("promoted: {refused:?}");
+        };
+        assert!(reason.contains(bootstrap.said([1; 3]).as_str()), "{reason}");
+        assert!(!node.is_primary());
+        node.stop();
+        server.stop();
+    }
 
     // An empty Storage node is a new cluster's, and is promoted.
     let (mut bound, listed) = listeners(1);
@@ -32,7 +49,7 @@ fn a_standby_whose_whole_copy_was_cut_short_is_never_promoted() {
         "{}",
         node.said()
     );
-    assert!(!node.standing().copying);
+    assert_eq!(node.standing().bootstrap, Bootstrap::Ready);
     node.stop();
     server.stop();
 }

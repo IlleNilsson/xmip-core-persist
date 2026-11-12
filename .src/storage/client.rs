@@ -341,8 +341,9 @@ impl StorageClient {
         };
         if !standing.primary {
             return Err(Asked::Standby(format!(
-                "a standby Storage node, epoch {}",
-                standing.epoch
+                "a standby Storage node, epoch {}, {}",
+                standing.epoch,
+                standing.bootstrap.said(standing.next)
             )));
         }
         let latest = self.epoch.fetch_max(standing.epoch, Ordering::SeqCst);

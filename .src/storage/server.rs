@@ -44,10 +44,12 @@ pub const ALPN: &[u8] = b"xmip-storage/1";
 const WAKE: Duration = Duration::from_secs(1);
 
 /// How often a connection waiting for its next request looks whether the
-/// server is stopping. A request wakes it at once; this bounds only how
-/// long a stop waits for an idle connection. A shutdown of the socket would
-/// not do it: Windows leaves a blocked receive waiting until the peer
-/// closes, and a node keeps its connections open.
+/// server is stopping; it looks before each read too, so a node asking
+/// again as soon as it is answered never holds a stop (2026-11-12). A
+/// request wakes it at once; this bounds only how long a stop waits for an
+/// idle connection. A shutdown of the socket would not do it: Windows
+/// leaves a blocked receive waiting until the peer closes, and a node keeps
+/// its connections open.
 const WATCH: Duration = Duration::from_millis(50);
 
 /// The most a write of an answer waits on a node that does not read it.
@@ -57,6 +59,8 @@ const WRITE: Duration = Duration::from_secs(30);
 mod admitted;
 mod answer;
 mod counted;
+#[cfg(test)]
+mod tests;
 mod waiters;
 
 type Served = Arc<Mutex<Vec<JoinHandle<()>>>>;
@@ -224,7 +228,7 @@ impl Serving {
                 epoch: 0,
                 history: 0,
                 next: [1; super::standby::DATABASES],
-                copying: false,
+                bootstrap: super::standby::Bootstrap::Ready,
             },
             |node| node.standing(),
         )
@@ -331,10 +335,12 @@ fn serve(
     }
 }
 
-/// A connection read until the server stops: a read that waited [`WATCH`]
-/// with nothing come is tried again, where the server is not stopping.
-/// Nothing read is lost by it: what TLS has taken off the socket it keeps
-/// until it is read.
+/// A connection read until the server stops: looked at before every read,
+/// so one whose node asks again as soon as it is answered ends at its next
+/// question, its last answered; and a read that waited [`WATCH`] with
+/// nothing come is tried again, where the server is not stopping. Nothing
+/// read is lost by it: what TLS has taken off the socket it keeps until it
+/// is read.
 struct Watched<'a> {
     guarded: tls::GuardedServer,
     stopping: &'a AtomicBool,
@@ -343,14 +349,12 @@ struct Watched<'a> {
 impl Read for Watched<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         loop {
+            if self.stopping.load(Ordering::SeqCst) {
+                return Err(ErrorKind::ConnectionAborted.into());
+            }
             match self.guarded.read(buffer) {
                 Err(error)
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                {
-                    if self.stopping.load(Ordering::SeqCst) {
-                        return Err(ErrorKind::ConnectionAborted.into());
-                    }
-                }
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
                 read => return read,
             }
         }

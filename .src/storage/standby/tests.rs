@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use secret::{Held, KekName, KeyStore};
 use xcore::JourneyId;
 
-use super::{StorageNode, Timings};
+use super::{Bootstrap, StorageNode, Timings};
 use crate::Engine;
 use crate::fixture::{Hooked, Hooks, Memory};
 use crate::storage::authority::Authority;
@@ -302,8 +302,10 @@ fn the_primary_serves_on_while_a_standby_is_gone_and_one_started_empty_is_copied
         late.said()
     );
     assert!(
-        !late.standing().copying,
-        "a whole copy taken is no longer under way"
+        until(Duration::from_secs(5), || late.standing().bootstrap
+            == Bootstrap::Ready),
+        "a whole copy taken, with no write while it was scanned, is ready: {}",
+        late.said()
     );
     let read = client.read_journey(journey(7, b"").journey).expect("read");
     assert_eq!(read.map(|r| r.body), Some(b"early".to_vec()));
@@ -353,5 +355,7 @@ fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
     one_server.stop();
 }
 
+mod bootstrap;
+mod interrupted;
 mod refused;
 mod waited;

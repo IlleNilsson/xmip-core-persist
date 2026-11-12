@@ -60,8 +60,9 @@ impl StorageNode {
 
     /// Whether this node is the one promoted: only where every Storage node
     /// listed answered and none of them is a primary, and then the one
-    /// holding most of the latest epoch, the first listed of equals, none
-    /// whose whole copy is under way or was cut short. A primary that does
+    /// holding most of the latest epoch, the first listed of equals, among
+    /// those ready — none copying or catching up, whose pages may reflect a
+    /// write in part (ADR-0056, amendment 2026-11-12). A primary that does
     /// not answer is waited for, never replaced: with no witness, a primary
     /// cut off from the others would serve on beside the one promoted (the
     /// owner, 2026-11-08; ADR-0056, amendment 2026-11-08).
@@ -73,11 +74,11 @@ impl StorageNode {
         let Some(me) = answered.iter().find(|a| a.standing.process == self.process) else {
             return false;
         };
-        if me.standing.copying {
+        if !me.standing.bootstrap.is_ready() {
             return false;
         }
-        let whole = answered.iter().filter(|a| !a.standing.copying);
-        let best = whole.max_by(|one, other| {
+        let ready = answered.iter().filter(|a| a.standing.bootstrap.is_ready());
+        let best = ready.max_by(|one, other| {
             (one.standing.epoch, one.standing.held())
                 .cmp(&(other.standing.epoch, other.standing.held()))
                 .then(other.place.cmp(&one.place))
@@ -92,12 +93,17 @@ impl StorageNode {
     ///
     /// # Errors
     ///
-    /// Where a whole copy into it was cut short, the epoch cannot be kept
-    /// or its databases not opened: it is not promoted then.
+    /// Where it is not ready — copying or catching up, its pages perhaps
+    /// reflecting a write in part — the epoch cannot be kept or its
+    /// databases not opened: it is not promoted then.
     pub(super) fn promote(&self, epoch: u64) -> Result<(), PersistError> {
-        if self.is_copying() {
+        let bootstrap = self.bootstrap();
+        if !bootstrap.is_ready() {
             return Err(PersistError::Failed {
-                reason: "a whole copy into it was cut short; it holds part of a Ledger".to_string(),
+                reason: format!(
+                    "a standby {}: what it holds is not yet one state of its primary's",
+                    bootstrap.said(self.copies.next())
+                ),
             });
         }
         self.keep_epoch(epoch)?;
