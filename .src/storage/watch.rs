@@ -1,35 +1,56 @@
-//! A wait on queues, asked of Xmip Storage (open problem 46; ADR-0018,
-//! amendment 2026-11-12): a node's send scan, and its Work Process step's,
-//! waits on the queues it takes from, and is answered as soon as a
-//! Publication, a hand-on, a turn or a Replay puts a Message in one of them
-//! — on whichever node wrote it — instead of finding it at its next scan.
+//! A wait asked of Xmip Storage (open problem 46; ADR-0018, amendments
+//! 2026-11-12): a node's send scan, and its Work Process step's, waits on
+//! the queues it takes from, and is answered as soon as a Publication, a
+//! hand-on, a turn or a Replay puts a Message in one of them — on whichever
+//! node wrote it — instead of finding it at its next scan; and a Journey it
+//! passed over waits on what holds it back, answered as soon as that moves.
 //!
-//! **Asked with what was seen last.** Where a queue stands is the place its
-//! next entry takes ([`Position`]), which only a write that puts an entry in
-//! it moves. A wait names each queue with where its waiter last saw it stand,
-//! and is answered with every one that stands elsewhere now: at once where
-//! one already does, so a Message that lands between a scan and the wait
-//! after it is never waited past. One no write moved within the wait's bound
-//! is answered with none — empty, never an error.
+//! **What is waited on** ([`Watched`]), each by a count only a write moves:
+//! a queue's tail, the place its next entry takes, which a write putting an
+//! entry in it moves — what a step takes from; a queue's head, how many
+//! entries were ever taken out of it, which a write taking one out moves —
+//! a sequence, whose head moving lets the next of it go on; a Work Process
+//! Instance, how many turns it took, which a turn written over it moves;
+//! and a key of the Instance Key table, one where an Instance holds it and
+//! none where none does, which a write giving it to an Instance or letting
+//! it go moves. The last three are what a Journey behind another Stream of
+//! its sequence, and a turn its Instance did not take, wait on: until
+//! 2026-11-12 the write that moved them put nothing in the waiting
+//! Journey's queue, and it was taken up at the next scan.
+//!
+//! **Asked with what was seen last.** A wait names each with where its
+//! waiter last saw it stand ([`Position`]), and is answered with every one
+//! that stands elsewhere now: at once where one already does, so a write
+//! that lands between a read and the wait after it is never waited past.
+//! One no write moved within the wait's bound is answered with none —
+//! empty, never an error.
+//!
+//! **Answered with what is due** ([`Moved`]): each queue's tail that moved
+//! comes back with the first of what is due in it, read by the Storage
+//! node as it answers, up to as many as the wait asked for, so the woken
+//! node claims without a read of its own first — until 2026-11-12 a round
+//! trip of 0.14 ms over loopback after every wake.
 //!
 //! **Told by the one writer** ([`Watch`]): the embedded Storage node's
-//! writer tells every waiter on a queue a batch moved, as soon as the batch
-//! is in its engine and readable, each waiter by a wake of its own, so one
-//! write wakes every node waiting on its queue and no other — and not the
-//! node whose own claims in that write hold every Message it put there,
-//! told quietly (`moved`). What a woken node finds is sent only under a
-//! claim, and a claim is answered once its own batch is durable, which the
-//! syncs of the batches before it come first in: no far end sees a Message
-//! before the write that queued it is durable. The watch keeps where its
-//! writer left each queue a node waited on, so a wait reads the store only
-//! for a queue none waited on before; until 2026-11-12 every wait read
-//! every queue it named, and one write cost the Storage node as many reads
-//! as nodes waiting times their queues.
+//! writer tells every waiter on what a batch moved, as soon as the batch is
+//! in its engine and readable, each waiter by a wake of its own, so one
+//! write wakes every node waiting on it and no other — and not the node
+//! whose own claims in that write hold every Message it put in a queue,
+//! told quietly. What a woken node finds is sent only under a claim, and a
+//! claim is answered once its own batch is durable, which the syncs of the
+//! batches before it come first in: no far end sees a Message before the
+//! write that queued it is durable. The watch keeps where its writer left
+//! each it watched, so a wait reads the store only for what none waited on
+//! before. Its writer tells in the order it writes, so what was told last
+//! is where each stands — a key's count goes back to none where it is let
+//! go, so the last told is kept, never the highest.
 //!
-//! **Stopped at once.** A [`Waiter`] stopped ends its wait in this process
-//! at once, and every wait after. One asked over the wire is ended at its
-//! Storage node, asked over another connection by what the client left with
-//! the waiter ([`Waiter::ending`]): no node looks whether its waiter stopped.
+//! **Stopped at once, renewed at once.** A [`Waiter`] stopped ends its wait
+//! in this process at once, and every wait after; one renewed ends the
+//! wait under way, and its caller asks again with more to wait on. One
+//! asked over the wire is ended at its Storage node, asked over another
+//! connection by what the client left with the waiter ([`Waiter::ending`]):
+//! no node looks whether its waiter stopped.
 //!
 //! **Refused by a primary no more** ([`Watch::refuse`]): a Storage node that
 //! steps down or stops ends every wait on its queues refused
@@ -40,35 +61,74 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use codec::CodecError;
 use codec::cursor::Cursor;
 use codec::form::Form;
 use codec::writer::ByteWriter;
 use xcore::lock::Locked;
 
 use super::commit::Batch;
+use super::due::{self, DuePart, DueQueue};
 use super::hold::KINDS;
-use super::queue;
+use super::{instance, queue};
 use crate::{EncryptedStore, Engine, PersistError};
 
 mod moved;
 mod waiter;
 
-pub(crate) use moved::{Moved, moved};
+pub(crate) use moved::{Change, moved};
 pub(crate) use waiter::Ending;
 pub use waiter::Waiter;
 
-/// Where a queue stands: the place the next entry it takes is given, which
-/// only a write that puts an entry in it moves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Position {
-    /// The queue ([`super::named`]).
-    pub queue: u128,
-    /// The place its next entry takes.
-    pub next: u64,
+/// What a wait watches, by its identifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Watched {
+    /// A queue ([`super::named`]) by its tail: the place its next entry
+    /// takes, which only a write that puts an entry in it moves.
+    Queue(u128),
+    /// A queue by its head: how many entries were ever taken out of it,
+    /// which only a write that takes one out moves — a sequence's head
+    /// moving on.
+    Head(u128),
+    /// A Work Process Instance by how many turns it took, which only a turn
+    /// written over it moves.
+    Instance(u128),
+    /// A key of the Instance Key table: one where an Instance holds it,
+    /// none where none does.
+    Key(u128),
 }
 
-/// Who waits on which queue of one embedded Storage node now, and where its
-/// one writer left each queue waited on.
+/// Where what a wait watches stands: its count, as [`Watched`] says what is
+/// counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Position {
+    pub watched: Watched,
+    pub at: u64,
+}
+
+impl Position {
+    /// `queue` by its tail, its next entry taking the place `next`.
+    #[must_use]
+    pub const fn queue(queue: u128, next: u64) -> Self {
+        Self {
+            watched: Watched::Queue(queue),
+            at: next,
+        }
+    }
+}
+
+/// What a wait answers for each it watches that stands elsewhere than its
+/// waiter saw: where it stands, and for a queue's tail, the first of what
+/// is due in it as the Storage node read it answering — up to as many as
+/// the wait asked for, none where it asked for none or the read failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Moved {
+    pub position: Position,
+    pub due: Option<DueQueue>,
+}
+
+/// Who waits on what of one embedded Storage node now, and where its one
+/// writer left each waited on.
 #[derive(Debug, Default)]
 pub(crate) struct Watch {
     waiting: Mutex<Waiting>,
@@ -76,36 +136,36 @@ pub(crate) struct Watch {
 
 #[derive(Debug, Default)]
 struct Waiting {
-    /// By queue, who waits on it now.
-    on: HashMap<u128, Vec<Arc<Waiter>>>,
-    /// By queue waited on since the watch opened, where its writer last
-    /// left it or a wait read it, whichever is later; `None` while it is to
-    /// be read.
-    known: HashMap<u128, Option<u64>>,
+    /// Who waits on each now.
+    on: HashMap<Watched, Vec<Arc<Waiter>>>,
+    /// Each waited on since the watch opened, where its writer last left
+    /// it, or a wait read it where its writer told nothing since; `None`
+    /// while it is to be read.
+    known: HashMap<Watched, Option<u64>>,
     /// Why every wait is refused: its node is the primary no more.
     refused: Option<String>,
 }
 
 impl Watch {
-    /// Each queue of `moved` where a batch left it, kept where a node waited
-    /// on it, and every waiter on it told — quietly, the one whose holder's
-    /// claims hold all the batch put there; one whose place could not be
-    /// read (`None`) is read again by the next wait on it, and its waiters
-    /// find it at their bound.
-    pub(crate) fn moved(&self, moved: &[Moved]) {
-        if moved.is_empty() {
+    /// Each of `changes` kept where a node waited on it, and every waiter
+    /// on it told — quietly, the one whose holder's claims hold all the
+    /// batch put in a queue; one whose count could not be read (`None`) is
+    /// read again by the next wait on it, and its waiters find it at their
+    /// bound.
+    pub(crate) fn moved(&self, changes: &[Change]) {
+        if changes.is_empty() {
             return;
         }
         let mut waiting = self.waiting.locked();
-        for Moved { queue, next, own } in moved {
-            if let Some(known) = waiting.known.get_mut(queue) {
-                *known = next.map(|next| known.map_or(next, |was| was.max(next)));
+        for Change { watched, at, own } in changes {
+            if let Some(known) = waiting.known.get_mut(watched) {
+                *known = *at;
             }
-            let Some(next) = next else {
+            let Some(at) = at else {
                 continue;
             };
-            for waiter in waiting.on.get(queue).into_iter().flatten() {
-                waiter.tell(*queue, *next, own.as_deref());
+            for waiter in waiting.on.get(watched).into_iter().flatten() {
+                waiter.tell(*watched, *at, own.as_deref());
             }
         }
     }
@@ -121,13 +181,13 @@ impl Watch {
     }
 
     /// `seen` waited on by `waiter` in `store` for at most `bound`: every
-    /// queue that stands elsewhere than `seen` says, as it stands — at once
+    /// one that stands elsewhere than `seen` says, as it stands — at once
     /// where one does as the wait begins — or none where no write moved one
     /// within `bound`, or `waiter` was stopped.
     ///
     /// # Errors
     ///
-    /// Where a queue's place cannot be read, or the wait is refused
+    /// Where a count cannot be read, or the wait is refused
     /// ([`Watch::refuse`]).
     pub(crate) fn wait<R: Engine>(
         &self,
@@ -137,24 +197,24 @@ impl Watch {
     ) -> Result<Vec<Position>, PersistError> {
         let until = Instant::now().checked_add(bound);
         waiter.begin();
-        // Listed before any place is read, so a write between the two is
+        // Listed before any count is read, so a write between the two is
         // either read or told.
         let (_listening, unknown) = self.listening(seen, waiter)?;
         let read = unknown
             .into_iter()
-            .map(|queue| Ok((queue, stands(store, queue)?)))
+            .map(|watched| Ok((watched, stands(store, watched)?)))
             .collect::<Result<Vec<_>, PersistError>>()?;
         let now = self.standing(seen, &read);
         waiter.waited(seen, now, until)
     }
 
-    /// `waiter` listed for each queue of `seen` until what this returns is
-    /// dropped, and the queues of `seen` none waited on before, to be read.
+    /// `waiter` listed for each of `seen` until what this returns is
+    /// dropped, and those of `seen` none waited on before, to be read.
     fn listening<'a>(
         &'a self,
         seen: &[Position],
         waiter: &Arc<Waiter>,
-    ) -> Result<(Listening<'a>, Vec<u128>), PersistError> {
+    ) -> Result<(Listening<'a>, Vec<Watched>), PersistError> {
         let mut waiting = self.waiting.locked();
         if let Some(reason) = &waiting.refused {
             return Err(PersistError::Standby {
@@ -165,92 +225,168 @@ impl Watch {
         for position in seen {
             waiting
                 .on
-                .entry(position.queue)
+                .entry(position.watched)
                 .or_default()
                 .push(Arc::clone(waiter));
-            let known = waiting.known.entry(position.queue).or_insert(None);
-            if known.is_none() && !unknown.contains(&position.queue) {
-                unknown.push(position.queue);
+            let known = waiting.known.entry(position.watched).or_insert(None);
+            if known.is_none() && !unknown.contains(&position.watched) {
+                unknown.push(position.watched);
             }
         }
         let listening = Listening {
             watch: self,
-            queues: seen.iter().map(|position| position.queue).collect(),
+            watched: seen.iter().map(|position| position.watched).collect(),
             waiter: Arc::clone(waiter),
         };
         Ok((listening, unknown))
     }
 
-    /// Where each queue of `seen` stands as the wait begins: what its writer
-    /// last told, or the store `read` where that is later; one neither says
-    /// — its place unreadable since — as `seen` says, found at the bound.
-    fn standing(&self, seen: &[Position], read: &[(u128, u64)]) -> Vec<Position> {
+    /// Where each of `seen` stands as the wait begins: what its writer told
+    /// since it was listed, else what the store `read`; one neither says —
+    /// its count unreadable since — as `seen` says, found at the bound.
+    fn standing(&self, seen: &[Position], read: &[(Watched, u64)]) -> Vec<Position> {
         let mut waiting = self.waiting.locked();
-        for &(queue, next) in read {
-            let known = waiting.known.entry(queue).or_insert(None);
-            *known = Some(known.map_or(next, |told| told.max(next)));
+        for &(watched, at) in read {
+            // A write told since the read is later than it; one the read
+            // saw untold yet is told to this waiter, listed before it read.
+            waiting
+                .known
+                .entry(watched)
+                .or_insert(None)
+                .get_or_insert(at);
         }
         seen.iter()
             .map(|seen| Position {
-                queue: seen.queue,
-                next: waiting
+                watched: seen.watched,
+                at: waiting
                     .known
-                    .get(&seen.queue)
+                    .get(&seen.watched)
                     .copied()
                     .flatten()
-                    .unwrap_or(seen.next),
+                    .unwrap_or(seen.at),
             })
             .collect()
     }
 }
 
-/// A waiter listed for its queues, taken off them as it is dropped.
+/// A waiter listed for what it waits on, taken off as it is dropped.
 struct Listening<'a> {
     watch: &'a Watch,
-    queues: Vec<u128>,
+    watched: Vec<Watched>,
     waiter: Arc<Waiter>,
 }
 
 impl Drop for Listening<'_> {
     fn drop(&mut self) {
         let mut waiting = self.watch.waiting.locked();
-        for queue in &self.queues {
-            if let Some(waiters) = waiting.on.get_mut(queue) {
+        for watched in &self.watched {
+            if let Some(waiters) = waiting.on.get_mut(watched) {
                 if let Some(at) = waiters.iter().position(|w| Arc::ptr_eq(w, &self.waiter)) {
                     waiters.swap_remove(at);
                 }
                 if waiters.is_empty() {
-                    waiting.on.remove(queue);
+                    waiting.on.remove(watched);
                 }
             }
         }
     }
 }
 
-/// Where `queue` stands in `store`.
-fn stands<R: Engine>(store: &EncryptedStore<R>, queue: u128) -> Result<u64, PersistError> {
-    Ok(queue::places(store, &Batch::empty(), KINDS, queue)?.next)
+/// Where `watched` stands in `store`.
+fn stands<R: Engine>(store: &EncryptedStore<R>, watched: Watched) -> Result<u64, PersistError> {
+    let places = |queue| queue::places(store, &Batch::empty(), KINDS, queue);
+    Ok(match watched {
+        Watched::Queue(queue) => places(queue)?.next,
+        Watched::Head(queue) => places(queue)?.taken(),
+        Watched::Instance(id) => instance::read_instance(store, id)?.map_or(0, |found| found.turns),
+        Watched::Key(key) => u64::from(instance::read_instance_key(store, key)?.is_some()),
+    })
+}
+
+/// What a wait answers: each of `moved`, a queue's tail with the first
+/// `most` of what is due in it read from `store` at `now` on its clock.
+pub(crate) fn answered<R: Engine>(
+    store: &EncryptedStore<R>,
+    moved: Vec<Position>,
+    (most, now): (u32, i128),
+) -> Vec<Moved> {
+    moved
+        .into_iter()
+        .map(|position| {
+            let due = match position.watched {
+                Watched::Queue(queue) if most > 0 => {
+                    due::read(store, (queue, DuePart::Due), ((0, 0), most), now).ok()
+                }
+                _ => None,
+            };
+            Moved { position, due }
+        })
+        .collect()
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl Watch {
-    /// How many wait on `queue` now.
-    pub(crate) fn waiting_on(&self, queue: u128) -> usize {
-        self.waiting.locked().on.get(&queue).map_or(0, Vec::len)
+    /// How many wait on `watched` now.
+    pub(crate) fn waiting_on(&self, watched: Watched) -> usize {
+        self.waiting.locked().on.get(&watched).map_or(0, Vec::len)
+    }
+}
+
+impl Form for Watched {
+    fn write(&self, out: &mut Vec<u8>) {
+        let (kind, id) = match self {
+            Self::Queue(id) => (0, id),
+            Self::Head(id) => (1, id),
+            Self::Instance(id) => (2, id),
+            Self::Key(id) => (3, id),
+        };
+        out.byte(kind);
+        out.u128_be(*id);
+    }
+
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let kind = cursor.byte()?;
+        let id = cursor.u128_be()?;
+        Ok(match kind {
+            0 => Self::Queue(id),
+            1 => Self::Head(id),
+            2 => Self::Instance(id),
+            3 => Self::Key(id),
+            other => return Err(CodecError::new(format!("nothing watched is kind {other}"))),
+        })
     }
 }
 
 impl Form for Position {
     fn write(&self, out: &mut Vec<u8>) {
-        out.u128_be(self.queue);
-        out.u64_be(self.next);
+        self.watched.write(out);
+        out.u64_be(self.at);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
-            queue: cursor.u128_be()?,
-            next: cursor.u64_be()?,
+            watched: Watched::read(cursor)?,
+            at: cursor.u64_be()?,
         })
+    }
+}
+
+impl Form for Moved {
+    fn write(&self, out: &mut Vec<u8>) {
+        self.position.write(out);
+        out.byte(u8::from(self.due.is_some()));
+        if let Some(due) = &self.due {
+            due.write(out);
+        }
+    }
+
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        let position = Position::read(cursor)?;
+        let due = match cursor.byte()? {
+            0 => None,
+            _ => Some(DueQueue::read(cursor)?),
+        };
+        Ok(Self { position, due })
     }
 }
 

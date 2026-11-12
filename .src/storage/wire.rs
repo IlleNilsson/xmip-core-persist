@@ -37,6 +37,7 @@ use super::stream::StreamRecord;
 use super::watch::Position;
 
 mod answer;
+mod late;
 mod operation;
 
 pub(crate) use answer::Answer;
@@ -86,12 +87,16 @@ pub(crate) enum Request {
     WriteSecret(Box<SecretRecord>),
     ReadSecret(SecretName),
     ListSecrets,
-    /// A wait on queues by the token its node ends it with, for the holder
-    /// whose claims are its node's (empty for none), each queue with where
-    /// it was last seen, for at most so many nanoseconds (`super::watch`).
-    Wait(u128, String, Vec<Position>, u64),
+    /// A wait by the token its node ends it with, for the holder whose
+    /// claims are its node's (empty for none), each it watches with where it
+    /// was last seen, for at most so many nanoseconds, answered with up to
+    /// so many of what is due in each queue that moved (`super::watch`).
+    Wait(u128, String, Vec<Position>, u64, u32),
     /// The wait asked with this token ended, its waiter stopped.
     EndWait(u128),
+    /// What a Message is acted on under its claim: its place in a queue,
+    /// its Journey, its Message and its Stream's record (`super::claimed`).
+    ReadClaimed(u128, u64, JourneyId),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -99,93 +104,6 @@ fn nanos(lease: Duration) -> u64 {
 }
 
 impl Request {
-    /// The operations numbered from 22 on, written as `write` writes the rest.
-    fn write_late(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Query(query) => {
-                out.byte(22);
-                query.write(out);
-            }
-            Self::WriteStream(last, stream) => {
-                out.byte(23);
-                last.write(out);
-                stream.write(out);
-            }
-            Self::ReadStream(id) => {
-                out.byte(24);
-                out.u128_be(id.value());
-            }
-            Self::ReadKeptAuditChunk(id, stream, index) => {
-                out.byte(25);
-                out.u128_be(id.value());
-                out.byte(u8::from(stream.is_some()));
-                out.u128_be(stream.map_or(0, StreamId::value));
-                out.u32_be(*index);
-            }
-            Self::ReadKeptAuditStream(id, stream) => {
-                out.byte(26);
-                out.u128_be(id.value());
-                out.u128_be(stream.value());
-            }
-            Self::ReadFailed(queue, from, most) => {
-                out.byte(27);
-                out.u128_be(*queue);
-                out.u64_be(*from);
-                out.u32_be(*most);
-            }
-            Self::ReadDue(queue, part, (due, place), most) => {
-                out.byte(28);
-                out.u128_be(*queue);
-                part.write(out);
-                out.u64_be(*due);
-                out.u64_be(*place);
-                out.u32_be(*most);
-            }
-            Self::Standing => {
-                out.byte(29);
-            }
-            Self::Follow(follow) => {
-                out.byte(30);
-                follow.write(out);
-            }
-            Self::Turn(turn) => {
-                out.byte(31);
-                turn.write(out);
-            }
-            Self::ReadInstance(id) => {
-                out.byte(32);
-                out.u128_be(*id);
-            }
-            Self::ReadInstanceKey(id) => {
-                out.byte(33);
-                out.u128_be(*id);
-            }
-            Self::WriteSecret(secret) => {
-                out.byte(34);
-                secret.write(out);
-            }
-            Self::ReadSecret(name) => {
-                out.byte(35);
-                field::text(out, name.as_str());
-            }
-            Self::ListSecrets => {
-                out.byte(36);
-            }
-            Self::Wait(token, holder, seen, bound) => {
-                out.byte(37);
-                out.u128_be(*token);
-                field::text(out, holder);
-                seen.write(out);
-                out.u64_be(*bound);
-            }
-            Self::EndWait(token) => {
-                out.byte(38);
-                out.u128_be(*token);
-            }
-            _ => {}
-        }
-    }
-
     pub(crate) fn claim(claim: Claim, lease: Duration) -> Self {
         Self::Claim(claim, nanos(lease))
     }
@@ -193,10 +111,10 @@ impl Request {
     pub(crate) fn wait(
         (token, holder): (u128, Option<&str>),
         seen: &[Position],
-        bound: Duration,
+        (bound, due): (Duration, u32),
     ) -> Self {
         let holder = holder.unwrap_or_default().to_string();
-        Self::Wait(token, holder, seen.to_vec(), nanos(bound))
+        Self::Wait(token, holder, seen.to_vec(), nanos(bound), due)
     }
 
     pub(crate) fn renew(claims: Vec<Claim>, lease: Duration) -> Self {
@@ -358,9 +276,14 @@ impl Form for Request {
             36 => Self::ListSecrets,
             37 => {
                 let (token, holder) = (cursor.u128_be()?, field::read_text(cursor)?);
-                Self::Wait(token, holder, Vec::read(cursor)?, cursor.u64_be()?)
+                let (seen, bound) = (Vec::read(cursor)?, cursor.u64_be()?);
+                Self::Wait(token, holder, seen, bound, cursor.u32_be()?)
             }
             38 => Self::EndWait(cursor.u128_be()?),
+            39 => {
+                let (queue, at) = (cursor.u128_be()?, cursor.u64_be()?);
+                Self::ReadClaimed(queue, at, JourneyId::new(cursor.u128_be()?))
+            }
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }
@@ -529,15 +452,28 @@ mod tests {
 
     #[test]
     fn a_wait_on_queues_and_its_answer_cross_a_frame_as_they_were() {
+        use super::super::watch::{Moved, Watched};
         let seen = [
-            Position { queue: 7, next: 3 },
-            Position { queue: 9, next: 0 },
+            Position::queue(7, 3),
+            Position::queue(9, 0),
+            Position {
+                watched: Watched::Head(5),
+                at: 2,
+            },
+            Position {
+                watched: Watched::Instance(u128::MAX),
+                at: 4,
+            },
+            Position {
+                watched: Watched::Key(6),
+                at: 0,
+            },
         ];
         let holder = configure::fixture::test_cluster().node_scope(0);
         let request = Request::wait(
             (u128::MAX - 5, Some(holder.as_str())),
             &seen,
-            Duration::from_secs(1),
+            (Duration::from_secs(1), 64),
         );
         assert_eq!(request.operation(), ("read", "wait_queues"));
         let ended = Request::EndWait(u128::MAX - 5);
@@ -548,12 +484,46 @@ mod tests {
                 request
             );
         }
+        let due = crate::storage::DueQueue {
+            retrying: 1,
+            read_unix_nanos: 5,
+            ..crate::storage::DueQueue::default()
+        };
         for answer in [
-            Answer::Positions(vec![Position { queue: 7, next: 4 }]),
-            Answer::Positions(Vec::new()),
+            Answer::Moved(vec![
+                Moved {
+                    position: Position::queue(7, 4),
+                    due: Some(due),
+                },
+                Moved {
+                    position: seen[2],
+                    due: None,
+                },
+            ]),
+            Answer::Moved(Vec::new()),
         ] {
             assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
         }
+    }
+
+    #[test]
+    fn a_read_under_a_claim_and_its_answer_cross_a_frame_as_they_were() {
+        let request = Request::ReadClaimed(7, 3, JourneyId::new(u128::MAX - 1));
+        assert_eq!(request.operation(), ("read", "read_claimed"));
+        assert_eq!(
+            Request::from_bytes(&request.bytes()).expect("read"),
+            request
+        );
+        let claimed = super::super::Claimed {
+            journey: Some(JourneyRecord {
+                journey: JourneyId::new(4),
+                body: b"to send".to_vec(),
+                facts: JourneyFacts::default(),
+            }),
+            ..super::super::Claimed::default()
+        };
+        let answer = Answer::Claimed(Box::new(claimed));
+        assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
     }
 
     #[test]

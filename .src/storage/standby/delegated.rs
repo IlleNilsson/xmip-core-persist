@@ -11,10 +11,10 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use crate::PersistError;
 use crate::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
-    DueQueue, Durable, FailedQueue, HandOn, HeldQueue, InstanceRecord, JourneyRecord, KeptAudit,
-    MessageRecord, Position, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Turn,
-    Waiter, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed, DeadEntry, DeadQueue,
+    DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, InstanceRecord, JourneyRecord,
+    KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
+    StreamRecord, Turn, Waiter, XmipStorage,
 };
 
 /// What answers now, or why nothing does.
@@ -103,6 +103,15 @@ impl XmipStorage for Delegated {
         self.now()?.storage.read_due(queue, part, from, most)
     }
 
+    fn read_claimed(
+        &self,
+        queue: u128,
+        at: u64,
+        journey: JourneyId,
+    ) -> Result<Claimed, PersistError> {
+        self.now()?.storage.read_claimed(queue, at, journey)
+    }
+
     /// Not lent for the wait: a primary stopping waits for no one waiting
     /// on its queues. One that steps down or stops refuses each wait on
     /// them (`super::super::watch`), and the wait is asked again at once of
@@ -111,17 +120,17 @@ impl XmipStorage for Delegated {
     fn wait_queues(
         &self,
         seen: &[Position],
-        bound: Duration,
+        wait: (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError> {
+    ) -> Result<Vec<Moved>, PersistError> {
         let asked = self.now()?.storage;
-        match asked.wait_queues(seen, bound, waiter) {
+        match asked.wait_queues(seen, wait, waiter) {
             Err(PersistError::Standby { reason }) if !waiter.is_stopped() => {
                 let now = self.now()?.storage;
                 if Arc::ptr_eq(&now, &asked) {
                     return Err(PersistError::Standby { reason });
                 }
-                now.wait_queues(seen, bound, waiter)
+                now.wait_queues(seen, wait, waiter)
             }
             answered => answered,
         }

@@ -53,6 +53,7 @@ use super::server::ALPN;
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
+mod claimed;
 mod operations;
 mod waiting;
 
@@ -616,10 +617,10 @@ mod tests {
         fn wait_queues(
             &self,
             seen: &[crate::storage::Position],
-            bound: Duration,
+            wait: (Duration, u32),
             waiter: &Arc<crate::storage::Waiter>,
-        ) -> Result<Vec<crate::storage::Position>, PersistError> {
-            self.beneath.wait_queues(seen, bound, waiter)
+        ) -> Result<Vec<crate::storage::Moved>, PersistError> {
+            self.beneath.wait_queues(seen, wait, waiter)
         }
 
         fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
@@ -858,15 +859,21 @@ mod tests {
     const QUEUE: u128 = 7;
 
     /// `client` waiting on [`QUEUE`], seen at `next`, as `waiter`, on a
-    /// thread of its own.
+    /// thread of its own, answered with what is due there: where each moved
+    /// queue stands, and how many are due in it.
     fn waiting_on(
         client: &Arc<StorageClient>,
         next: u64,
         waiter: &Arc<crate::storage::Waiter>,
-    ) -> std::thread::JoinHandle<Result<Vec<crate::storage::Position>, PersistError>> {
+    ) -> std::thread::JoinHandle<Result<Vec<(crate::storage::Position, usize)>, PersistError>> {
         let (client, waiter) = (Arc::clone(client), Arc::clone(waiter));
-        let seen = [crate::storage::Position { queue: QUEUE, next }];
-        std::thread::spawn(move || client.wait_queues(&seen, LONG, &waiter))
+        let seen = [crate::storage::Position::queue(QUEUE, next)];
+        std::thread::spawn(move || {
+            let moved = client.wait_queues(&seen, (LONG, 64), &waiter)?;
+            let due =
+                |moved: &crate::storage::Moved| moved.due.as_ref().map_or(0, |d| d.held.len());
+            Ok(moved.iter().map(|one| (one.position, due(one))).collect())
+        })
     }
 
     /// Wait, bounded, until `server` holds `held` waits.
@@ -901,19 +908,29 @@ mod tests {
         let moved = woken.join().expect("woken").expect("answered");
         assert_eq!(
             moved,
-            [Position {
-                queue: QUEUE,
-                next: 1
-            }]
+            [(Position::queue(QUEUE, 1), 1)],
+            "woken, what is due with it"
         );
         holding(&first, 0);
 
-        // A waiter stopped ends its wait where the Storage node holds it.
-        let stopped = waiting_on(&watching, 1, &waiter);
+        // A waiter renewed ends the wait under way where the Storage node
+        // holds it, and waits again once its caller asks anew.
+        waiter.asking();
+        let renewed = waiting_on(&watching, 1, &waiter);
         holding(&first, 1);
+        let renewing = std::time::Instant::now();
+        waiter.renew();
+        assert_eq!(renewed.join().expect("ended").expect("answered"), []);
+        assert!(renewing.elapsed() < LONG / 2, "not its bound");
+        holding(&first, 0);
+        waiter.asking();
+        let again = waiting_on(&watching, 1, &waiter);
+        holding(&first, 1);
+
+        // A waiter stopped ends its wait where the Storage node holds it.
         let stopping = std::time::Instant::now();
         waiter.stop();
-        assert_eq!(stopped.join().expect("ended").expect("answered"), []);
+        assert_eq!(again.join().expect("ended").expect("answered"), []);
         assert!(stopping.elapsed() < LONG / 2, "not its bound");
         holding(&first, 0);
         first.stop();
@@ -948,13 +965,7 @@ mod tests {
         .expect("client");
         publishing.publish(held_in(QUEUE, 1)).expect("published");
         let moved = woken.join().expect("woken").expect("answered");
-        assert_eq!(
-            moved,
-            [Position {
-                queue: QUEUE,
-                next: 1
-            }]
-        );
+        assert_eq!(moved, [(Position::queue(QUEUE, 1), 1)]);
         assert!(
             stopping.elapsed() < LONG / 2,
             "moved at once, not at its bound"

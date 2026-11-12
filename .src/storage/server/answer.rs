@@ -15,15 +15,7 @@ use crate::PersistError;
 /// (`super::waiters`).
 pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Waiters) -> Answer {
     let answered = match request {
-        Request::Wait(token, holder, seen, bound) => waited(
-            storage,
-            (&seen, Duration::from_nanos(bound)),
-            &waiters.waiting(token, &holder),
-        ),
-        Request::EndWait(token) => {
-            waiters.end(token);
-            Ok(Answer::Done)
-        }
+        Request::Wait(..) | Request::EndWait(_) => waits(storage, request, waiters),
         Request::WriteChunk(chunk) => storage.write_chunk(&chunk).map(|()| Answer::Done),
         Request::ReadChunk(stream, index) => storage.read_chunk(stream, index).map(Answer::Chunk),
         Request::WriteMessage(message) => storage.write_message(&message).map(|()| Answer::Done),
@@ -82,6 +74,9 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)
         }
+        Request::ReadClaimed(queue, at, journey) => storage
+            .read_claimed(queue, at, journey)
+            .map(|claimed| Answer::Claimed(Box::new(claimed))),
         Request::ReadDue(queue, part, from, most) => storage
             .read_due(queue, part, from, most)
             .map(Answer::DueQueue),
@@ -118,22 +113,46 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
     })
 }
 
+/// A wait `request` names held among `waiters` by its token, or the one an
+/// end names ended (`super::waiters`).
+fn waits(
+    storage: &dyn XmipStorage,
+    request: Request,
+    waiters: &Waiters,
+) -> Result<Answer, PersistError> {
+    match request {
+        Request::Wait(token, holder, seen, bound, due) => waited(
+            storage,
+            (&seen, Duration::from_nanos(bound), due),
+            &waiters.waiting(token, &holder),
+        ),
+        Request::EndWait(token) => {
+            waiters.end(token);
+            Ok(Answer::Done)
+        }
+        _ => Err(PersistError::Failed {
+            reason: "no wait was asked".to_string(),
+        }),
+    }
+}
+
 /// `seen` waited on in `storage` for at most `bound`, or the server's most,
-/// as `waiting`: what moved, none where nothing did, or a refusal as a
-/// standby's — the next Storage node asked at once — where its server's
-/// stop ended it with nothing.
+/// as `waiting`, answered with up to `due` of what is due in each queue that
+/// moved: what moved, none where nothing did, or a refusal as a standby's —
+/// the next Storage node asked at once — where its server's stop ended it
+/// with nothing.
 fn waited(
     storage: &dyn XmipStorage,
-    (seen, bound): (&[Position], Duration),
+    (seen, bound, due): (&[Position], Duration, u32),
     waiting: &Waiting<'_>,
 ) -> Result<Answer, PersistError> {
-    let moved = storage.wait_queues(seen, bound.min(waiting.most), &waiting.waiter)?;
+    let moved = storage.wait_queues(seen, (bound.min(waiting.most), due), &waiting.waiter)?;
     if moved.is_empty() && waiting.stopping() {
         return Err(PersistError::Standby {
             reason: "this Storage node is stopping".to_string(),
         });
     }
-    Ok(Answer::Positions(moved))
+    Ok(Answer::Moved(moved))
 }
 
 #[cfg(test)]
@@ -142,15 +161,14 @@ mod tests {
 
     use super::*;
     use crate::fixture::crowd::{QUEUE, node, published};
+    use crate::storage::Moved;
 
-    const SEEN: [Position; 1] = [Position {
-        queue: QUEUE,
-        next: 0,
-    }];
+    const SEEN: [Position; 1] = [Position::queue(QUEUE, 0)];
 
-    /// A wait on [`QUEUE`], seen empty, asked with `token`, for no holder.
+    /// A wait on [`QUEUE`], seen empty, asked with `token`, for no holder,
+    /// answered with what is due in it.
     fn wait(token: u128) -> Request {
-        Request::wait((token, None), &SEEN, Duration::from_secs(60))
+        Request::wait((token, None), &SEEN, (Duration::from_secs(60), 64))
     }
 
     #[test]
@@ -164,14 +182,15 @@ mod tests {
             "{refused:?}"
         );
         published(&node, 1..2);
-        let moved = answer(&node, wait(2), &waiters);
-        assert_eq!(
-            moved,
-            Answer::Positions(vec![Position {
-                queue: QUEUE,
-                next: 1
-            }])
-        );
+        let Answer::Moved(moved) = answer(&node, wait(2), &waiters) else {
+            panic!("no wait's answer");
+        };
+        let [Moved { position, due }] = moved.as_slice() else {
+            panic!("{moved:?}");
+        };
+        assert_eq!(*position, Position::queue(QUEUE, 1));
+        let due = due.as_ref().expect("what is due, with the wait's answer");
+        assert_eq!(due.held.len(), 1, "the Message published");
     }
 
     #[test]
@@ -184,11 +203,11 @@ mod tests {
             "an end that came first"
         );
         let ended = answer(&node, wait(7), &waiters);
-        assert_eq!(ended, Answer::Positions(Vec::new()));
+        assert_eq!(ended, Answer::Moved(Vec::new()));
         waiters.hold(Duration::from_millis(20));
         let held = Instant::now();
         let capped = answer(&node, wait(8), &waiters);
-        assert_eq!(capped, Answer::Positions(Vec::new()));
+        assert_eq!(capped, Answer::Moved(Vec::new()));
         assert!(held.elapsed() < Duration::from_secs(30), "held its most");
     }
 }

@@ -65,6 +65,16 @@ pub(crate) struct Places {
     pub(crate) count: u64,
 }
 
+impl Places {
+    /// How many entries were ever taken out of it: every one placed takes
+    /// the next place and counts one, and every one taken out counts one
+    /// less, so this only grows, and only by a take-out — its head moving
+    /// on, where it is a sequence (`super::watch`).
+    pub(crate) const fn taken(&self) -> u64 {
+        self.next.saturating_sub(self.count)
+    }
+}
+
 /// Where an entry is kept: its queue and its place.
 pub(crate) fn entry_key(queue: u128, sequence: u64) -> Vec<u8> {
     [

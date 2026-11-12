@@ -3,7 +3,7 @@
 //! node waiting asks the next Storage node rather than wait out its bound.
 
 use crate::PersistError;
-use crate::storage::{Position, Waiter};
+use crate::storage::{Moved, Position, Waiter};
 
 use super::super::Role;
 use super::*;
@@ -30,13 +30,11 @@ fn promoted() -> Arc<StorageNode> {
 
 /// A wait on `node`'s queues, as a node asking it waits, on a thread of its
 /// own, returned once its primary lists it.
-fn waiting(
-    node: &Arc<StorageNode>,
-) -> std::thread::JoinHandle<Result<Vec<Position>, PersistError>> {
+fn waiting(node: &Arc<StorageNode>) -> std::thread::JoinHandle<Result<Vec<Moved>, PersistError>> {
     let waiter = Arc::new(Waiter::new());
     let (served, held) = (node.served(), Arc::clone(&waiter));
-    let seen = [Position { queue: 7, next: 0 }];
-    let waiting = std::thread::spawn(move || served.wait_queues(&seen, LONG, &held));
+    let seen = [Position::queue(7, 0)];
+    let waiting = std::thread::spawn(move || served.wait_queues(&seen, (LONG, 0), &held));
     // Listed: held by the thread, and by the primary in its list and its
     // listing.
     assert!(
@@ -47,7 +45,7 @@ fn waiting(
 }
 
 /// What `waited` ended as, and that it ended long before its bound.
-fn refused(waited: std::thread::JoinHandle<Result<Vec<Position>, PersistError>>, since: Instant) {
+fn refused(waited: std::thread::JoinHandle<Result<Vec<Moved>, PersistError>>, since: Instant) {
     let ended = waited.join().expect("ended");
     assert!(
         matches!(ended, Err(PersistError::Standby { .. })),

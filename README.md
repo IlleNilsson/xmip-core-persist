@@ -99,23 +99,35 @@ and 9).
   what `RocksDB` keeps of entries taken out (ADR-0013, amendment
   2026-10-21); a Message marked failed waits for no retry, its due time
   taken out with the mark; wait on queues (`wait_queues`, `Position`,
-  `Waiter`; `storage/watch.rs`; open problem 46, ADR-0018, amendment
-  2026-11-12): each queue named with where its waiter last saw it stand,
-  the place its next entry takes, answered at once where one stands
-  elsewhere, else the moment a Publication, a hand-on, a turn or a Replay
-  puts an entry in one — told by the embedded Storage node's one writer to
-  every waiter on that queue as soon as the batch is readable, but quietly,
+  `Watched`, `Moved`, `Waiter`; `storage/watch.rs`; open problem 46,
+  ADR-0018, amendments 2026-11-12): each queue named with where its waiter
+  last saw it stand, the place its next entry takes, answered at once where
+  one stands elsewhere, else the moment a Publication, a hand-on, a turn or
+  a Replay puts an entry in one, with the first of what is due in it read
+  as the wait is answered; and a queue's head (how many entries were ever
+  taken out of it), a Work Process Instance (its turns) and a key of the
+  Instance Key table (held or not), each answered the moment a write moves
+  it — told by the embedded Storage node's one writer to
+  every waiter on what it moved as soon as the batch is readable, but quietly,
   never woken, to the node's own (`Waiter::of`) whose claims in that write
   hold every Message it put there (`storage/watch/moved.rs`), the writer
-  keeping where it left each queue waited on so a wait reads the store only
-  for a queue none waited on before — and with none once its bound passes,
+  keeping where it left each waited on so a wait reads the store only for
+  one none waited on before — and with none once its bound passes,
   or the Storage node's `HOLD` (`[tuning] storage_wait`), never an error; a
+  waiter renewed (`Waiter::renew`) ends the wait under way so its caller
+  asks again naming more, and a
   waiter stopped ends its wait at once in process, and over the wire at
   the Storage node holding it, by the wait's token asked over another
   connection (wire operation 38), no node looking whether its waiter
   stopped; a Storage node that stops, or a primary that steps down, refuses
   every wait it holds as a standby's (`PersistError::Standby`), so the node
-  waiting asks the next at once; claim a
+  waiting asks the next at once; read what a Message is acted on under its
+  claim as one request (`read_claimed`, `Claimed`, `storage/claimed.rs`;
+  wire operation 39, answer 27; open problem 46, 2026-11-12): its place in
+  its queue, its Journey, the Message the Journey holds last and the
+  record of the Stream that Message's first Section is over, each found by
+  what Xmip Storage keeps of it in columns, the four reads one by one where
+  nothing answers it whole; claim a
   Message by its Journey (set the holder where there is none or
   the last claim lapsed, time-limited, on the Storage node's clock), renew
   it, release it; hand a step on — its result, the Messages it made, the
@@ -261,7 +273,8 @@ and 9).
   (`StorageServer::peers`), the traffic between nodes measured where it
   passes (ADR-0052, amendment 2026-11-11). A wait on queues (wire operation
   37, by a token its node chose and for the holder its claims name,
-  answered with positions, answer 26) is held
+  answered with what moved and what is due in each queue of it, answer 26)
+  is held
   as a `Waiter` of its own, at most `StorageServer::hold_waits` (the Storage
   node's `[tuning] storage_wait`, `storage::HOLD`, a minute, by default),
   ended by its token (wire operation 38, an end that overtakes its wait

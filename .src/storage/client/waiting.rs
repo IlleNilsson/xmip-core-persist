@@ -1,16 +1,17 @@
-//! A wait on queues asked of a Storage node (`super::super::watch`): asked
-//! round robin as every request is; a standby — and a Storage node that is
+//! A wait asked of a Storage node (`super::super::watch`): asked round
+//! robin as every request is; a standby — and a Storage node that is
 //! stopping or the primary no more, which refuses it as one — passed over
 //! for the next at once; its answer read for at most its bound and the time
 //! any answer may take, and the connection kept only once it answered.
 //!
 //! The wait names the holder its waiter waits for, so the Storage node does
-//! not wake it for what its own node claimed (`super::super::watch`).
+//! not wake it for what its own node claimed, and how many of what is due
+//! in each queue that moved its answer carries (`super::super::watch`).
 //!
-//! **Ended where it is held.** A waiter stopped while its wait is asked
-//! ends the wait at its Storage node, by the wait's token, asked over
-//! another connection ([`super::super::watch::Waiter::ending`]), and its
-//! node is answered with none at once. Until 2026-11-12 the node read the
+//! **Ended where it is held.** A waiter stopped or renewed while its wait
+//! is asked ends the wait at its Storage node, by the wait's token, asked
+//! over another connection ([`super::super::watch::Waiter::ending`]), and
+//! its node is answered with none at once. Until 2026-11-12 the node read the
 //! answer in looks of 50 ms, whether its waiter stopped, a receive timing
 //! out on every look and the connection kept after: a timing assumption no
 //! `[tuning]` set, and a connection Windows calls indeterminate once a
@@ -21,25 +22,26 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::super::watch::{Ending, Position, Waiter};
+use super::super::watch::{Ending, Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::operations::expected;
 use super::{Connection, StorageClient, exchange, unreachable};
 use crate::PersistError;
 
 impl StorageClient {
-    /// `seen` waited on for at most `bound` as `waiter`
+    /// `seen` waited on for at most `bound` as `waiter`, each queue that
+    /// moved answered with up to `due` of what is due in it
     /// (`XmipStorage::wait_queues`): asked of the next Storage node, and of
     /// each after it in turn while none answers; none where `waiter` is
-    /// stopped.
+    /// stopped or renewed.
     pub(super) fn waited(
         &self,
         seen: &[Position],
-        bound: Duration,
+        (bound, due): (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError> {
+    ) -> Result<Vec<Moved>, PersistError> {
         let token = u128::from_be_bytes(codec::random::array());
-        let request = Request::wait((token, waiter.holder()), seen, bound);
+        let request = Request::wait((token, waiter.holder()), seen, (bound, due));
         let within = bound.saturating_add(self.timeout);
         let read = |connection: &mut Connection, request: &Request| {
             awaited(connection, request, (within, self.timeout))
@@ -63,7 +65,7 @@ impl StorageClient {
             match asked {
                 Ok(answer) => {
                     return expected(answer, |answer| match answer {
-                        Answer::Positions(moved) => Ok(moved),
+                        Answer::Moved(moved) => Ok(moved),
                         other => Err(other),
                     });
                 }
