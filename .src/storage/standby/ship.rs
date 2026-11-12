@@ -94,7 +94,9 @@ impl StorageNode {
     }
 
     /// The whole of each database handed on, with its data key: where the
-    /// standby's copies follow from in each.
+    /// standby's copies follow from in each, and the write its replay
+    /// reaches before what the pages hold is one state of this node's
+    /// (`super::bootstrap`; ADR-0056, amendment 2026-11-12).
     fn whole(&self, connection: &mut impl Write, epoch: u64) -> Result<[u64; DATABASES], String> {
         let failed = |e: PersistError| e.to_string();
         let mut keys = Vec::with_capacity(DATABASES);
@@ -128,12 +130,21 @@ impl StorageNode {
                     .collect();
                 send(connection, &Shipped::Entries(number, entries))?;
             }
+            // The pages were read while writes went on, so they may reflect a
+            // write in part. A write is numbered under the lock it is written
+            // under (`Copies::written`), so every write they can reflect is
+            // numbered before the next number now: once the standby has
+            // replayed up to it, what it holds is one state of this database.
+            let through = self.copies.next()[database];
             // Every entry handed on was written before this sync began, so
             // the copy is whole only of what is on disk here.
             self.copies
                 .sync(database, engine.as_ref())
                 .map_err(failed)?;
-            send(connection, &Shipped::Copied(number, from[database]))?;
+            send(
+                connection,
+                &Shipped::Copied(number, from[database], through),
+            )?;
         }
         Ok(from)
     }

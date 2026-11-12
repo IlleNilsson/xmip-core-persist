@@ -40,13 +40,17 @@
 //! wrote first, and one killed loses what it had not handed on: it gave up
 //! its positions when it was promoted, so once it is back and every one
 //! listed answers, a standby holding more is promoted, and the former
-//! primary follows it, copied whole. A standby whose whole copy was cut
-//! short holds part of a Ledger: it says so in its standing until a whole
-//! copy is in, and is never promoted meanwhile. Each epoch is kept,
-//! durable, before a role is taken in it; a promotion whose epoch cannot be
-//! kept fails. What a failover loses and duplicates is the README's *What a
-//! failover loses*.
+//! primary follows it, copied whole. **A standby copied whole is copying,
+//! then catching up, then ready** ([`bootstrap`]; ADR-0056, amendment
+//! 2026-11-12): its primary's pages reflect the writes taken while it
+//! scanned in part, so it holds one state of its primary's only once it has
+//! replayed them as far as the primary said the copy reaches; until then it
+//! says so in its standing and is never promoted, across a restart too.
+//! Each epoch is kept, durable, before a role is taken in it; a promotion
+//! whose epoch cannot be kept fails. What a failover loses and duplicates
+//! is the README's *What a failover loses*.
 
+mod bootstrap;
 mod copies;
 mod delegated;
 mod finding;
@@ -56,6 +60,7 @@ mod served;
 mod ship;
 mod shipped;
 
+pub use bootstrap::Bootstrap;
 pub use copies::{Behind, Copied, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
 pub use shipped::{Follow, Shipped, Standing};
@@ -79,11 +84,6 @@ use crate::{Engine, PersistError};
 /// Where a Storage node keeps, in its runtime database, the latest epoch it
 /// met.
 const EPOCH: &[u8] = b"\0xmip-core-persist/epoch\0";
-
-/// Where a Storage node keeps, in its runtime database, that a whole copy
-/// is under way: written before the wipe, removed once every database is
-/// copied, so a copy cut short, even across a restart, is never promoted.
-const COPYING: &[u8] = b"\0xmip-core-persist/copying\0";
 
 /// How often a primary says it is there to a standby it has nothing to
 /// hand, where the node's `[tuning] storage_beat` does not say.
@@ -145,6 +145,9 @@ pub struct StorageNode {
     keys: Arc<dyn KeyStore>,
     kek: KekName,
     copies: Arc<Copies>,
+    /// How far its bootstrap by a whole copy is, as its runtime database
+    /// keeps it ([`bootstrap`]).
+    bootstrap: Mutex<Bootstrap>,
     held: RwLock<Held>,
     settled: Condvar,
     settling: Mutex<()>,
@@ -200,6 +203,7 @@ impl StorageNode {
             .read(EPOCH)?
             .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
             .map_or(0, u64::from_be_bytes);
+        let bootstrap = bootstrap::kept(engines[0].as_ref())?;
         let reaching = StorageClient::new(listed, identity, timings.timeout, timings.pass_over)?;
         let config = identity
             .client()
@@ -213,6 +217,7 @@ impl StorageNode {
             keys,
             kek,
             copies: Arc::new(Copies::new(history, next, timings.kept)),
+            bootstrap: Mutex::new(bootstrap),
             held: RwLock::new(Held {
                 epoch,
                 role: Role::Finding,
@@ -358,16 +363,6 @@ impl StorageNode {
     #[must_use]
     pub fn is_primary(&self) -> bool {
         self.primary().is_some()
-    }
-
-    /// Whether a whole copy into it is under way or was cut short: what it
-    /// holds is then part of its primary's, and it is not promoted. One
-    /// whose runtime database cannot be read is taken for one.
-    #[must_use]
-    pub fn is_copying(&self) -> bool {
-        self.engines[0]
-            .read(COPYING)
-            .map_or(true, |held| held.is_some())
     }
 }
 

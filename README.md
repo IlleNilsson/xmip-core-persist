@@ -270,8 +270,12 @@ and 9).
   each a frame of `xmip-core-library-net`'s (`net::frame`) holding the
   record in its one binary form, `xmip-core-library-codec`'s
   `codec::form::Form`, the form either database seals it in; a thread per
-  connection, synchronous. It counts what each node's requests came to, from
-  their answers — the Publications it wrote (a Publish, a Work Process's
+  connection, synchronous. A stop ends each connection at its next read,
+  the question in hand answered, so a node asking again as soon as it is
+  answered never holds the stop (ADR-0056, amendment 2026-11-12, *a
+  Storage node's stop ends a connection its node keeps asking on*). It
+  counts what each node's requests came to, from their answers — the
+  Publications it wrote (a Publish, a Work Process's
   Turn) and the Journeys it took and handed on (a HandOn, a Turn), never a
   claim lost or given back, a request refused or one a standby answered —
   against the node its certificate was issued for, its common name read by
@@ -326,7 +330,10 @@ and 9).
   to how far each database is synced) (`Shipped`), or each database whole
   first, synced before it is said whole, where it cannot take them on,
   with its data key handed inside the mutual TLS and wrapped under its own
-  key-encryption key (ADR-0063, amendment 2026-10-22). `StorageServer::several`
+  key-encryption key (ADR-0063, amendment 2026-10-22) — the standby
+  copying, then catching up on the writes taken while each was read, then
+  ready, and promoted only once ready (`Bootstrap`; ADR-0056, amendment
+  2026-11-12). `StorageServer::several`
   serves one; `StorageNode::served` refuses every operation while it is not
   the primary (`PersistError::Standby`) — a wait on queues held by no loan,
   so a primary's stop waits for none, and refused as it stops or steps down,
@@ -422,8 +429,20 @@ the primary's return can still lose and duplicate the following.
   lost is asked again by its node; where the first was lost with a killed
   primary, the standby promoted writes it anew, and where it was handed
   on, it writes nothing and answers its claims (`Decided::Before`).
-- **A standby whose whole copy was cut short is never promoted**: it says
-  so in its standing until a whole copy is in.
+- **A standby copied whole is never promoted until it is ready** (ADR-0056,
+  amendment 2026-11-12). The primary reads each database page by page
+  while it writes on, so the pages reflect a write taken meanwhile in part
+  — a batch whose keys fall on two pages, older on the one read before it
+  and newer on the one read after. The standby is *copying* until the last
+  page is in, then *catching up* until it has replayed, and synced, every
+  write up to where the primary's read of each database ended, which the
+  primary sends with each database's end, then *ready*. The state is kept,
+  durable, in its runtime database, so a standby whose replication was cut
+  after the last page, started again, is still catching up and not
+  promoted — the write in part never becomes the Ledger — and says so in
+  its standing and at `<node>/storage`. It goes on catching up only from a
+  primary of the epoch it was copied in, and is copied whole again from
+  any other (`standby/tests/interrupted.rs`, `standby/tests/bootstrap.rs`).
 
 ## A record that fails its tag
 

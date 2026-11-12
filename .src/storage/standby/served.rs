@@ -38,7 +38,7 @@ impl StorageNode {
             epoch: held.epoch,
             history: self.copies.history(),
             next: self.copies.next(),
-            copying: self.is_copying(),
+            bootstrap: self.bootstrap(),
         }
     }
 
@@ -95,14 +95,18 @@ impl StorageNode {
     }
 
     /// What it is now, in words: what a node asking a standby is told, and
-    /// what the node publishes of its Storage.
+    /// what the node publishes of its Storage — while not the primary, how
+    /// far its bootstrap is: copying, catching up or ready (ADR-0056,
+    /// amendment 2026-11-12).
     #[must_use]
     pub fn said(&self) -> String {
         let held = self.held();
-        let writes: u64 = self.copies.next().iter().map(|next| next - 1).sum();
+        let next = self.copies.next();
+        let writes: u64 = next.iter().map(|next| next - 1).sum();
+        let bootstrap = self.bootstrap().said(next);
         let what = match &held.role {
             Role::Finding => format!(
-                "a Storage node finding its primary among {}, epoch {}",
+                "a Storage node finding its primary among {}, epoch {}, {bootstrap}",
                 self.listed.join(", "),
                 held.epoch
             ),
@@ -124,7 +128,7 @@ impl StorageNode {
                 format!("the primary Storage node, epoch {}, {standbys}", held.epoch)
             }
             Role::Standby(primary) => format!(
-                "a standby Storage node of the primary at {primary}, epoch {}",
+                "a standby Storage node of the primary at {primary}, epoch {}, {bootstrap}",
                 held.epoch
             ),
         };
