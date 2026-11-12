@@ -158,6 +158,20 @@ impl XmipStorage for Delegated {
         self.now()?.storage.claim(journey, holder, token, lease)
     }
 
+    /// Lent for its answer alone: its durability outlives the loan, and a
+    /// primary stopping syncs what its writer was handed before it lets go.
+    fn claim_ahead(
+        &self,
+        journey: JourneyId,
+        holder: &str,
+        token: u128,
+        lease: Duration,
+    ) -> Result<(Option<Claim>, Durable), PersistError> {
+        self.now()?
+            .storage
+            .claim_ahead(journey, holder, token, lease)
+    }
+
     fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
         self.now()?.storage.renew(claims, lease)
     }

@@ -6,8 +6,17 @@
 //! on disk is told here once the sync returns. So a send of the Messages it
 //! queued is prepared while the Ledger syncs, and lets its far end see the
 //! Message only once [`Durable::wait`] says the Ledger holds it (ADR-0018,
-//! amendment 2026-10-20). Every other write is answered once durable, as
-//! before.
+//! amendment 2026-10-20). So is a claim a send is taken under, asked ahead
+//! (`XmipStorage::claim_ahead`): its send is prepared while the claim
+//! syncs, and abandoned where it never is (ADR-0018, amendment 2026-11-12).
+//! Every other write is answered once durable, as before.
+//!
+//! **Told where it was decided, read once.** A Storage node reached over
+//! the wire tells a claim's durability in a frame of its own after the
+//! claim's answer ([`Durable::fetching`]): the first thread to wait reads
+//! it, every other waits for that word, and one never waited on is never
+//! read — the read, and the connection it is on, dropped with the last
+//! clone, so no other request is ever answered by it.
 //!
 //! **It says what the Storage node's writer worked for each write in it**
 //! ([`Durable::worked`]): the processor time its batch took outside its
@@ -17,12 +26,28 @@
 //! the sync's wait shared equally among every write it made durable, a
 //! Message's share of the disk's time, never its own share.
 
+use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 use xcore::lock::Locked;
 
 use crate::PersistError;
+
+/// What reads a write's durability where it was decided: the Storage
+/// node's second frame of a claim asked ahead (`super::client`).
+type Fetch = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// The read not made yet, where there is one.
+#[derive(Default)]
+struct Fetching(Option<Fetch>);
+
+impl fmt::Debug for Fetching {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() { "to read" } else { "none" })
+    }
+}
 
 /// A write's durability: told once, waited on by anyone holding it.
 #[derive(Clone, Debug)]
@@ -32,6 +57,8 @@ pub struct Durable(Arc<State>);
 struct State {
     told: Mutex<Option<Result<(), String>>>,
     woken: Condvar,
+    /// What tells it, run by the first wait, where it is read from afar.
+    fetch: Mutex<Fetching>,
     /// What the writer worked for each write of its batch, in nanoseconds.
     worked: AtomicU64,
     /// How many writes its batch holds.
@@ -54,6 +81,15 @@ impl Durable {
     /// Not told yet.
     pub(crate) fn pending() -> Self {
         Self(Arc::default())
+    }
+
+    /// Told by `fetch`, run once by the first [`Durable::wait`] — every
+    /// other waiter waits for its word — and never where none waits: it is
+    /// dropped unrun with the last clone (ADR-0018, amendment 2026-11-12).
+    pub(crate) fn fetching(fetch: impl FnOnce() -> Result<(), String> + Send + 'static) -> Self {
+        let durable = Self::pending();
+        durable.0.fetch.locked().0 = Some(Box::new(fetch));
+        durable
     }
 
     /// Told what the sync came to; told once, the first word stands.
@@ -103,13 +139,20 @@ impl Durable {
         Duration::from_nanos(self.0.synced.load(Ordering::Relaxed))
     }
 
-    /// Wait until the write is durable, or its sync failed.
+    /// Wait until the write is durable, or its sync failed: where it is read
+    /// from afar and not read yet, read here, once.
     ///
     /// # Errors
     ///
-    /// [`PersistError::Engine`] where the sync failed: what was written is
-    /// lost with the process, or with the machine.
+    /// [`PersistError::Engine`] where the sync failed, or no word of it came:
+    /// what was written may be lost with the process, or with the machine.
     pub fn wait(&self) -> Result<(), PersistError> {
+        let fetch = self.0.fetch.locked().0.take();
+        if let Some(fetch) = fetch {
+            // Told whatever the read comes to, so no other waiter waits on.
+            let read = catch_unwind(AssertUnwindSafe(fetch));
+            self.tell(read.unwrap_or_else(|_| Err("its read panicked".to_string())));
+        }
         let told = self.0.told.locked();
         let told = self
             .0
@@ -122,7 +165,8 @@ impl Durable {
         }
     }
 
-    /// Whether it was told, and durable: `None` while the sync runs.
+    /// Whether it was told, and durable: `None` while the sync runs, and,
+    /// where it is read from afar, until a wait has read it.
     #[must_use]
     pub fn told(&self) -> Option<bool> {
         let told = self.0.told.locked();
@@ -151,5 +195,54 @@ mod tests {
         let failed = waiter.join().expect("the waiter ends");
         assert!(failed.is_err_and(|why| why.to_string().contains("the disk is full")));
         assert_eq!(durable.told(), Some(false), "the first word stands");
+    }
+
+    /// Counts its drop: what a read held — a connection — let go of.
+    struct Held(Arc<AtomicU32>);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_read_from_afar_runs_once_for_every_waiter_and_never_where_none_waits() {
+        let (runs, dropped) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let reading = |said: Result<(), String>| {
+            let (runs, held) = (Arc::clone(&runs), Held(Arc::clone(&dropped)));
+            Durable::fetching(move || {
+                let _held = held;
+                runs.fetch_add(1, Ordering::SeqCst);
+                said
+            })
+        };
+        let durable = reading(Ok(()));
+        assert_eq!(durable.told(), None, "not read before a wait");
+        let waiters: Vec<_> = (0..4)
+            .map(|_| {
+                let waiting = durable.clone();
+                std::thread::spawn(move || waiting.wait())
+            })
+            .collect();
+        for waiter in waiters {
+            waiter.join().expect("the waiter ends").expect("durable");
+        }
+        assert!(durable.wait().is_ok(), "and again, read no more");
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "read once");
+        assert_eq!(durable.told(), Some(true));
+
+        let refused = reading(Err("the sync failed".to_string()));
+        let failed = refused.wait();
+        assert!(failed.is_err_and(|why| why.to_string().contains("the sync failed")));
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+
+        let unread = reading(Ok(()));
+        let clone = unread.clone();
+        drop(unread);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2, "held while a clone is");
+        drop(clone);
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "never read");
+        assert_eq!(dropped.load(Ordering::SeqCst), 3, "let go of with the last");
     }
 }

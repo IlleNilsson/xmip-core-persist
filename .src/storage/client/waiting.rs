@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use super::super::watch::{Ending, Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
-use super::operations::expected;
+use super::expected::expected;
 use super::{Connection, StorageClient, exchange, unreachable};
 use crate::PersistError;
 

@@ -30,7 +30,7 @@ use super::standby::{Standing, StorageNode};
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 use admitted::{RULES, caller};
-use answer::answer;
+use answer::{ahead, answer, kept};
 pub use counted::Peer;
 use counted::{Asked, Peers};
 pub use waiters::HOLD;
@@ -296,25 +296,36 @@ fn serve(
             return;
         }
         let kind = Asked::of(&request);
-        let answer = match request {
-            Request::Standing => Answer::Standing(serving.standing()),
+        let (answer, durable) = match request {
+            Request::Standing => (Answer::Standing(serving.standing()), None),
             Request::Follow(asked) => {
                 if let Some(node) = &serving.node {
                     let peer = peer.to_string();
                     node.ship(&mut watched.guarded, &asked, (&peer, stopping));
                     return;
                 }
-                Answer::Failed(
-                    "this Storage node is the only one: it hands its writes to none".into(),
-                )
+                let only = "this Storage node is the only one: it hands its writes to none";
+                (Answer::Failed(only.into()), None)
             }
-            request => answer(serving.storage.as_ref(), request, &serving.waiters),
+            Request::ClaimAhead(claim, lease) => ahead(serving.storage.as_ref(), &claim, lease),
+            request => (
+                answer(serving.storage.as_ref(), request, &serving.waiters),
+                None,
+            ),
         };
         // Counted from what it was answered, never as it was asked.
         if let Some(counted) = counted {
             counted.count(kind, &answer);
         }
         if wire::send(&mut watched.guarded, &answer).is_err() {
+            return;
+        }
+        // A claim asked ahead: its second frame once it is durable here, or
+        // why it is not, before the connection is read again (ADR-0018,
+        // amendment 2026-11-12).
+        if let Some(durable) = durable
+            && wire::send(&mut watched.guarded, &kept(&durable)).is_err()
+        {
             return;
         }
     }

@@ -99,6 +99,11 @@ impl Request {
                 out.u64_be(*at);
                 out.u128_be(journey.value());
             }
+            Self::ClaimAhead(claim, lease) => {
+                out.byte(40);
+                claim.write(out);
+                out.u64_be(*lease);
+            }
             _ => {}
         }
     }
