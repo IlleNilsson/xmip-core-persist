@@ -39,7 +39,7 @@ use super::record::{
 use super::row;
 use super::schema::DatabaseVersion;
 use super::stream::{StreamRecord, chunk_key};
-use super::watch::{Position, Waiter, Watch};
+use super::watch::{self, Moved, Position, Waiter, Watch};
 use super::{FailedQueue, SecretEntry, SecretRecord, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError};
 use xcore::SecretName;
@@ -218,10 +218,12 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     fn wait_queues(
         &self,
         seen: &[Position],
-        bound: Duration,
+        (bound, due): (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError> {
-        self.watch.wait(&self.runtime, (seen, bound), waiter)
+    ) -> Result<Vec<Moved>, PersistError> {
+        let moved = self.watch.wait(&self.runtime, (seen, bound), waiter)?;
+        let now = self.clock.unix_timestamp_nanos();
+        Ok(watch::answered(&self.runtime, moved, (due, now)))
     }
 
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
@@ -352,11 +354,11 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
 
 #[cfg(any(test, feature = "test-support"))]
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// How many wait on `queue` now: what a test waits for before it writes,
-    /// so a wait is listed rather than begun after the write.
+    /// How many wait on `watched` now: what a test waits for before it
+    /// writes, so a wait is listed rather than begun after the write.
     #[must_use]
-    pub fn waiting_on(&self, queue: u128) -> usize {
-        self.watch.waiting_on(queue)
+    pub fn waiting_on(&self, watched: super::Watched) -> usize {
+        self.watch.waiting_on(watched)
     }
 }
 

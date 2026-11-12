@@ -7,6 +7,7 @@ use codec::field;
 use codec::form::Form;
 use codec::writer::ByteWriter;
 
+use super::super::claimed::Claimed;
 use super::super::dead::{DeadEntry, DeadQueue, Replayed};
 use super::super::due::DueQueue;
 use super::super::failed::FailedQueue;
@@ -19,7 +20,7 @@ use super::super::record::{
 use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::standby::Standing;
 use super::super::stream::StreamRecord;
-use super::super::watch::Position;
+use super::super::watch::Moved;
 
 /// What an operation answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,9 +65,12 @@ pub(crate) enum Answer {
     Secret(Option<Box<SecretRecord>>),
     /// The secrets kept, without their values.
     Secrets(Vec<SecretEntry>),
-    /// The queues a wait found standing elsewhere than seen, as they stand
-    /// (`super::super::watch`).
-    Positions(Vec<Position>),
+    /// What a wait found standing elsewhere than seen, as it stands, each
+    /// queue's tail with what is due in it (`super::super::watch`).
+    Moved(Vec<Moved>),
+    /// What a Message is acted on under its claim
+    /// (`super::super::claimed`).
+    Claimed(Box<Claimed>),
 }
 
 impl Answer {
@@ -93,9 +97,13 @@ impl Answer {
                 out.byte(25);
                 entries.write(out);
             }
-            Self::Positions(moved) => {
+            Self::Moved(moved) => {
                 out.byte(26);
                 moved.write(out);
+            }
+            Self::Claimed(claimed) => {
+                out.byte(27);
+                claimed.write(out);
             }
             _ => {}
         }
@@ -249,7 +257,8 @@ impl Form for Answer {
             23 => Self::Instance(read_optional(cursor)?),
             24 => Self::Secret(read_optional(cursor)?),
             25 => Self::Secrets(Vec::read(cursor)?),
-            26 => Self::Positions(Vec::read(cursor)?),
+            26 => Self::Moved(Vec::read(cursor)?),
+            27 => Self::Claimed(Box::new(Claimed::read(cursor)?)),
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

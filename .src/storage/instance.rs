@@ -85,6 +85,15 @@ impl Form for InstanceRecord {
     }
 }
 
+/// How many turns the Instance kept as `bytes` has taken, read without its
+/// state: what the one writer tells a waiter on it (`super::watch`).
+pub(crate) fn turns_of(bytes: &[u8]) -> Option<u64> {
+    let mut cursor = Cursor::new(bytes);
+    cursor.u128_be().ok()?;
+    field::read_text(&mut cursor).ok()?;
+    cursor.u64_be().ok()
+}
+
 impl Form for InstanceWrite {
     fn write(&self, out: &mut Vec<u8>) {
         self.record.write(out);

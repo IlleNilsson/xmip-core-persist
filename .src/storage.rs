@@ -8,7 +8,9 @@
 //!   Message and a Journey; write a Publication — a Message, its Journeys,
 //!   those held and queued, its node's claims, its Dead Message Queue entry,
 //!   its audit record — as one; read a queue oldest first, or what is due in
-//!   it; wait on queues until a write puts a Message in one (`watch`);
+//!   it; wait on queues until a write puts a Message in one, answered with
+//!   what is due there, and on a sequence's head, an Instance or a key until
+//!   a write moves it (`watch`);
 //!   read and replay a node's Dead Message Queue; claim, renew and release
 //!   a Message; hand a step on; write an audit record;
 //! - **a search** of any of them: the records one index of one table finds,
@@ -39,6 +41,7 @@ mod audited;
 mod authority;
 mod chain;
 mod claim;
+mod claimed;
 pub mod client;
 mod columns;
 mod commit;
@@ -71,6 +74,7 @@ mod wire;
 pub use audit_entry::{AuditBody, AuditEntry};
 pub use audited::{Audited, KeptStream};
 pub use chain::{canonical_form, carried_streams, chain_digest};
+pub use claimed::Claimed;
 pub use client::{Reached, StorageClient, statement};
 pub use dead::{
     Dead, DeadEntry, DeadMessage, DeadQueue, Named, Replay, Replayed, dead_message_queue,
@@ -95,7 +99,7 @@ pub use secret::{SecretEntry, SecretRecord, StoredSecrets};
 pub use server::{ALPN, HOLD, Peer, StorageServer};
 pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
-pub use watch::{Position, Waiter};
+pub use watch::{Moved, Position, Waiter, Watched};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,26 +227,31 @@ pub trait XmipStorage: Send + Sync {
         most: u32,
     ) -> Result<DueQueue, PersistError>;
 
-    /// Wait, for at most `bound`, on the queues `seen` names, each with where
-    /// its waiter last saw it stand ([`Position`]): every one that stands
-    /// elsewhere now, as it stands — at once where one does as the wait
-    /// begins, else as soon as a write puts a Message in one, on whichever
-    /// node — or none where nothing moved within `bound`, or within the
-    /// longest a Storage node holds a wait ([`HOLD`]), or `waiter` was
-    /// stopped (`watch`). Every waiter on a queue is woken by a write to it.
+    /// Wait, for at most `bound` of `asked` — `(bound, due)` — on what
+    /// `seen` names — a queue's tail or
+    /// head, an Instance, a key ([`Watched`]) — each with where its waiter
+    /// last saw it stand ([`Position`]): every one that stands elsewhere
+    /// now, as it stands — at once where one does as the wait begins, else
+    /// as soon as a write moves one, on whichever node — or none where
+    /// nothing moved within `bound`, or within the longest a Storage node
+    /// holds a wait ([`HOLD`]), or `waiter` was stopped or renewed
+    /// (`watch`). Each queue's tail that moved comes with the first `due` of
+    /// what is due in it, read as the wait is answered ([`Moved`]), so its
+    /// waiter claims without a read of its own. Every waiter on one is woken
+    /// by a write that moves it.
     ///
     /// # Errors
     ///
-    /// Where a queue's place cannot be read, or no Storage node answered —
-    /// each that is stopping or the primary no more refuses it
+    /// Where a count cannot be read, or no Storage node answered — each
+    /// that is stopping or the primary no more refuses it
     /// ([`PersistError::Standby`]), and the next is asked at once: the
     /// waiter rests its bound and asks again ([`Waiter::rest`]).
     fn wait_queues(
         &self,
         seen: &[Position],
-        bound: Duration,
+        asked: (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError>;
+    ) -> Result<Vec<Moved>, PersistError>;
 
     /// A node's Dead Message Queue, `queue` ([`dead_message_queue`]): its
     /// places, how many it holds, and up to `most` entries from the place
@@ -272,6 +281,27 @@ pub trait XmipStorage: Send + Sync {
     ///
     /// When it cannot be read or written; nothing of it is written then.
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError>;
+
+    /// What a Message is acted on under the claim taken on `journey`, as one
+    /// request ([`Claimed`]): its place `at` in `queue` — one entry at most,
+    /// as [`XmipStorage::read_held`] reads it — the Journey, the Message it
+    /// holds last and the record of the Stream that Message's first Section
+    /// is over, each found by what Xmip Storage keeps of it in columns. One
+    /// round trip over the wire, where the reads one by one were four (open
+    /// problem 46, 2026-11-12); the four reads where nothing answers it
+    /// whole.
+    ///
+    /// # Errors
+    ///
+    /// When one cannot be read, or fails its tag.
+    fn read_claimed(
+        &self,
+        queue: u128,
+        at: u64,
+        journey: JourneyId,
+    ) -> Result<Claimed, PersistError> {
+        claimed::read(self, (queue, at), journey)
+    }
 
     /// Claim the Message of `journey` for `holder` under `token` for `lease`: a
     /// conditional update — set the holder where there is none or the last

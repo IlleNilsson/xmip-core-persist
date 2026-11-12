@@ -8,6 +8,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::super::XmipStorage;
 use super::super::audit_entry::AuditEntry;
+use super::super::claimed::Claimed;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
 use super::super::due::{DuePart, DueQueue};
 use super::super::durable::Durable;
@@ -23,7 +24,7 @@ use super::super::record::{
 };
 use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::stream::StreamRecord;
-use super::super::watch::{Position, Waiter};
+use super::super::watch::{Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
 use crate::PersistError;
@@ -146,6 +147,10 @@ impl XmipStorage for StorageClient {
         )
     }
 
+    fn read_claimed(&self, q: u128, at: u64, j: JourneyId) -> Result<Claimed, PersistError> {
+        self.claimed(q, at, j)
+    }
+
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
         expected(
             self.ask(&Request::ReadFailed(queue, from, most))?,
@@ -175,10 +180,10 @@ impl XmipStorage for StorageClient {
     fn wait_queues(
         &self,
         seen: &[Position],
-        bound: Duration,
+        asked: (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError> {
-        self.waited(seen, bound, waiter)
+    ) -> Result<Vec<Moved>, PersistError> {
+        self.waited(seen, asked, waiter)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
