@@ -112,6 +112,12 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         self.watch.refuse(why);
     }
 
+    /// At most `most` of what no node waits on now kept where its writer
+    /// left it (`super::watch`): its `[tuning] storage_unwaited`.
+    pub fn keep_unwaited(&self, most: usize) {
+        self.watch.keep_unwaited(most);
+    }
+
     fn read<T: Form>(&self, kind: &str, key: &[u8]) -> Result<Option<T>, PersistError> {
         self.runtime
             .get(kind, key)?
@@ -365,6 +371,13 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     #[must_use]
     pub fn waiting_on(&self, watched: super::Watched) -> usize {
         self.watch.waiting_on(watched)
+    }
+
+    /// How many counts its watch keeps, and of them how many none waits on
+    /// now: what a test of its bound reads.
+    #[must_use]
+    pub fn watch_kept(&self) -> (usize, usize) {
+        self.watch.kept()
     }
 }
 

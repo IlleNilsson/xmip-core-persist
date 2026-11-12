@@ -111,8 +111,11 @@ and 9).
   every waiter on what it moved as soon as the batch is readable, but quietly,
   never woken, to the node's own (`Waiter::of`) whose claims in that write
   hold every Message it put there (`storage/watch/moved.rs`), the writer
-  keeping where it left each waited on so a wait reads the store only for
-  one none waited on before — and with none once its bound passes,
+  keeping where it left each waited on now and the latest `UNWAITED` none
+  waits on (`[tuning] storage_unwaited`, 16,384 by default, on the only
+  Storage node and on a primary among several alike), the longest unwaited
+  let go first, so a wait reads the store only for one not kept
+  (`storage/watch/known.rs`) — and with none once its bound passes,
   or the Storage node's `HOLD` (`[tuning] storage_wait`), never an error; a
   waiter renewed (`Waiter::renew`) ends the wait under way so its caller
   asks again naming more, and a

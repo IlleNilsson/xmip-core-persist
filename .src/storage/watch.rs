@@ -40,10 +40,13 @@
 //! claim is answered once its own batch is durable, which the syncs of the
 //! batches before it come first in: no far end sees a Message before the
 //! write that queued it is durable. The watch keeps where its writer left
-//! each it watched, so a wait reads the store only for what none waited on
-//! before. Its writer tells in the order it writes, so what was told last
-//! is where each stands — a key's count goes back to none where it is let
-//! go, so the last told is kept, never the highest.
+//! each waited on now, and the latest of what none waits on now, at most
+//! [`UNWAITED`] (`[tuning] storage_unwaited`), the longest unwaited let go
+//! first (`known`): a wait reads the store only for what is not kept, and
+//! what is kept follows the waits under way, never every Instance, key and
+//! sequence ever waited on. Its writer tells in the order it writes, so
+//! what was told last is where each stands — a key's count goes back to
+//! none where it is let go, so the last told is kept, never the highest.
 //!
 //! **Stopped at once, renewed at once.** A [`Waiter`] stopped ends its wait
 //! in this process at once, and every wait after; one renewed ends the
@@ -61,10 +64,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use codec::CodecError;
-use codec::cursor::Cursor;
-use codec::form::Form;
-use codec::writer::ByteWriter;
 use xcore::lock::Locked;
 
 use super::commit::Batch;
@@ -73,9 +72,13 @@ use super::hold::KINDS;
 use super::{instance, queue};
 use crate::{EncryptedStore, Engine, PersistError};
 
+mod form;
+mod known;
 mod moved;
 mod waiter;
 
+use known::Known;
+pub use known::UNWAITED;
 pub(crate) use moved::{Change, moved};
 pub(crate) use waiter::Ending;
 pub use waiter::Waiter;
@@ -138,17 +141,16 @@ pub(crate) struct Watch {
 struct Waiting {
     /// Who waits on each now.
     on: HashMap<Watched, Vec<Arc<Waiter>>>,
-    /// Each waited on since the watch opened, where its writer last left
-    /// it, or a wait read it where its writer told nothing since; `None`
-    /// while it is to be read.
-    known: HashMap<Watched, Option<u64>>,
+    /// Where its writer left each waited on now, and the latest none waits
+    /// on now (`known`).
+    known: Known,
     /// Why every wait is refused: its node is the primary no more.
     refused: Option<String>,
 }
 
 impl Watch {
-    /// Each of `changes` kept where a node waited on it, and every waiter
-    /// on it told — quietly, the one whose holder's claims hold all the
+    /// Each of `changes` kept where the watch keeps it (`known`), and every
+    /// waiter on it told — quietly, the one whose holder's claims hold all the
     /// batch put in a queue; one whose count could not be read (`None`) is
     /// read again by the next wait on it, and its waiters find it at their
     /// bound.
@@ -158,9 +160,7 @@ impl Watch {
         }
         let mut waiting = self.waiting.locked();
         for Change { watched, at, own } in changes {
-            if let Some(known) = waiting.known.get_mut(watched) {
-                *known = *at;
-            }
+            waiting.known.told(*watched, *at);
             let Some(at) = at else {
                 continue;
             };
@@ -178,6 +178,13 @@ impl Watch {
         for waiter in waiting.on.values().flatten() {
             waiter.refuse(why);
         }
+    }
+
+    /// At most `most` of what none waits on now kept where its writer left
+    /// it, the longest unwaited let go first: the Storage node's `[tuning]
+    /// storage_unwaited` ([`UNWAITED`] where it does not say).
+    pub(crate) fn keep_unwaited(&self, most: usize) {
+        self.waiting.locked().known.keep(most);
     }
 
     /// `seen` waited on by `waiter` in `store` for at most `bound`: every
@@ -228,8 +235,7 @@ impl Watch {
                 .entry(position.watched)
                 .or_default()
                 .push(Arc::clone(waiter));
-            let known = waiting.known.entry(position.watched).or_insert(None);
-            if known.is_none() && !unknown.contains(&position.watched) {
+            if waiting.known.listed(position.watched) && !unknown.contains(&position.watched) {
                 unknown.push(position.watched);
             }
         }
@@ -249,21 +255,12 @@ impl Watch {
         for &(watched, at) in read {
             // A write told since the read is later than it; one the read
             // saw untold yet is told to this waiter, listed before it read.
-            waiting
-                .known
-                .entry(watched)
-                .or_insert(None)
-                .get_or_insert(at);
+            waiting.known.read(watched, at);
         }
         seen.iter()
             .map(|seen| Position {
                 watched: seen.watched,
-                at: waiting
-                    .known
-                    .get(&seen.watched)
-                    .copied()
-                    .flatten()
-                    .unwrap_or(seen.at),
+                at: waiting.known.at(seen.watched).unwrap_or(seen.at),
             })
             .collect()
     }
@@ -286,6 +283,7 @@ impl Drop for Listening<'_> {
                 }
                 if waiters.is_empty() {
                     waiting.on.remove(watched);
+                    waiting.known.unwaited(*watched);
                 }
             }
         }
@@ -330,63 +328,10 @@ impl Watch {
     pub(crate) fn waiting_on(&self, watched: Watched) -> usize {
         self.waiting.locked().on.get(&watched).map_or(0, Vec::len)
     }
-}
 
-impl Form for Watched {
-    fn write(&self, out: &mut Vec<u8>) {
-        let (kind, id) = match self {
-            Self::Queue(id) => (0, id),
-            Self::Head(id) => (1, id),
-            Self::Instance(id) => (2, id),
-            Self::Key(id) => (3, id),
-        };
-        out.byte(kind);
-        out.u128_be(*id);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        let kind = cursor.byte()?;
-        let id = cursor.u128_be()?;
-        Ok(match kind {
-            0 => Self::Queue(id),
-            1 => Self::Head(id),
-            2 => Self::Instance(id),
-            3 => Self::Key(id),
-            other => return Err(CodecError::new(format!("nothing watched is kind {other}"))),
-        })
-    }
-}
-
-impl Form for Position {
-    fn write(&self, out: &mut Vec<u8>) {
-        self.watched.write(out);
-        out.u64_be(self.at);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        Ok(Self {
-            watched: Watched::read(cursor)?,
-            at: cursor.u64_be()?,
-        })
-    }
-}
-
-impl Form for Moved {
-    fn write(&self, out: &mut Vec<u8>) {
-        self.position.write(out);
-        out.byte(u8::from(self.due.is_some()));
-        if let Some(due) = &self.due {
-            due.write(out);
-        }
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        let position = Position::read(cursor)?;
-        let due = match cursor.byte()? {
-            0 => None,
-            _ => Some(DueQueue::read(cursor)?),
-        };
-        Ok(Self { position, due })
+    /// How many counts it keeps, and of them how many none waits on now.
+    pub(crate) fn kept(&self) -> (usize, usize) {
+        self.waiting.locked().known.kept()
     }
 }
 

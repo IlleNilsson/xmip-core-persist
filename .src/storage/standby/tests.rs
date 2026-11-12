@@ -22,6 +22,7 @@ fn timings() -> Timings {
         timeout: Duration::from_secs(2),
         pass_over: Duration::from_millis(200),
         kept: 1 << 20,
+        unwaited: crate::storage::UNWAITED,
     }
 }
 

@@ -41,7 +41,12 @@ fn a_queue_s_head_is_moved_by_an_entry_taken_out_and_never_by_one_put_in() {
 
 /// The Journey `id`, published, claimed by [`holder`] and turned over the
 /// Instance `instance` standing at `over`, its key `key` set or let go.
-fn turned(node: &Node, id: u128, (instance, over): (u128, u64), (key, ended): (u128, bool)) {
+pub(super) fn turned(
+    node: &Node,
+    id: u128,
+    (instance, over): (u128, u64),
+    (key, ended): (u128, bool),
+) {
     published(node, id..id + 1);
     let claim = node.claim(JourneyId::new(id), &holder(), id, LEASE);
     let owned = InstanceKey { key, instance };
