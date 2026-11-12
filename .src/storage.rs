@@ -100,7 +100,7 @@ pub use secret::{SecretEntry, SecretRecord, StoredSecrets};
 pub use server::{ALPN, HOLD, Peer, StorageServer};
 pub use standby::{Standing, StorageNode};
 pub use stream::{ChunkReader, Chunked, DIGEST, StreamDigest, StreamRecord};
-pub use watch::{Moved, Position, Waiter, Watched};
+pub use watch::{Moved, Position, UNWAITED, Waiter, Watched};
 
 use std::sync::Arc;
 use std::time::Duration;

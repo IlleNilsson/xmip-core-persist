@@ -11,9 +11,9 @@ use super::*;
 /// Far longer than any wait here lasts.
 const LONG: Duration = Duration::from_secs(60);
 
-/// A Storage node alone, promoted, its servers never started: what a wait
-/// on its queues is asked of.
-fn promoted() -> Arc<StorageNode> {
+/// A Storage node alone, bounded by `timings`, promoted, its servers never
+/// started: what a wait on its queues is asked of.
+fn promoted(timings: Timings) -> Arc<StorageNode> {
     let authority = Authority::new();
     let own = Own::new();
     let keys = (
@@ -22,7 +22,7 @@ fn promoted() -> Arc<StorageNode> {
     );
     let listed = ["127.0.0.1:1".to_string()];
     let identity = authority.issue(&authority);
-    let node = StorageNode::new(own.engines.clone(), keys, &listed, &identity, timings())
+    let node = StorageNode::new(own.engines.clone(), keys, &listed, &identity, timings)
         .expect("a Storage node");
     node.promote(1).expect("promoted");
     node
@@ -56,7 +56,7 @@ fn refused(waited: std::thread::JoinHandle<Result<Vec<Moved>, PersistError>>, si
 
 #[test]
 fn a_wait_on_a_primary_that_steps_down_is_refused_at_once() {
-    let node = promoted();
+    let node = promoted(timings());
     let waited = waiting(&node);
     let since = Instant::now();
     node.stand(Role::Finding);
@@ -65,9 +65,28 @@ fn a_wait_on_a_primary_that_steps_down_is_refused_at_once() {
 
 #[test]
 fn a_wait_on_a_primary_that_stops_is_refused_at_once() {
-    let node = promoted();
+    let node = promoted(timings());
     let waited = waiting(&node);
     let since = Instant::now();
     node.stop();
     refused(waited, since);
+}
+
+/// The review of 2026-11-12: a primary among several keeps of what none
+/// waits on at most its node's `[tuning] storage_unwaited`, as the only
+/// Storage node does, never the default alone.
+#[test]
+fn a_primary_of_several_keeps_what_none_waits_on_within_its_node_s_bound() {
+    let node = promoted(Timings {
+        unwaited: 2,
+        ..timings()
+    });
+    let (served, waiter) = (node.served(), Arc::new(Waiter::new()));
+    for queue in 100..110 {
+        // Seen where it never stood: answered at once, then none waits on it.
+        let moved = served.wait_queues(&[Position::queue(queue, 1)], (LONG, 0), &waiter);
+        assert_eq!(moved.expect("answered").len(), 1, "queue {queue}");
+    }
+    let primary = node.primary().expect("the primary");
+    assert_eq!(primary.watch_kept(), (2, 2), "its node's bound");
 }

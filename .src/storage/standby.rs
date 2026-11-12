@@ -99,7 +99,8 @@ pub const SILENCE: Duration = Duration::from_secs(1);
 /// standby behind it, where the node's `[tuning] storage_kept` does not say.
 pub const KEPT: usize = 64 * 1024 * 1024;
 
-/// What bounds a Storage node's dealings with the others.
+/// What bounds a Storage node's dealings with the others, and what it keeps
+/// of their waits while it is the primary.
 #[derive(Clone, Copy, Debug)]
 pub struct Timings {
     /// How often a primary beats to an idle standby.
@@ -114,6 +115,9 @@ pub struct Timings {
     pub pass_over: Duration,
     /// The most bytes of each database's writes kept for a standby.
     pub kept: usize,
+    /// The most of what no node waits on now its primary keeps where its
+    /// writer left it (`super::watch`, [`super::UNWAITED`] by default).
+    pub unwaited: usize,
 }
 
 /// One database as a Storage node keeps it: its engine, its writes kept.
