@@ -243,15 +243,21 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         token: u128,
         lease: Duration,
     ) -> Result<Option<Claim>, PersistError> {
-        let claim = Claim {
-            journey,
-            holder: holder.to_string(),
-            token,
-            until_unix_nanos: 0,
-            fence: 0,
-        };
         self.claimed(Op::Claim {
-            claim,
+            claim: Claim::asked(journey, holder, token),
+            lease_nanos: lease_nanos(lease),
+        })
+    }
+
+    fn claim_ahead(
+        &self,
+        journey: JourneyId,
+        holder: &str,
+        token: u128,
+        lease: Duration,
+    ) -> Result<(Option<Claim>, Durable), PersistError> {
+        self.claimed_ahead(Op::Claim {
+            claim: Claim::asked(journey, holder, token),
             lease_nanos: lease_nanos(lease),
         })
     }

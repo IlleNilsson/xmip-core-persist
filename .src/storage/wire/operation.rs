@@ -15,7 +15,8 @@ impl Request {
             Self::ReadMessage(_) => ("read", "read_message"),
             Self::WriteJourney(_) => ("write", "write_journey"),
             Self::ReadJourney(_) => ("read", "read_journey"),
-            Self::Claim(..) => ("write", "claim"),
+            // A claim asked ahead of its sync is a claim, admitted as one.
+            Self::Claim(..) | Self::ClaimAhead(..) => ("write", "claim"),
             Self::Renew(..) => ("write", "renew"),
             Self::Release(_) => ("write", "release"),
             Self::HandOn(_) => ("write", "hand_on"),

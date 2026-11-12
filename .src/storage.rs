@@ -12,7 +12,8 @@
 //!   what is due there, and on a sequence's head, an Instance or a key until
 //!   a write moves it (`watch`);
 //!   read and replay a node's Dead Message Queue; claim, renew and release
-//!   a Message; hand a step on; write an audit record;
+//!   a Message — the claim a send is taken under answered ahead of its
+//!   sync, with when it is durable; hand a step on; write an audit record;
 //! - **a search** of any of them: the records one index of one table finds,
 //!   in the clear (`query`, proposed 2026-10-09);
 //! - **the audit keeper**, moving audit records, each with its Streams'
@@ -320,6 +321,28 @@ pub trait XmipStorage: Send + Sync {
         token: u128,
         lease: Duration,
     ) -> Result<Option<Claim>, PersistError>;
+
+    /// [`XmipStorage::claim`] answered once decided and readable, before
+    /// its sync, with when it is durable ([`Durable`]): a send under it lets
+    /// its far end see nothing before that, and abandons what it prepared
+    /// where it never is — a claim lost before it is durable is a send no
+    /// far end saw (ADR-0018, amendment 2026-11-12). Asked again under its
+    /// token, it is that claim, durable with the batch that took it. Where
+    /// nothing answers it sooner, the claim answered once durable.
+    ///
+    /// # Errors
+    ///
+    /// As [`XmipStorage::claim`].
+    fn claim_ahead(
+        &self,
+        journey: JourneyId,
+        holder: &str,
+        token: u128,
+        lease: Duration,
+    ) -> Result<(Option<Claim>, Durable), PersistError> {
+        let claim = self.claim(journey, holder, token, lease)?;
+        Ok((claim, Durable::kept()))
+    }
 
     /// Renew every one of `claims` for `lease` from now, while the work
     /// runs, in one request: those still their holder's, renewed — a claim

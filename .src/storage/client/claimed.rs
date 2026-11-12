@@ -8,7 +8,7 @@ use xcore::JourneyId;
 use super::super::claimed::Claimed;
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
-use super::operations::expected;
+use super::expected::expected;
 use crate::PersistError;
 
 impl StorageClient {

@@ -4,10 +4,36 @@
 use std::time::Duration;
 
 use super::super::XmipStorage;
+use super::super::durable::Durable;
+use super::super::record::Claim;
 use super::super::watch::Position;
 use super::super::wire::{Answer, Request};
 use super::waiters::{Waiters, Waiting};
 use crate::PersistError;
+
+/// What `storage` answers `claim` asked ahead of its sync for `lease`
+/// nanoseconds: the claim once readable, and, where it was taken, when it
+/// is durable, which its server tells in a second frame ([`kept`]). Where it
+/// was not taken, or the operation failed, one frame is all (ADR-0018,
+/// amendment 2026-11-12).
+pub(crate) fn ahead(
+    storage: &dyn XmipStorage,
+    claim: &Claim,
+    lease: u64,
+) -> (Answer, Option<Durable>) {
+    let lease = Duration::from_nanos(lease);
+    match storage.claim_ahead(claim.journey, &claim.holder, claim.token, lease) {
+        Ok((Some(taken), durable)) => (Answer::Claim(Some(taken)), Some(durable)),
+        Ok((None, _)) => (Answer::Claim(None), None),
+        Err(error) => (refused(error), None),
+    }
+}
+
+/// A claim asked ahead's second frame, once `durable` is told: durable
+/// here, or why it is not.
+pub(crate) fn kept(durable: &Durable) -> Answer {
+    Answer::Kept(durable.wait().err().map(|why| why.to_string()))
+}
 
 /// What `storage` answers `request`: the one place an operation on the
 /// wire becomes a call of the operations. A wait on queues is held among
@@ -105,12 +131,22 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
         Request::Standing | Request::Follow(_) => Err(PersistError::Failed {
             reason: "a Storage node's standing is its server's to answer".to_string(),
         }),
+        // Answered in two frames, its server's to send ([`ahead`]).
+        Request::ClaimAhead(..) => Err(PersistError::Failed {
+            reason: "a claim asked ahead is answered by its server, in two frames".to_string(),
+        }),
     };
-    answered.unwrap_or_else(|error| match error {
+    answered.unwrap_or_else(refused)
+}
+
+/// What an operation that failed answers: a record that failed its tag,
+/// a standby's refusal, or the failure in words.
+fn refused(error: PersistError) -> Answer {
+    match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),
         PersistError::Standby { reason } => Answer::Standby(reason),
         other => Answer::Failed(other.to_string()),
-    })
+    }
 }
 
 /// A wait `request` names held among `waiters` by its token, or the one an

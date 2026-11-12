@@ -71,6 +71,9 @@ pub(crate) enum Answer {
     /// What a Message is acted on under its claim
     /// (`super::super::claimed`).
     Claimed(Box<Claimed>),
+    /// A claim asked ahead's second frame: durable on the Storage node, or
+    /// why it is not.
+    Kept(Option<String>),
 }
 
 impl Answer {
@@ -104,6 +107,11 @@ impl Answer {
             Self::Claimed(claimed) => {
                 out.byte(27);
                 claimed.write(out);
+            }
+            Self::Kept(why) => {
+                out.byte(28);
+                out.byte(u8::from(why.is_some()));
+                field::text(out, why.as_deref().unwrap_or_default());
             }
             _ => {}
         }
@@ -259,6 +267,11 @@ impl Form for Answer {
             25 => Self::Secrets(Vec::read(cursor)?),
             26 => Self::Moved(Vec::read(cursor)?),
             27 => Self::Claimed(Box::new(Claimed::read(cursor)?)),
+            28 => {
+                let said = cursor.byte()? != 0;
+                let why = field::read_text(cursor)?;
+                Self::Kept(said.then_some(why))
+            }
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

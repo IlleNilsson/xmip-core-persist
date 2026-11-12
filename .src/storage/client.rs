@@ -18,7 +18,7 @@
 //! **One statement, one Storage node** (the owner, 2026-10-03). A
 //! statement — a receive cycle's chunks 1 to n, its Publication and its
 //! Journeys — is asked of one Storage node throughout, chosen round robin
-//! as it begins ([`XmipStorage::pinned`]). Its operations do not move on to
+//! as it begins ([`super::XmipStorage::pinned`]). Its operations do not move on to
 //! another node: the chunks are durable with the Publication's sync on the
 //! node that took them, so a node that stops answering mid-statement fails
 //! the statement, and the sender, never acknowledged, sends again.
@@ -32,7 +32,9 @@
 //! after it was done is `true` and writes nothing, and is told from a claim
 //! only given back; an audit record written twice is kept once, by its
 //! identifier, by the audit keeper. And an operation that failed wrote
-//! nothing of itself, so asking it again starts clean.
+//! nothing of itself, so asking it again starts clean. A claim asked ahead
+//! of its sync holds its connection until its second frame, the claim made
+//! durable, is read (`ahead`; ADR-0018, amendment 2026-11-12).
 //!
 //! **A standby is passed over** (`super::standby`). Embedded Storage nodes
 //! of one cluster are one primary and its standbys: a standby serves no
@@ -48,14 +50,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use xcore::lock::Locked;
 
-use super::XmipStorage;
 use super::server::ALPN;
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
+mod ahead;
 mod claimed;
+mod expected;
 mod operations;
+mod statement;
 mod waiting;
+
+pub use statement::statement;
 
 type Connection = tls::Guarded;
 
@@ -89,7 +95,7 @@ impl Node {
         until.is_some_and(|until| until > now)
     }
 
-    fn answered(&self, asked: &Result<Answer, Asked>, pass_over: Duration) {
+    fn answered<T>(&self, asked: &Result<T, Asked>, pass_over: Duration) {
         let (answered, standby, said) = match asked {
             Ok(_) => (true, false, "answered".to_string()),
             Err(Asked::Standby(said)) => (false, true, said.clone()),
@@ -139,7 +145,7 @@ pub struct Reached {
     pub at: Instant,
 }
 
-/// Xmip Storage as a node reaches it: [`XmipStorage`] over the Storage
+/// Xmip Storage as a node reaches it: [`super::XmipStorage`] over the Storage
 /// nodes, round robin, or over one of them for one statement.
 pub struct StorageClient {
     nodes: Arc<[Node]>,
@@ -247,9 +253,15 @@ impl StorageClient {
     /// last.
     /// For one statement, `request` is asked of its Storage node alone.
     fn ask(&self, request: &Request) -> Result<Answer, PersistError> {
+        self.ask_each(|index| self.ask_node(&self.nodes[index], request))
+    }
+
+    /// What `asking` the Storage node listed at an index comes to, asked as
+    /// [`StorageClient::ask`] asks a request.
+    fn ask_each<T>(&self, asking: impl Fn(usize) -> Result<T, Asked>) -> Result<T, PersistError> {
         if let Some(index) = self.pinned {
             let node = &self.nodes[index];
-            let asked = self.ask_node(node, request);
+            let asked = asking(index);
             node.answered(&asked, self.pass_over);
             return asked.map_err(|failure| {
                 unreachable(format!(
@@ -259,8 +271,9 @@ impl StorageClient {
             });
         }
         let mut failures = Vec::new();
-        for node in self.turn().map(|index| &self.nodes[index]) {
-            let asked = self.ask_node(node, request);
+        for index in self.turn() {
+            let node = &self.nodes[index];
+            let asked = asking(index);
             node.answered(&asked, self.pass_over);
             match asked {
                 Ok(answer) => return Ok(answer),
@@ -287,12 +300,25 @@ impl StorageClient {
         request: &Request,
         exchanged: Exchange<'_>,
     ) -> Result<Answer, Asked> {
+        let (answer, connection) = self.ask_node_held(node, request, exchanged)?;
+        node.idle.locked().push(connection);
+        standby(answer)
+    }
+
+    /// [`StorageClient::ask_node_by`]'s answer, and the connection it came
+    /// on, kept by none yet: what a claim asked ahead holds for its second
+    /// frame (`ahead`).
+    fn ask_node_held(
+        &self,
+        node: &Node,
+        request: &Request,
+        exchanged: Exchange<'_>,
+    ) -> Result<(Answer, Connection), Asked> {
         let kept = node.idle.locked().pop();
         if let Some(mut connection) = kept
             && let Ok(answer) = exchanged(&mut connection, request)
         {
-            node.idle.locked().push(connection);
-            return standby(answer);
+            return Ok((answer, connection));
         }
         let failed = |failure: String| Asked::Failed(failure);
         let tcp = net::connect(node.address.as_str(), Some(self.timeout))
@@ -302,8 +328,7 @@ impl StorageClient {
         self.standing(&mut connection)?;
         let answer =
             exchanged(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
-        node.idle.locked().push(connection);
-        standby(answer)
+        Ok((answer, connection))
     }
 
     /// A new connection's Storage node held to what it is: a standby is
@@ -349,36 +374,6 @@ fn unreachable(reason: impl Into<String>) -> PersistError {
     PersistError::Unreachable {
         reason: reason.into(),
     }
-}
-
-impl StorageClient {
-    /// This client over one Storage node, for one statement: the one it is
-    /// over already, or the next round robin ([`super::XmipStorage::pinned`]).
-    fn pinned_client(&self) -> Option<Self> {
-        let index = self.pinned.or_else(|| self.turn().next())?;
-        Some(self.pinned_to(index))
-    }
-
-    /// This client over the Storage node listed at `index` alone.
-    fn pinned_to(&self, index: usize) -> Self {
-        Self {
-            nodes: Arc::clone(&self.nodes),
-            next: Arc::clone(&self.next),
-            config: Arc::clone(&self.config),
-            timeout: self.timeout,
-            pass_over: self.pass_over,
-            epoch: Arc::clone(&self.epoch),
-            pinned: Some(index),
-        }
-    }
-}
-
-/// `storage` for one statement: a receive cycle's chunks, its Publication
-/// and its Journeys asked of one Storage node, so the Publication's one
-/// sync covers the chunks before it ([`XmipStorage::write_chunk`]).
-#[must_use]
-pub fn statement(storage: &Arc<dyn XmipStorage>) -> Arc<dyn XmipStorage> {
-    storage.pinned().unwrap_or_else(|| Arc::clone(storage))
 }
 
 #[cfg(test)]
@@ -1033,5 +1028,21 @@ mod tests {
         assert!(StorageClient::new(&[], &identity, TIMEOUT, PASS_OVER).is_err());
         let portless = ["storage-1.example".to_string()];
         assert!(StorageClient::new(&portless, &identity, TIMEOUT, PASS_OVER).is_err());
+    }
+
+    #[test]
+    fn storage_that_answers_no_claim_ahead_answers_it_once_durable() {
+        // `LosesAnswer` answers every claim through `claim`: the default.
+        let only_claims = LosesAnswer {
+            beneath: storage(),
+            meanwhile: Mutex::new(None),
+        };
+        let holder = configure::fixture::test_cluster().node_scope(0);
+        let id = journey(b"").journey;
+        let (taken, durable) = only_claims
+            .claim_ahead(id, &holder, 7, TIMEOUT)
+            .expect("claimed");
+        assert!(taken.is_some(), "taken");
+        assert_eq!(durable.told(), Some(true), "durable as answered");
     }
 }

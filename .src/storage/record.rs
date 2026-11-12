@@ -71,6 +71,20 @@ pub struct Claim {
     pub fence: u64,
 }
 
+impl Claim {
+    /// The claim on `journey` that `holder` asks for under `token`: its
+    /// lapse and its fence are Xmip Storage's to set as it takes it.
+    pub(crate) fn asked(journey: JourneyId, holder: &str, token: u128) -> Self {
+        Self {
+            journey,
+            holder: holder.to_string(),
+            token,
+            until_unix_nanos: 0,
+            fence: 0,
+        }
+    }
+}
+
 /// What the administration database keeps — what must be shared and kept
 /// over time, and never configuration (`deployment-model.md` section 7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

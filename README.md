@@ -129,8 +129,13 @@ and 9).
   what Xmip Storage keeps of it in columns, the four reads one by one where
   nothing answers it whole; claim a
   Message by its Journey (set the holder where there is none or
-  the last claim lapsed, time-limited, on the Storage node's clock), renew
-  it, release it; hand a step on — its result, the Messages it made, the
+  the last claim lapsed, time-limited, on the Storage node's clock) — once
+  durable, or ahead of its sync (`claim_ahead`, ADR-0018, amendment
+  2026-11-12): answered once decided and readable, with when it is durable
+  (`Durable`), so a send under it is prepared while it syncs and lets its
+  far end see nothing before, its default `claim` answered once durable so
+  what cannot answer sooner stays correct — renew it, release it; hand a
+  step on — its result, the Messages it made, the
   Journeys of the Messages that follow, the queues the Message leaves
   (`HandOn::leaves`)
   and the places it takes (`HandOn::queued`), the queues it moves to the
@@ -234,9 +239,10 @@ and 9).
   once it may be in the engine stops the Storage node, as a failed sync
   does. A Publication is handed over by value
   (`XmipStorage::publish`). A batch is written, answered, then synced: every write but a Publication
-  is waited on until durable, and a Publication is answered with its claims
-  and its durability (`storage::Durable`), so its sends are prepared while
-  the log syncs (ADR-0018, amendment 2026-10-20). The sync is a thread of
+  and a claim asked ahead is waited on until durable, and a Publication is
+  answered with its claims and its durability (`storage::Durable`), so its
+  sends are prepared while the log syncs (ADR-0018, amendment 2026-10-20),
+  as a claim asked ahead is with its own (amendment 2026-11-12). The sync is a thread of
   its own (`xmip-storage-sync`), handed each batch once it is written, so
   the writer decides the next batch while the last syncs and one sync makes
   every batch written meanwhile durable together; until 2026-10-21 the
@@ -279,7 +285,15 @@ and 9).
   node's `[tuning] storage_wait`, `storage::HOLD`, a minute, by default),
   ended by its token (wire operation 38, an end that overtakes its wait
   kept for it) and refused as a standby's as the server stops, so a stop
-  never waits one out and the node waiting asks the next Storage node.
+  never waits one out and the node waiting asks the next Storage node. A
+  claim asked ahead (wire operation 40) is the one request answered in two
+  frames: the claim once readable (answer 4) and, where it was taken, once
+  it is durable there or why it is not (answer 28), nothing else read on
+  its connection between; the client keeps that connection out of its idle
+  ones until the claim's `Durable` reads the second frame on its first wait
+  (`Durable::fetching`), and one never waited on closes it with its last
+  clone, so no second frame is read as another request's answer
+  (`storage/client/ahead.rs`; ADR-0018, amendment 2026-11-12).
 - **`StorageClient`** — a node reaching the Storage nodes its `[storage]
   nodes` lists, round robin, moving to the next when one does not answer and
   passing over one that did not for its pass-over; each connect and read is
@@ -365,7 +379,8 @@ and 9).
 A Storage node alone loses nothing it acknowledged: a write is answered
 once it is in the engine and waited on until it is synced, and a
 Publication's sends let a far end see its Message only once it is durable,
-so what a killed process takes with it was never acknowledged. A Storage
+as a send under a claim asked ahead does only once the claim is, so what a
+killed process takes with it was never acknowledged, nor seen by a far end. A Storage
 node killed between a Publication's answer and its sync leaves exactly
 what was synced before (the runtime's `tests/ledger/unsynced.rs`).
 

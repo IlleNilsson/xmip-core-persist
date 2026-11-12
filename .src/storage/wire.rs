@@ -7,7 +7,10 @@
 //! what the operation returned or why it failed. Each record is written in
 //! its one binary form ([`Form`]), the form either database seals it in. A
 //! connection carries one request at a time and answers it before the next,
-//! synchronously, with no async runtime; a node keeps a connection per
+//! synchronously, with no async runtime — a claim asked ahead of its sync
+//! with two frames, the claim and then when it is durable, and nothing else
+//! is asked on its connection before the second is read (ADR-0018,
+//! amendment 2026-11-12); a node keeps a connection per
 //! Storage node per caller in flight, so many requests are in flight at
 //! once and the Storage node's writer shares their sync.
 
@@ -97,6 +100,10 @@ pub(crate) enum Request {
     /// What a Message is acted on under its claim: its place in a queue,
     /// its Journey, its Message and its Stream's record (`super::claimed`).
     ReadClaimed(u128, u64, JourneyId),
+    /// A claim for so many nanoseconds, asked ahead of its sync: answered
+    /// twice, the claim once readable and, where it was taken, a second
+    /// frame once it is durable or why it is not (`Answer::Kept`).
+    ClaimAhead(Claim, u64),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -106,6 +113,10 @@ fn nanos(lease: Duration) -> u64 {
 impl Request {
     pub(crate) fn claim(claim: Claim, lease: Duration) -> Self {
         Self::Claim(claim, nanos(lease))
+    }
+
+    pub(crate) fn claim_ahead(claim: Claim, lease: Duration) -> Self {
+        Self::ClaimAhead(claim, nanos(lease))
     }
 
     pub(crate) fn wait(
@@ -284,6 +295,7 @@ impl Form for Request {
                 let (queue, at) = (cursor.u128_be()?, cursor.u64_be()?);
                 Self::ReadClaimed(queue, at, JourneyId::new(cursor.u128_be()?))
             }
+            40 => Self::ClaimAhead(Claim::read(cursor)?, cursor.u64_be()?),
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }
@@ -524,6 +536,24 @@ mod tests {
         };
         let answer = Answer::Claimed(Box::new(claimed));
         assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
+    }
+
+    #[test]
+    fn a_claim_asked_ahead_and_its_second_frame_cross_a_frame_as_they_were() {
+        let claim = Claim::asked(JourneyId::new(5), "edge-01", 9);
+        let request = Request::claim_ahead(claim, Duration::from_secs(30));
+        assert_eq!(
+            request.operation(),
+            ("write", "claim"),
+            "admitted as a claim"
+        );
+        assert_eq!(
+            Request::from_bytes(&request.bytes()).expect("read"),
+            request
+        );
+        for answer in [Answer::Kept(None), Answer::Kept(Some("the disk".into()))] {
+            assert_eq!(Answer::from_bytes(&answer.bytes()).expect("read"), answer);
+        }
     }
 
     #[test]
