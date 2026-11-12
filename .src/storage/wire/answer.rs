@@ -19,6 +19,7 @@ use super::super::record::{
 use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::standby::Standing;
 use super::super::stream::StreamRecord;
+use super::super::watch::Position;
 
 /// What an operation answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,9 @@ pub(crate) enum Answer {
     Secret(Option<Box<SecretRecord>>),
     /// The secrets kept, without their values.
     Secrets(Vec<SecretEntry>),
+    /// The queues a wait found standing elsewhere than seen, as they stand
+    /// (`super::super::watch`).
+    Positions(Vec<Position>),
 }
 
 impl Answer {
@@ -88,6 +92,10 @@ impl Answer {
             Self::Secrets(entries) => {
                 out.byte(25);
                 entries.write(out);
+            }
+            Self::Positions(moved) => {
+                out.byte(26);
+                moved.write(out);
             }
             _ => {}
         }
@@ -241,6 +249,7 @@ impl Form for Answer {
             23 => Self::Instance(read_optional(cursor)?),
             24 => Self::Secret(read_optional(cursor)?),
             25 => Self::Secrets(Vec::read(cursor)?),
+            26 => Self::Positions(Vec::read(cursor)?),
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

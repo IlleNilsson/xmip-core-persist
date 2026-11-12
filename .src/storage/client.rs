@@ -54,8 +54,12 @@ use super::wire::{self, Answer, Request};
 use crate::PersistError;
 
 mod operations;
+mod waiting;
 
 type Connection = tls::Guarded;
+
+/// How a request is asked on a connection, and its answer read.
+type Exchange<'a> = &'a dyn Fn(&mut Connection, &Request) -> std::io::Result<Answer>;
 
 /// How long a Storage node that did not answer is passed over, asked only
 /// when every other has failed too, before it is tried in its turn again,
@@ -269,9 +273,22 @@ impl StorageClient {
     }
 
     fn ask_node(&self, node: &Node, request: &Request) -> Result<Answer, Asked> {
+        self.ask_node_by(node, request, &exchange)
+    }
+
+    /// `request` asked of `node` by `exchanged`: on a connection kept from
+    /// before, or on one opened afresh where that fails. A connection is kept
+    /// again only once it answered, so none whose read failed or timed out
+    /// is asked anything again.
+    fn ask_node_by(
+        &self,
+        node: &Node,
+        request: &Request,
+        exchanged: Exchange<'_>,
+    ) -> Result<Answer, Asked> {
         let kept = node.idle.locked().pop();
         if let Some(mut connection) = kept
-            && let Ok(answer) = exchange(&mut connection, request)
+            && let Ok(answer) = exchanged(&mut connection, request)
         {
             node.idle.locked().push(connection);
             return standby(answer);
@@ -283,7 +300,7 @@ impl StorageClient {
             .map_err(|failure| failed(failure.message))?;
         self.standing(&mut connection)?;
         let answer =
-            exchange(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
+            exchanged(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
         node.idle.locked().push(connection);
         standby(answer)
     }
@@ -338,7 +355,12 @@ impl StorageClient {
     /// over already, or the next round robin ([`super::XmipStorage::pinned`]).
     fn pinned_client(&self) -> Option<Self> {
         let index = self.pinned.or_else(|| self.turn().next())?;
-        Some(Self {
+        Some(self.pinned_to(index))
+    }
+
+    /// This client over the Storage node listed at `index` alone.
+    fn pinned_to(&self, index: usize) -> Self {
+        Self {
             nodes: Arc::clone(&self.nodes),
             next: Arc::clone(&self.next),
             config: Arc::clone(&self.config),
@@ -346,7 +368,7 @@ impl StorageClient {
             pass_over: self.pass_over,
             epoch: Arc::clone(&self.epoch),
             pinned: Some(index),
-        })
+        }
     }
 }
 
@@ -591,6 +613,15 @@ mod tests {
             self.beneath.read_dead_message(q, m)
         }
 
+        fn wait_queues(
+            &self,
+            seen: &[crate::storage::Position],
+            bound: Duration,
+            waiter: &Arc<crate::storage::Waiter>,
+        ) -> Result<Vec<crate::storage::Position>, PersistError> {
+            self.beneath.wait_queues(seen, bound, waiter)
+        }
+
         fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
             self.beneath.replay(replay)
         }
@@ -785,6 +816,157 @@ mod tests {
         );
         first.stop();
         second.stop();
+    }
+
+    /// A Publication of the Message numbered `id`, its one Journey held in
+    /// `queue`.
+    fn held_in(queue: u128, id: u128) -> Publication {
+        let journey = JourneyId::new(id);
+        Publication {
+            message: MessageRecord {
+                message: MessageId::new(id),
+                body: b"order".to_vec(),
+                facts: MessageFacts::default(),
+            },
+            journeys: vec![JourneyRecord {
+                journey,
+                body: b"waiting".to_vec(),
+                facts: JourneyFacts::default(),
+            }],
+            held: vec![Hold {
+                queue,
+                journey,
+                body: Vec::new(),
+            }],
+            dead: None,
+            audit: AuditEntry {
+                id: AuditId::new(id),
+                body: b"published".to_vec(),
+                audited: None,
+                facts: AuditFacts::default(),
+            },
+            claims: Vec::new(),
+            lease_nanos: 0,
+        }
+    }
+
+    /// Far longer than any wait here lasts: one that ends sooner was
+    /// answered or ended, never timed out.
+    const LONG: Duration = Duration::from_secs(60);
+
+    /// The queue the waits here wait on.
+    const QUEUE: u128 = 7;
+
+    /// `client` waiting on [`QUEUE`], seen at `next`, as `waiter`, on a
+    /// thread of its own.
+    fn waiting_on(
+        client: &Arc<StorageClient>,
+        next: u64,
+        waiter: &Arc<crate::storage::Waiter>,
+    ) -> std::thread::JoinHandle<Result<Vec<crate::storage::Position>, PersistError>> {
+        let (client, waiter) = (Arc::clone(client), Arc::clone(waiter));
+        let seen = [crate::storage::Position { queue: QUEUE, next }];
+        std::thread::spawn(move || client.wait_queues(&seen, LONG, &waiter))
+    }
+
+    /// Wait, bounded, until `server` holds `held` waits.
+    fn holding(server: &StorageServer, held: usize) {
+        let deadline = std::time::Instant::now() + LONG;
+        while server.waits_held() != held {
+            assert!(std::time::Instant::now() < deadline, "never held {held}");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_wait_through_one_storage_node_is_woken_by_a_write_through_another_and_ended_there() {
+        use crate::storage::{Position, Waiter};
+        let authority = Authority::new();
+        // Two Storage nodes in front of one database: the wait is asked of
+        // the first alone, the Publication of the second alone, so the wake
+        // crosses between them.
+        let behind = storage();
+        let first = serve(&behind, &authority.issue(&authority));
+        let second = serve(&behind, &authority.issue(&authority));
+        let client = |server: &StorageServer| {
+            let node = [server.address().to_string()];
+            StorageClient::new(&node, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+                .expect("client")
+        };
+        let (watching, publishing) = (Arc::new(client(&first)), client(&second));
+        let waiter = Arc::new(Waiter::new());
+        let woken = waiting_on(&watching, 0, &waiter);
+        holding(&first, 1);
+        publishing.publish(held_in(QUEUE, 1)).expect("published");
+        let moved = woken.join().expect("woken").expect("answered");
+        assert_eq!(
+            moved,
+            [Position {
+                queue: QUEUE,
+                next: 1
+            }]
+        );
+        holding(&first, 0);
+
+        // A waiter stopped ends its wait where the Storage node holds it.
+        let stopped = waiting_on(&watching, 1, &waiter);
+        holding(&first, 1);
+        let stopping = std::time::Instant::now();
+        waiter.stop();
+        assert_eq!(stopped.join().expect("ended").expect("answered"), []);
+        assert!(stopping.elapsed() < LONG / 2, "not its bound");
+        holding(&first, 0);
+        first.stop();
+        second.stop();
+    }
+
+    #[test]
+    fn a_wait_a_stopping_storage_node_refuses_moves_to_the_next_at_once() {
+        use crate::storage::{Position, Waiter};
+        let authority = Authority::new();
+        let behind = storage();
+        let first = serve(&behind, &authority.issue(&authority));
+        let second = serve(&behind, &authority.issue(&authority));
+        let nodes = [first.address().to_string(), second.address().to_string()];
+        let watching = Arc::new(
+            StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+                .expect("client"),
+        );
+        let waiter = Arc::new(Waiter::new());
+        // Round robin from the first listed.
+        let woken = waiting_on(&watching, 0, &waiter);
+        holding(&first, 1);
+        let stopping = std::time::Instant::now();
+        first.stop();
+        holding(&second, 1);
+        let publishing = StorageClient::new(
+            &[second.address().to_string()],
+            &authority.issue(&authority),
+            TIMEOUT,
+            PASS_OVER,
+        )
+        .expect("client");
+        publishing.publish(held_in(QUEUE, 1)).expect("published");
+        let moved = woken.join().expect("woken").expect("answered");
+        assert_eq!(
+            moved,
+            [Position {
+                queue: QUEUE,
+                next: 1
+            }]
+        );
+        assert!(
+            stopping.elapsed() < LONG / 2,
+            "moved at once, not at its bound"
+        );
+
+        // Where every Storage node refuses it, the wait is refused, never
+        // answered with none: its node rests rather than ask again at once.
+        let refused = waiting_on(&watching, 1, &waiter);
+        holding(&second, 1);
+        second.stop();
+        let refused = refused.join().expect("ended");
+        assert!(refused.is_err(), "refused: {refused:?}");
     }
 
     #[test]

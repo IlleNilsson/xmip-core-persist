@@ -4,13 +4,26 @@
 use std::time::Duration;
 
 use super::super::XmipStorage;
+use super::super::watch::Position;
 use super::super::wire::{Answer, Request};
+use super::waiters::{Waiters, Waiting};
 use crate::PersistError;
 
 /// What `storage` answers `request`: the one place an operation on the
-/// wire becomes a call of the operations.
-pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
+/// wire becomes a call of the operations. A wait on queues is held among
+/// `waiters` by its token, which an end asked over another connection ends
+/// (`super::waiters`).
+pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Waiters) -> Answer {
     let answered = match request {
+        Request::Wait(token, holder, seen, bound) => waited(
+            storage,
+            (&seen, Duration::from_nanos(bound)),
+            &waiters.waiting(token, &holder),
+        ),
+        Request::EndWait(token) => {
+            waiters.end(token);
+            Ok(Answer::Done)
+        }
         Request::WriteChunk(chunk) => storage.write_chunk(&chunk).map(|()| Answer::Done),
         Request::ReadChunk(stream, index) => storage.read_chunk(stream, index).map(Answer::Chunk),
         Request::WriteMessage(message) => storage.write_message(&message).map(|()| Answer::Done),
@@ -103,4 +116,79 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request) -> Answer {
         PersistError::Standby { reason } => Answer::Standby(reason),
         other => Answer::Failed(other.to_string()),
     })
+}
+
+/// `seen` waited on in `storage` for at most `bound`, or the server's most,
+/// as `waiting`: what moved, none where nothing did, or a refusal as a
+/// standby's — the next Storage node asked at once — where its server's
+/// stop ended it with nothing.
+fn waited(
+    storage: &dyn XmipStorage,
+    (seen, bound): (&[Position], Duration),
+    waiting: &Waiting<'_>,
+) -> Result<Answer, PersistError> {
+    let moved = storage.wait_queues(seen, bound.min(waiting.most), &waiting.waiter)?;
+    if moved.is_empty() && waiting.stopping() {
+        return Err(PersistError::Standby {
+            reason: "this Storage node is stopping".to_string(),
+        });
+    }
+    Ok(Answer::Positions(moved))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::fixture::crowd::{QUEUE, node, published};
+
+    const SEEN: [Position; 1] = [Position {
+        queue: QUEUE,
+        next: 0,
+    }];
+
+    /// A wait on [`QUEUE`], seen empty, asked with `token`, for no holder.
+    fn wait(token: u128) -> Request {
+        Request::wait((token, None), &SEEN, Duration::from_secs(60))
+    }
+
+    #[test]
+    fn a_wait_its_stopping_server_ends_is_refused_as_a_standby_and_one_that_moved_answered() {
+        let (node, _) = node();
+        let waiters = Waiters::default();
+        waiters.stop();
+        let refused = answer(&node, wait(1), &waiters);
+        assert!(
+            matches!(&refused, Answer::Standby(said) if said.contains("stopping")),
+            "{refused:?}"
+        );
+        published(&node, 1..2);
+        let moved = answer(&node, wait(2), &waiters);
+        assert_eq!(
+            moved,
+            Answer::Positions(vec![Position {
+                queue: QUEUE,
+                next: 1
+            }])
+        );
+    }
+
+    #[test]
+    fn a_wait_ended_by_its_token_is_answered_with_none_and_none_is_held_past_its_most() {
+        let (node, _) = node();
+        let waiters = Waiters::default();
+        assert_eq!(
+            answer(&node, Request::EndWait(7), &waiters),
+            Answer::Done,
+            "an end that came first"
+        );
+        let ended = answer(&node, wait(7), &waiters);
+        assert_eq!(ended, Answer::Positions(Vec::new()));
+        waiters.hold(Duration::from_millis(20));
+        let held = Instant::now();
+        let capped = answer(&node, wait(8), &waiters);
+        assert_eq!(capped, Answer::Positions(Vec::new()));
+        assert!(held.elapsed() < Duration::from_secs(30), "held its most");
+    }
 }

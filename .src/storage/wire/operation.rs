@@ -45,6 +45,8 @@ impl Request {
             Self::WriteSecret(_) => ("write", "write_secret"),
             Self::ReadSecret(_) => ("read", "read_secret"),
             Self::ListSecrets => ("read", "list_secrets"),
+            Self::Wait(..) => ("read", "wait_queues"),
+            Self::EndWait(_) => ("read", "end_wait"),
         }
     }
 }

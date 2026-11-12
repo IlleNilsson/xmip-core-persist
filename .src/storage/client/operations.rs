@@ -23,13 +23,14 @@ use super::super::record::{
 };
 use super::super::secret::{SecretEntry, SecretRecord};
 use super::super::stream::StreamRecord;
+use super::super::watch::{Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
 use crate::PersistError;
 use xcore::SecretName;
 
 /// The answer an operation expected, or why there was none.
-fn expected<T>(
+pub(super) fn expected<T>(
     answer: Answer,
     take: impl FnOnce(Answer) -> Result<T, Answer>,
 ) -> Result<T, PersistError> {
@@ -169,6 +170,15 @@ impl XmipStorage for StorageClient {
                 other => Err(other),
             },
         )
+    }
+
+    fn wait_queues(
+        &self,
+        seen: &[Position],
+        bound: Duration,
+        waiter: &Arc<Waiter>,
+    ) -> Result<Vec<Position>, PersistError> {
+        self.waited(seen, bound, waiter)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
