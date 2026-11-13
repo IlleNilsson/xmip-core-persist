@@ -24,6 +24,16 @@ impl Authority {
         )
     }
 
+    /// An identity for the node `node` at 127.0.0.1, trusting `anchors`, as
+    /// [`Authority::issue`] issues one, its subject's common name the node's.
+    pub(crate) fn issue_node(&self, anchors: &Self, node: &str) -> tls::Identity {
+        let uses = [
+            rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+            rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        self.named(anchors, &uses, Some(node))
+    }
+
     /// An identity for a person, trusting `anchors`: client authentication
     /// alone, as an operator's certificate is.
     pub(crate) fn issue_person(&self, anchors: &Self) -> tls::Identity {
@@ -31,10 +41,24 @@ impl Authority {
     }
 
     fn issued(&self, anchors: &Self, uses: &[rcgen::ExtendedKeyUsagePurpose]) -> tls::Identity {
+        self.named(anchors, uses, None)
+    }
+
+    fn named(
+        &self,
+        anchors: &Self,
+        uses: &[rcgen::ExtendedKeyUsagePurpose],
+        node: Option<&str>,
+    ) -> tls::Identity {
         let key = rcgen::KeyPair::generate().expect("a key");
         let mut params =
             rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("params");
         params.extended_key_usages = uses.to_vec();
+        if let Some(node) = node {
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, node);
+        }
         let leaf = params.signed_by(&key, &self.0).expect("issued");
         tls::Identity::from_pem(
             leaf.pem().as_bytes(),

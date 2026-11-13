@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use xcore::lock::Locked;
 
 use super::super::wire::{Answer, Request};
-use super::admitted::NODE;
+use super::admitted;
 
 /// What a request asks that could be counted, read before it is answered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,10 +90,9 @@ impl Peers {
     /// `standing`: the node its common name names (`tls::Name`). None for a
     /// person, or a connection that proved no subject naming one.
     pub(super) fn of(&self, who: Option<&str>, standing: u8) -> Option<Arc<Crossed>> {
-        let who = tls::Name::parse(who.filter(|_| standing == NODE)?);
-        let node = who.common_name()?;
+        let node = admitted::node(who, standing)?;
         let mut by = self.by.locked();
-        Some(Arc::clone(by.entry(node.to_string()).or_default()))
+        Some(Arc::clone(by.entry(node).or_default()))
     }
 
     /// Every node counted so far, by node.
@@ -113,7 +112,7 @@ impl Peers {
 
 #[cfg(test)]
 mod tests {
-    use super::super::admitted::PERSON;
+    use super::super::admitted::{NODE, PERSON};
     use super::*;
     use crate::storage::record::Claim;
     use xcore::JourneyId;

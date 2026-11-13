@@ -48,13 +48,15 @@
 //! says so in its standing and is never promoted, across a restart too.
 //! Each epoch is kept, durable, before a role is taken in it; a promotion
 //! whose epoch cannot be kept fails. What a failover loses and duplicates
-//! is the README's *What a failover loses*.
+//! is the README's *What a failover loses*. What a primary hands each
+//! standby is counted, by the node its certificate names ([`followers`]).
 
 mod bootstrap;
 mod copies;
 mod delegated;
 mod finding;
 mod follow;
+mod followers;
 mod position;
 mod served;
 mod ship;
@@ -63,11 +65,11 @@ mod shipped;
 pub use bootstrap::Bootstrap;
 pub use copies::{Behind, Copied, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
+pub use followers::Follower;
 pub use shipped::{Follow, Shipped, Standing};
 
 pub(crate) use position::POSITION;
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
@@ -159,9 +161,9 @@ pub struct StorageNode {
     reaching: Arc<StorageClient>,
     timings: Timings,
     stopping: AtomicBool,
-    /// Each standby following it, by where it connected from, and the next
-    /// write of each database it is handed.
-    followers: Mutex<BTreeMap<String, [u64; DATABASES]>>,
+    /// Each standby it hands writes to, by the node its certificate names,
+    /// and what it handed each ([`followers`]).
+    followers: followers::Followers,
     finding: Mutex<Option<JoinHandle<()>>>,
     /// The last thing it had to say of its standing: why a promotion
     /// failed, that it stepped down.
@@ -232,7 +234,7 @@ impl StorageNode {
             reaching: Arc::new(reaching),
             timings,
             stopping: AtomicBool::new(false),
-            followers: Mutex::default(),
+            followers: followers::Followers::default(),
             finding: Mutex::new(None),
             last: Mutex::new(None),
             lent: AtomicUsize::new(0),

@@ -2,15 +2,16 @@
 //! where the standby is, or the whole of each database first where it
 //! cannot take them on from there, then each write as it is kept, and a
 //! beat while there is none. A primary stopped in order hands on what it
-//! wrote before the connection ends.
+//! wrote before the connection ends. What it hands is counted against the
+//! standby as each frame is sent (`super::followers`).
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use xcore::lock::Locked;
 
 use super::super::wire;
 use super::copies::DATABASES;
 use super::follow::LAST;
+use super::followers::Handed;
 use super::{Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
 use crate::{Engine, PersistError};
@@ -22,17 +23,20 @@ const TURN: usize = 4 * 1024 * 1024;
 const PAGE: usize = 256;
 
 impl StorageNode {
-    /// Hand this node's writes to the standby `peer` that asked `asked` on
-    /// `connection`, until it is no longer the primary, the standby goes
-    /// or the node or `server` stops; what declines it is said to it.
+    /// Hand this node's writes to the standby that asked `asked` on
+    /// `connection` — the node its certificate names, where it names one,
+    /// from the address it connected from — until it is no longer the
+    /// primary, the standby goes or the node or `server` stops; what
+    /// declines it is said to it.
     pub(crate) fn ship(
         &self,
         connection: &mut impl Write,
         asked: &Follow,
-        (peer, server): (&str, &AtomicBool),
+        (standby, server): ((Option<&str>, &str), &AtomicBool),
     ) {
-        let shipped = self.shipping(connection, asked, (peer, server));
-        self.followers.locked().remove(peer);
+        let handed = self.followers.began(standby, asked.next);
+        let shipped = self.shipping(connection, asked, (&handed, server));
+        self.followers.ended(&handed);
         if let Err(reason) = shipped {
             let _ = wire::send(connection, &Shipped::Declined(reason));
         }
@@ -42,7 +46,7 @@ impl StorageNode {
         &self,
         connection: &mut impl Write,
         asked: &Follow,
-        (peer, server): (&str, &AtomicBool),
+        (handed, server): (&Handed, &AtomicBool),
     ) -> Result<(), String> {
         let epoch = self.held().epoch;
         if !self.is_primary() {
@@ -54,9 +58,12 @@ impl StorageNode {
                 asked.epoch
             ));
         }
-        let mut next = match self.copies.follows(asked.history, asked.next) {
-            Ok(()) => asked.next,
-            Err(_) => self.whole(connection, epoch)?,
+        let mut next = if self.copies.follows(asked.history, asked.next).is_ok() {
+            asked.next
+        } else {
+            // Copied whole, it holds none of this history's writes yet.
+            handed.reached([1; DATABASES]);
+            self.whole(connection, (epoch, handed))?
         };
         loop {
             // Its last writes are handed on once no operation is under way.
@@ -65,26 +72,27 @@ impl StorageNode {
                 return Err(format!("{} stepped down", self.said()));
             }
             let seen = self.copies.count();
-            let mut handed = false;
+            let mut moved = false;
             for (database, next) in next.iter_mut().enumerate() {
                 let copies = self.copies.since(database, *next, TURN).map_err(|_| {
                     "the standby fell further behind than this Storage node keeps".to_string()
                 })?;
                 for (number, changes) in copies {
                     let database = u8::try_from(database).unwrap_or_default();
-                    send(
+                    let bytes = send(
                         connection,
                         &Shipped::Copy(database, number, changes.to_vec()),
                     )?;
+                    handed.wrote(bytes);
                     *next = number + 1;
-                    handed = true;
+                    moved = true;
                 }
             }
-            self.followers.locked().insert(peer.to_string(), next);
-            if stopping && !handed {
+            handed.reached(next);
+            if stopping && !moved {
                 return Ok(());
             }
-            if !handed {
+            if !moved {
                 self.copies.wait(seen, self.timings.beat);
                 if self.copies.count() == seen {
                     send(connection, &Shipped::Beat(epoch))?;
@@ -96,8 +104,13 @@ impl StorageNode {
     /// The whole of each database handed on, with its data key: where the
     /// standby's copies follow from in each, and the write its replay
     /// reaches before what the pages hold is one state of this node's
-    /// (`super::bootstrap`; ADR-0056, amendment 2026-11-12).
-    fn whole(&self, connection: &mut impl Write, epoch: u64) -> Result<[u64; DATABASES], String> {
+    /// (`super::bootstrap`; ADR-0056, amendment 2026-11-12). Each page's
+    /// entries are counted against the standby, `handed`, as it is sent.
+    fn whole(
+        &self,
+        connection: &mut impl Write,
+        (epoch, handed): (u64, &Handed),
+    ) -> Result<[u64; DATABASES], String> {
         let failed = |e: PersistError| e.to_string();
         let mut keys = Vec::with_capacity(DATABASES);
         for engine in &self.engines {
@@ -124,11 +137,13 @@ impl StorageNode {
                     break;
                 };
                 first = [last.as_slice(), &[0]].concat();
-                let entries = page
+                let entries: Vec<_> = page
                     .into_iter()
                     .filter(|(key, _)| !key.starts_with(OWN))
                     .collect();
-                send(connection, &Shipped::Entries(number, entries))?;
+                let count = entries.len();
+                let bytes = send(connection, &Shipped::Entries(number, entries))?;
+                handed.paged(count, bytes);
             }
             // The pages were read while writes went on, so they may reflect a
             // write in part. A write is numbered under the lock it is written
@@ -150,7 +165,8 @@ impl StorageNode {
     }
 }
 
-/// `frame` handed to the standby on `connection`.
-fn send(connection: &mut impl Write, frame: &Shipped) -> Result<(), String> {
-    wire::send(connection, frame).map_err(|e| format!("the standby went: {e}"))
+/// `frame` handed to the standby on `connection`, and how many bytes it
+/// took.
+fn send(connection: &mut impl Write, frame: &Shipped) -> Result<usize, String> {
+    wire::sent(connection, frame).map_err(|e| format!("the standby went: {e}"))
 }

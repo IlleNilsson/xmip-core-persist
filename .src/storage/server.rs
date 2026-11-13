@@ -304,8 +304,12 @@ fn serve(
             Request::Standing => (Answer::Standing(serving.standing()), None),
             Request::Follow(asked) => {
                 if let Some(node) = &serving.node {
-                    let peer = peer.to_string();
-                    node.ship(&mut watched.guarded, &asked, (&peer, stopping));
+                    // The standby is the node its certificate names; where it
+                    // connected from is evidence (`standby::followers`).
+                    let standby = admitted::node(who.as_deref(), *standing);
+                    let at = peer.to_string();
+                    let standby = (standby.as_deref(), at.as_str());
+                    node.ship(&mut watched.guarded, &asked, (standby, stopping));
                     return;
                 }
                 let only = "this Storage node is the only one: it hands its writes to none";

@@ -345,7 +345,15 @@ and 9).
   node's own Xmip Storage, its databases while primary and the primary over
   the wire while not. A stop serves nothing more, waits for every operation
   under way, and hands on everything written before the standbys'
-  connections end.
+  connections end. A primary knows each standby by the node its
+  certificate names — read by the reading the traffic counts use, its
+  address kept as evidence — and counts what it hands each: each write,
+  each entry of a whole copy, and the bytes of both, added atomically as
+  each frame is sent and kept across the standby's connections while the
+  primary runs (`standby/followers.rs`). `StorageNode::followers` lists
+  each standby following now with its counts and how many writes it is
+  behind — what the primary's standing says, and what its node draws as
+  *copies to* (ADR-0052 and ADR-0056, amendments 2026-11-13).
 - **`database`** and **`schema`** — what each data domain's database is
   kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
   `mariadb`, as each domain's own table in the configuration names it in
