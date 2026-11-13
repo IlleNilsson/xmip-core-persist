@@ -357,6 +357,7 @@ fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
 }
 
 mod bootstrap;
+mod handed;
 mod interrupted;
 mod refused;
 mod waited;

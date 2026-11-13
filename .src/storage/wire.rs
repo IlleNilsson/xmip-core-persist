@@ -307,7 +307,20 @@ impl Form for Request {
 ///
 /// Where the connection fails, or the record is larger than a frame holds.
 pub(crate) fn send(connection: &mut impl Write, record: &impl Form) -> io::Result<()> {
-    net::frame::write(connection, &record.bytes()).map_err(failed)
+    sent(connection, record).map(|_| ())
+}
+
+/// Write `record` as one frame, as [`send`] does, and say how many bytes
+/// the record took: what a primary counts it handed a standby
+/// (`standby::followers`).
+///
+/// # Errors
+///
+/// As [`send`].
+pub(crate) fn sent(connection: &mut impl Write, record: &impl Form) -> io::Result<usize> {
+    let bytes = record.bytes();
+    net::frame::write(connection, &bytes).map_err(failed)?;
+    Ok(bytes.len())
 }
 
 /// Read one frame, and the record in it. `None` where the connection ended

@@ -10,7 +10,7 @@ use xcore::lock::Locked;
 use super::super::XmipStorage;
 use super::super::client::StorageClient;
 use super::super::schema::DatabaseVersion;
-use super::{DATABASES, Delegated, Lent, Role, Standing, StorageNode};
+use super::{DATABASES, Delegated, Follower, Lent, Role, Standing, StorageNode};
 use crate::PersistError;
 
 /// One operation's loan of a primary's databases, given back when the
@@ -94,6 +94,20 @@ impl StorageNode {
         self.primary().map(|primary| *primary.versions())
     }
 
+    /// Each standby it hands its writes to now, while it is the primary, by
+    /// the node its certificate names, with what it handed each and how far
+    /// behind each is (ADR-0052 and ADR-0056, amendments 2026-11-13): what
+    /// its standing says, and what its node draws; none while it is not the
+    /// primary.
+    #[must_use]
+    pub fn followers(&self) -> Vec<Follower> {
+        if self.is_primary() {
+            self.followers.following(self.copies.next())
+        } else {
+            Vec::new()
+        }
+    }
+
     /// What it is now, in words: what a node asking a standby is told, and
     /// what the node publishes of its Storage — while not the primary, how
     /// far its bootstrap is: copying, catching up or ready (ADR-0056,
@@ -111,14 +125,11 @@ impl StorageNode {
                 held.epoch
             ),
             Role::Primary(_) => {
-                let followers = self.followers.locked();
-                let behind: Vec<String> = followers
+                let behind: Vec<String> = self
+                    .followers
+                    .following(next)
                     .iter()
-                    .map(|(at, next)| {
-                        let at_next: u64 = next.iter().sum();
-                        let mine: u64 = self.copies.next().iter().sum();
-                        format!("{at} {} writes behind", mine.saturating_sub(at_next))
-                    })
+                    .map(Follower::said)
                     .collect();
                 let standbys = if behind.is_empty() {
                     "no standby following".to_string()

@@ -19,6 +19,16 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::new("write", "*", NODE),
 ];
 
+/// The node a caller of `standing` whose certificate's subject is `who`
+/// is: its common name (`tls::Name`). None for a person, or a subject
+/// naming no node. What it wrote and took is counted against it
+/// (`counted`), and a standby it is, following, is known by it
+/// (`standby::followers`).
+pub(super) fn node(who: Option<&str>, standing: u8) -> Option<String> {
+    let who = tls::Name::parse(who.filter(|_| standing == NODE)?);
+    who.common_name().map(str::to_string)
+}
+
 /// Who the connection proved, and its standing: a node or a person, by
 /// what its certificate authenticates.
 pub(super) fn caller(guarded: &tls::GuardedServer) -> (Option<String>, u8) {
