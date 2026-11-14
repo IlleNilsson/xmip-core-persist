@@ -313,7 +313,7 @@ pub(crate) fn stands<R: Engine>(
     store: &EncryptedStore<R>,
     watched: Watched,
 ) -> Result<u64, PersistError> {
-    let places = |queue| queue::places(store, &Batch::empty(), KINDS, queue);
+    let places = |queue| queue::places(store, &Batch::empty(0), KINDS, queue);
     Ok(match watched {
         Watched::Queue(queue) => places(queue)?.next,
         Watched::Head(queue) => places(queue)?.taken(),

@@ -23,6 +23,7 @@ fn timings() -> Timings {
         pass_over: Duration::from_millis(200),
         kept: 1 << 20,
         unwaited: crate::storage::UNWAITED,
+        due_places: crate::storage::DUE_QUEUES,
     }
 }
 
@@ -357,6 +358,7 @@ fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
 }
 
 mod bootstrap;
+mod due;
 mod handed;
 mod interrupted;
 mod membership;

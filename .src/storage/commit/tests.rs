@@ -2,7 +2,7 @@
 //! asked again, a sync that fails, and a batch that panics once written.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::time::Duration;
 
 use secret::{Held, KekName};
@@ -27,8 +27,9 @@ fn writer(memory: &Arc<Memory>, hooks: &Arc<Hooks>, keys: &Keys) -> (Committer, 
     let columns = Arc::new(Columns::of(Database::Runtime));
     let epoch = Arc::new(AtomicU64::new(1));
     let watch = Arc::default();
-    let committer =
-        Committer::start(Arc::clone(&store), (clock, columns, epoch, watch)).expect("the writer");
+    let due = Arc::new(AtomicUsize::new(crate::storage::DUE_QUEUES));
+    let committer = Committer::start(Arc::clone(&store), (clock, columns, epoch, watch), due)
+        .expect("the writer");
     (committer, store)
 }
 

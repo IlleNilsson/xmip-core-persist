@@ -13,7 +13,7 @@
 //! ([`super::commit`]); an administration or audit write is its engine's
 //! own, durable on return.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,6 +56,8 @@ mod submitted;
 mod versioned;
 mod watched;
 
+pub use opened::DUE_QUEUES;
+
 /// The embedded Storage node's three databases, and the one writer to the
 /// first. The audit database is on the administration database's engine,
 /// a store of its own.
@@ -86,6 +88,8 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     epoch: Arc<AtomicU64>,
     /// Who waits on which queue, told by its writer (`super::watch`).
     watch: Arc<Watch>,
+    /// How many queues' places by when each is due its writer keeps.
+    due: Arc<AtomicUsize>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {

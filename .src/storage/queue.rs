@@ -33,7 +33,7 @@ use codec::writer::ByteWriter;
 
 use super::columns::Columns;
 use super::commit::Batch;
-use super::row::Value;
+use super::row::{Columned, Value};
 use super::schema::Database;
 use crate::{EncryptedStore, Engine, IndexScan, PersistError};
 
@@ -114,14 +114,15 @@ pub(crate) fn places<R: Engine>(
 
 /// An entry about `about` placed at the end of `queue`, in `batch`: the
 /// place it takes is the queue's next, and `entry` makes what is kept there
-/// from it. `false`, and nothing written, where the index has `about` in
-/// the queue already — placed before, or taken out and remembered so.
-pub(crate) fn place<R: Engine>(
+/// from it, laid out as it is made (`Batch::created`). `false`, and nothing
+/// written, where the index has `about` in the queue already — placed
+/// before, or taken out and remembered so.
+pub(crate) fn place<R: Engine, T: Columned>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
     kinds: Kinds,
     (queue, about): (u128, u128),
-    entry: impl FnOnce(u64) -> Vec<u8>,
+    entry: impl FnOnce(u64) -> T,
 ) -> Result<bool, PersistError> {
     let by = by_key(queue, about);
     if batch.read(store, kinds.by, &by)?.is_some() {
@@ -129,11 +130,8 @@ pub(crate) fn place<R: Engine>(
     }
     let mut places = places(store, batch, kinds, queue)?;
     let sequence = places.next;
-    batch.put(
-        kinds.entry,
-        entry_key(queue, sequence),
-        Some(entry(sequence)),
-    );
+    // Its next place holds nothing: no entry is ever kept past it.
+    batch.created(kinds.entry, entry_key(queue, sequence), entry(sequence))?;
     batch.put(kinds.by, by, Some(sequence.to_be_bytes().to_vec()));
     places.next += 1;
     places.count += 1;
@@ -322,7 +320,7 @@ mod tests {
     fn its_oldest_taken_out_empties_a_queue_without_reading_its_gap() {
         let counted = Counted::default();
         let store = queue(&counted, &[0], GAP + 1);
-        let mut batch = Batch::empty();
+        let mut batch = Batch::empty(0);
         let taken = take_out(&store, &mut batch, KINDS, QUEUE, 0).expect("taken");
         assert_eq!(taken.map(|bytes| sequences(&[bytes])), Some(vec![0]));
         assert_eq!(counted.read(), (2, 0), "the entry and its places");
@@ -369,7 +367,7 @@ mod tests {
             "the entry, its places, and the entry again for its index entries; no range"
         );
         store.apply_indexed(&changes, &entries).expect("written");
-        let left = places(&store, &Batch::empty(), KINDS, QUEUE).expect("places");
+        let left = places(&store, &Batch::empty(0), KINDS, QUEUE).expect("places");
         assert_eq!((left.first, left.count), (0, 1), "kept where it was");
         counted.read();
         let (places, entries) = page(&store, KINDS, QUEUE, 0, 10).expect("a page");

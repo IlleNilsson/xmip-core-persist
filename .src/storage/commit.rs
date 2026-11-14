@@ -30,6 +30,7 @@
 
 mod batch;
 mod kinds;
+mod op;
 mod syncer;
 mod waiting;
 
@@ -39,25 +40,25 @@ pub(crate) use kinds::{
     AUDIT, CHUNK, CLAIM, DEAD, DEAD_MESSAGE, DEAD_PLACES, DUE_PLACES, HELD, HELD_JOURNEY, JOURNEY,
     KEPT, MESSAGE, NEXT, PLACES, PUBLICATION, SEQUENCE, STREAM,
 };
+pub(crate) use op::{Done, Op};
 
 use syncer::Syncer;
 use waiting::{Answer, Decides, Reply, Waiting};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use codec::form::Form;
 use std::time::Duration;
 use xcore::Clock;
 use xcore::spent::Spent;
 
-use super::audit_entry::AuditEntry;
 use super::claim::{self, Standing, Stored, end, hold};
 use super::columns::Columns;
-use super::dead::{self, Replay, Replayed};
+use super::dead::{self, Replayed};
+use super::due::Kept;
 use super::durable::Durable;
-use super::hand_on::HandOn;
-use super::publication::{self, Decided, Publication};
+use super::publication::{self, Decided};
 use super::record::{Claim, malformed};
 use super::row;
 use super::watch::{self, Watch};
@@ -66,43 +67,6 @@ use crate::{EncryptedStore, Engine, PersistError};
 /// The most writes one batch takes.
 const GROUP: usize = 1024;
 
-/// One write the committer decides.
-pub(crate) enum Op {
-    /// A record as it is, replacing the last.
-    Put(&'static str, Vec<u8>, Vec<u8>),
-    Claim {
-        claim: Claim,
-        lease_nanos: i128,
-    },
-    Renew {
-        claims: Vec<Claim>,
-        lease_nanos: i128,
-    },
-    Release(Claim),
-    HandOn(Box<HandOn>),
-    /// A Work Process's turn: its hand-on with its Instances (`super::instance`).
-    Turn(Box<super::instance::Turn>),
-    /// A Message, its Journeys, the ones held, its Dead Message Queue entry
-    /// and its audit record, in one batch, once by its Message.
-    Publish(Box<Publication>),
-    /// An entry's Journeys written and the entry taken out, audited.
-    Replay(Box<Replay>),
-    Audit(Box<AuditEntry>),
-    /// The keeper moved audit record `sequence`: forget it here, where the
-    /// keeper has not moved past it already.
-    Kept(u64),
-}
-
-/// What a write decided.
-pub(crate) enum Done {
-    Written,
-    Claim(Option<Claim>),
-    /// The claims a Publication's node holds of those it asked for.
-    Claims(Vec<Claim>),
-    Yes(bool),
-    Replayed(Replayed),
-}
-
 /// The one writer, and the writes waiting for its next batch.
 pub(crate) struct Committer {
     waiting: Waiting,
@@ -110,8 +74,9 @@ pub(crate) struct Committer {
 
 impl Committer {
     /// The writer over `store`, telling time by `clock`, keeping `columns`,
-    /// fencing the claims it takes by the Storage `epoch`, and telling
-    /// `watch` of every queue a batch moves.
+    /// fencing the claims it takes by the Storage `epoch`, telling `watch`
+    /// of every queue a batch moves, and keeping at most `due` queues'
+    /// places by when each is due (`super::due::Kept`).
     ///
     /// # Errors
     ///
@@ -120,6 +85,7 @@ impl Committer {
     pub(crate) fn start<R: Engine + 'static>(
         store: Arc<EncryptedStore<R>>,
         (clock, columns, epoch, watch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>, Arc<Watch>),
+        due: Arc<AtomicUsize>,
     ) -> Result<Self, PersistError> {
         let next = sequence(&store, NEXT)?;
         let syncer = Syncer::start(Arc::clone(&store))?;
@@ -131,6 +97,7 @@ impl Committer {
             syncer,
             epoch,
             watch,
+            due: Kept::new(due),
             last: Durable::kept(),
             under_way: None,
         };
@@ -173,6 +140,9 @@ struct Writer<R> {
     epoch: Arc<AtomicU64>,
     /// Who waits on which queue (`super::watch`).
     watch: Arc<Watch>,
+    /// Each queue's places by when each is due, as it left them
+    /// (`super::due`).
+    due: Kept,
     /// The latest batch handed to the sync: what a batch that writes
     /// nothing is durable with.
     last: Durable,
@@ -186,6 +156,8 @@ impl<R: Engine> Decides for Writer<R> {
     }
 
     fn recover(&mut self) {
+        // What it kept of the batch it panicked in is read again.
+        self.due.forget();
         // Written, and answered to some of its callers or none: nothing
         // tells what any was told, so the node stops (fail-stop).
         if let Some(durable) = self.under_way.take() {
@@ -209,7 +181,7 @@ impl<R: Engine> Writer<R> {
         let entered = spent.entered();
         let now = self.clock.unix_timestamp_nanos();
         let before = self.next;
-        let mut batch = Batch::empty();
+        let mut batch = Batch::empty(row::nanos(now));
         let mut decided = Vec::with_capacity(group.len());
         for (op, reply) in group {
             // Each operation decided on a stage of its own: all of it
@@ -218,18 +190,22 @@ impl<R: Engine> Writer<R> {
             let mut staged = batch.staged();
             let done = self.decide(op, now, &mut staged);
             let Batch {
-                written, changes, ..
+                written,
+                changes,
+                laid,
+                ..
             } = staged;
             if done.is_ok() {
                 batch.written.extend(written);
                 batch.changes.extend(changes);
+                batch.laid.extend(laid);
             } else {
                 self.next = next;
             }
             decided.push((reply, done));
         }
         // Each queue's first due found again, as the batch leaves it.
-        let settled = super::due::settle(&self.store, &mut batch);
+        let settled = super::due::settle(&self.store, &mut batch, &mut self.due);
         // Each queue it puts a Message in, as it found them.
         let moved = watch::moved(&self.store, &batch);
         if self.next != before {
@@ -246,30 +222,20 @@ impl<R: Engine> Writer<R> {
         } else {
             Durable::pending()
         };
-        let written = if empty {
-            Ok(())
-        } else if let Err(failed) = settled {
-            Err(failed)
-        } else {
-            // From here on the batch may be in the engine, whatever stops it.
-            self.under_way = Some(durable.clone());
-            // Each searchable record stamped on this clock, and its index
-            // entries in the same write (`super::columns`), unsynced: it
-            // is answered first, and synced after. Each record a change
-            // replaces is the one the batch read of it, if it did.
-            let changes = std::mem::take(&mut batch.changes);
-            let kept = |kind, key: &[u8]| batch.before(&self.store, kind, key);
-            self.columns
-                .written_over(changes, row::nanos(now), kept)
-                .and_then(|(changes, entries)| {
-                    self.store.apply_indexed_deferred(&changes, &entries)
-                })
+        let (written, settled) = match settled {
+            _ if empty => (Ok(()), None),
+            Err(failed) => (Err(failed), None),
+            Ok(settled) => (self.written(&mut batch, now, &durable), Some(settled)),
         };
         if written.is_err() {
             // Refused whole: nothing of it is in the engine.
             self.next = before;
             self.under_way = None;
         } else {
+            // In the engine: each queue's places kept as it leaves them.
+            if let Some(settled) = settled {
+                self.due.written(settled);
+            }
             // Readable now: every node waiting on a queue it moved woken.
             self.watch.moved(&moved);
         }
@@ -289,6 +255,29 @@ impl<R: Engine> Writer<R> {
             self.last = durable.clone();
             self.syncer.written(durable);
         }
+    }
+
+    /// `batch`, decided at `now`, in the engine, unsynced, `durable` under
+    /// way from here on, whatever stops it: each searchable record stamped
+    /// on this clock, and its index entries in the same write
+    /// (`super::columns`); it is answered first, and synced after. Each
+    /// record a change replaces is the one the batch read of it, if it did,
+    /// and one it made new is laid out as it was made.
+    fn written(
+        &mut self,
+        batch: &mut Batch<'_>,
+        now: i128,
+        durable: &Durable,
+    ) -> Result<(), PersistError> {
+        self.under_way = Some(durable.clone());
+        let made = (
+            std::mem::take(&mut batch.changes),
+            std::mem::take(&mut batch.laid),
+        );
+        let kept = |kind, key: &[u8]| batch.before(&self.store, kind, key);
+        self.columns
+            .written_over(made, row::nanos(now), kept)
+            .and_then(|(changes, entries)| self.store.apply_indexed_deferred(&changes, &entries))
     }
 
     fn stored(&self, batch: &Batch<'_>, claim: &Claim) -> Result<Option<Stored>, PersistError> {
@@ -340,12 +329,12 @@ impl<R: Engine> Writer<R> {
             Op::Publish(asked) => match publication::decide(
                 &self.store,
                 batch,
-                &asked,
+                *asked,
                 (now, self.epoch.load(Ordering::Acquire)),
             )? {
                 Decided::Before(held) => Ok(Done::Claims(held)),
-                Decided::Now(held) => self
-                    .decide(Op::Audit(Box::new(asked.audit)), now, batch)
+                Decided::Now(held, audit) => self
+                    .decide(Op::Audit(audit), now, batch)
                     .map(|_| Done::Claims(held)),
             },
             Op::Replay(replay) => match dead::replay(&self.store, batch, &replay)? {

@@ -18,7 +18,14 @@
 //! where its first retry is ([`DuePlaces`]), and a read starts there. The
 //! one writer keeps both where the first is ([`settle`]): once a batch is
 //! decided, each queue it wrote an entry of finds its first again with one
-//! range from where it was, which steps over each mark once.
+//! range from where it was, which steps over each mark once — none where
+//! the batch leaves it holding none — and the writer keeps each queue's
+//! places as it left them ([`Kept`]), so no batch reads them from the store
+//! again (2026-11-14).
+
+mod kept;
+
+pub(crate) use kept::{Kept, Settled};
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -126,7 +133,7 @@ pub(crate) fn read<R: Engine>(
     (from, most): ((u64, u64), u32),
     now: i128,
 ) -> Result<DueQueue, PersistError> {
-    let places = kept(store, None, queue)?;
+    let places = kept(store, queue)?;
     let at = nanos(now);
     let most = usize::try_from(most).unwrap_or(usize::MAX);
     let later = (at.saturating_add(1), 0).max(places.retry);
@@ -169,12 +176,16 @@ pub(crate) fn read<R: Engine>(
 /// the batch leaves it, in the batch: how many keep a retry's due time
 /// counted on, and the first of each part found again from where it was —
 /// the first the batch did not write of what the engine holds, or one the
-/// batch wrote, whichever is first. Called once a batch is decided, before
-/// its index entries are laid out.
+/// batch wrote, whichever is first; and where the batch leaves the queue
+/// holding none, where its next place is, no range read. Each as `kept`
+/// keeps it, the writer's own ([`Kept`]): what the batch leaves, kept once
+/// it is in the engine. Called once a batch is decided, before its index
+/// entries are laid out.
 pub(crate) fn settle<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-) -> Result<(), PersistError> {
+    kept: &mut Kept,
+) -> Result<Settled, PersistError> {
     let mut queues: BTreeMap<u128, Vec<Written>> = BTreeMap::new();
     for (key, value) in batch.written_of(HELD) {
         let (Some(queue), Some(place)) = (key.get(..16), key.get(16..24)) else {
@@ -185,63 +196,84 @@ pub(crate) fn settle<R: Engine>(
         let value = value.map(<[u8]>::to_vec);
         queues.entry(queue).or_default().push((place, value));
     }
+    let mut settled = Settled::default();
     for (queue, written) in queues {
-        let before = kept(store, Some(batch), queue)?;
-        let mut places = before;
-        let mut touched = HashSet::new();
-        let (mut fresh, mut retry) = (None, None);
-        for (place, value) in written {
-            let old = batch.before(store, HELD, &entry_key(queue, place))?;
-            let old = old.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
-            let new = value.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
-            places.retrying =
-                (places.retrying + retries(new.as_ref())).saturating_sub(retries(old.as_ref()));
-            touched.insert(place);
-            match new.filter(|new| !new.failed).map(|new| new.due_at()) {
-                Some(0) => fresh = Some(fresh.map_or(place, |first: u64| first.min(place))),
-                Some(due) => {
-                    let at = (due, place);
-                    retry = Some(retry.map_or(at, |first: (u64, u64)| first.min(at)));
-                }
-                None => {}
-            }
-        }
-        let most = touched.len() + 1;
-        // Every entry the engine holds of a part is at or after where its
-        // first was, so a first the batch wrote at or before it is the
-        // first, and a part that held none still holds none the batch did
-        // not write: nothing is read then. A lone Message published to an
-        // empty queue reads no range.
-        let kept_fresh = if fresh.is_some_and(|first| first <= places.fresh) {
-            None
-        } else {
-            untouched(store, queue, ((0, places.fresh), 0), most, &touched)?
-        };
-        places.fresh = match kept_fresh
-            .map(|(_, place)| place)
-            .into_iter()
-            .chain(fresh)
-            .min()
-        {
-            Some(first) => first,
-            None => queue::places(store, batch, KINDS, queue)?.next,
-        };
-        let kept_retry =
-            if places.retry == NO_RETRY || retry.is_some_and(|first| first <= places.retry) {
-                None
-            } else {
-                untouched(store, queue, (places.retry, u64::MAX), most, &touched)?
-            };
-        places.retry = kept_retry
-            .into_iter()
-            .chain(retry)
-            .min()
-            .unwrap_or(NO_RETRY);
+        let before = kept.places(store, queue)?;
+        let places = settled_one(store, batch, (queue, before), written)?;
         if places != before {
             batch.put(DUE_PLACES, places_key(queue), Some(places.bytes()));
+            settled.0.push((queue, places));
         }
     }
-    Ok(())
+    Ok(settled)
+}
+
+/// `queue`'s places, `before` the batch, as `batch` leaves them, having
+/// written `written` of it ([`settle`]).
+fn settled_one<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &Batch<'_>,
+    (queue, before): (u128, DuePlaces),
+    written: Vec<Written>,
+) -> Result<DuePlaces, PersistError> {
+    let mut places = before;
+    let mut touched = HashSet::new();
+    let (mut fresh, mut retry) = (None, None);
+    for (place, value) in written {
+        // A place the batch made new was found empty (`Batch::absent`).
+        let old = batch.before(store, HELD, &entry_key(queue, place))?;
+        let old = old.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
+        let new = value.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
+        places.retrying =
+            (places.retrying + retries(new.as_ref())).saturating_sub(retries(old.as_ref()));
+        touched.insert(place);
+        match new.filter(|new| !new.failed).map(|new| new.due_at()) {
+            Some(0) => fresh = Some(fresh.map_or(place, |first: u64| first.min(place))),
+            Some(due) => {
+                let at = (due, place);
+                retry = Some(retry.map_or(at, |first: (u64, u64)| first.min(at)));
+            }
+            None => {}
+        }
+    }
+    let left = queue::places(store, batch, KINDS, queue)?;
+    if left.count == 0 {
+        // Holding none: each part's first is where the next entry goes.
+        return Ok(DuePlaces {
+            fresh: left.next,
+            retry: NO_RETRY,
+            retrying: 0,
+        });
+    }
+    let most = touched.len() + 1;
+    // Every entry the engine holds of a part is at or after where its
+    // first was, so a first the batch wrote at or before it is the first,
+    // and a part that held none still holds none the batch did not write:
+    // nothing is read then. A lone Message published to an empty queue
+    // reads no range.
+    let kept_fresh = if fresh.is_some_and(|first| first <= places.fresh) {
+        None
+    } else {
+        untouched(store, queue, ((0, places.fresh), 0), most, &touched)?
+    };
+    places.fresh = kept_fresh
+        .map(|(_, place)| place)
+        .into_iter()
+        .chain(fresh)
+        .min()
+        .unwrap_or(left.next);
+    let kept_retry = if places.retry == NO_RETRY || retry.is_some_and(|first| first <= places.retry)
+    {
+        None
+    } else {
+        untouched(store, queue, (places.retry, u64::MAX), most, &touched)?
+    };
+    places.retry = kept_retry
+        .into_iter()
+        .chain(retry)
+        .min()
+        .unwrap_or(NO_RETRY);
+    Ok(places)
 }
 
 /// A held Message's place a batch wrote, and what it left there.
@@ -292,20 +324,13 @@ fn region<R: Engine>(
         .collect()
 }
 
-/// `queue`'s [`DuePlaces`] as `batch` leaves them, or as `store` keeps them.
-fn kept<R: Engine>(
-    store: &EncryptedStore<R>,
-    batch: Option<&Batch<'_>>,
-    queue: u128,
-) -> Result<DuePlaces, PersistError> {
-    let key = places_key(queue);
-    let bytes = match batch {
-        Some(batch) => batch.read(store, DUE_PLACES, &key)?,
-        None => store.get(DUE_PLACES, &key)?,
-    };
-    bytes.map_or(Ok(DuePlaces::default()), |bytes| {
-        DuePlaces::from_bytes(&bytes).map_err(PersistError::from)
-    })
+/// `queue`'s [`DuePlaces`] as `store` keeps them.
+fn kept<R: Engine>(store: &EncryptedStore<R>, queue: u128) -> Result<DuePlaces, PersistError> {
+    store
+        .get(DUE_PLACES, &places_key(queue))?
+        .map_or(Ok(DuePlaces::default()), |bytes| {
+            DuePlaces::from_bytes(&bytes).map_err(PersistError::from)
+        })
 }
 
 impl Form for DuePlaces {
@@ -405,7 +430,7 @@ mod tests {
     }
 
     fn places(node: &Node) -> DuePlaces {
-        kept(node.runtime(), None, QUEUE).expect("its places")
+        kept(node.runtime(), QUEUE).expect("its places")
     }
 
     #[test]

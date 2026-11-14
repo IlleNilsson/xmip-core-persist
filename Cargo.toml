@@ -85,6 +85,9 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # A certificate authority and the certificates it issues, for the tests of
 # a node and a Storage node over mutual TLS. Test-only.
 rcgen = "0.14"
+# The timing program's wakes, held beside the plain wake measured in the
+# same rounds (`xcore::latency`). Test-only.
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main", features = ["test-support"] }
 
 [profile.dev.package."*"]
 opt-level = 3
