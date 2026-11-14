@@ -2,12 +2,23 @@
 //! what it has written so far, by place, read back by every operation
 //! decided after it in the same batch; and what the store held of each
 //! record it read, read from the store once a batch.
+//!
+//! **A place the batch makes new is never read** (2026-11-14): a queue's
+//! next place, and a Publication's Message and Journeys, whose identifiers
+//! are drawn fresh, hold nothing before the batch, so the batch keeps them
+//! as found empty ([`Batch::absent`]) and no operation, nor the laying out
+//! after them, reads the store for them. A record it makes new is laid out
+//! as it is made ([`Batch::created`]): stamped, and its index entries taken
+//! from it as it is, never decoded again to be stamped.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use codec::form::Form;
 
+use super::super::columns::{Columns, Laid};
+use super::super::row::Columned;
+use super::super::schema::Database;
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// One batch being decided: what it has written so far, by place — or one
@@ -19,6 +30,12 @@ pub(crate) struct Batch<'a> {
     pub(super) below: Option<&'a Batch<'a>>,
     pub(super) written: ByPlace,
     pub(super) changes: Vec<RecordChange<'static>>,
+    /// The index entries of each record the batch made new, laid out as it
+    /// was made ([`Batch::created`]), by its place.
+    pub(super) laid: Laid<'static>,
+    /// Xmip Storage's clock as the batch is decided, as a column keeps it:
+    /// what a record it makes new is stamped with.
+    now: u64,
     /// What the store held of each record the batch read, as it held it
     /// before the batch: read once, however many of its operations — and
     /// its laying out after them — ask (the bottom batch's alone).
@@ -30,12 +47,15 @@ pub(crate) struct Batch<'a> {
 pub(super) type ByPlace = HashMap<(&'static str, Vec<u8>), Option<Vec<u8>>>;
 
 impl Batch<'_> {
-    /// A batch with nothing in it yet, over what is written.
-    pub(crate) fn empty() -> Batch<'static> {
+    /// A batch with nothing in it yet, over what is written, decided at
+    /// `now`, Xmip Storage's clock as a column keeps it.
+    pub(crate) fn empty(now: u64) -> Batch<'static> {
         Batch {
             below: None,
             written: HashMap::new(),
             changes: Vec::new(),
+            laid: HashMap::new(),
+            now,
             kept: RefCell::default(),
         }
     }
@@ -46,8 +66,57 @@ impl Batch<'_> {
             below: Some(self),
             written: HashMap::new(),
             changes: Vec::new(),
+            laid: HashMap::new(),
+            now: self.now,
             kept: RefCell::default(),
         }
+    }
+
+    /// `kind` `key`, a place the batch makes new, held nothing before it:
+    /// kept so, and never read from the store. A place read already keeps
+    /// what the read found.
+    pub(crate) fn absent(&self, kind: &'static str, key: &[u8]) {
+        if let Some(below) = self.below {
+            return below.absent(kind, key);
+        }
+        self.kept
+            .borrow_mut()
+            .entry((kind, key.to_vec()))
+            .or_insert(None);
+    }
+
+    /// Whether this batch, or one below it, has written `kind` `key`.
+    fn wrote(&self, kind: &'static str, key: &[u8]) -> bool {
+        let here = !self.written.is_empty() && self.written.contains_key(&(kind, key.to_vec()));
+        here || self.below.is_some_and(|below| below.wrote(kind, key))
+    }
+
+    /// `record` made new at `kind` `key`, a place nothing was at before the
+    /// batch: kept as found empty ([`Batch::absent`]), stamped at the
+    /// batch's now and laid out as it is (`super::super::columns`), so the
+    /// laying out after the batch neither reads what it replaces nor
+    /// decodes it to stamp it. Where the batch wrote the place already, it
+    /// is written as any record is, and laid out with the rest.
+    ///
+    /// # Errors
+    ///
+    /// Where its table is not one the schema knows.
+    pub(crate) fn created<T: Columned>(
+        &mut self,
+        kind: &'static str,
+        key: Vec<u8>,
+        mut record: T,
+    ) -> Result<(), PersistError> {
+        self.absent(kind, &key);
+        if self.wrote(kind, &key) {
+            self.put(kind, key, Some(record.bytes()));
+            return Ok(());
+        }
+        let columns = Columns::of(Database::Runtime);
+        let (bytes, entries) = columns.laid(kind, &mut record, self.now)?;
+        self.laid.insert((kind, key.clone()), entries);
+        self.put(kind, key, Some(bytes));
+        Ok(())
     }
 
     /// The value `kind` `key` holds in `store`, as this batch, and every
@@ -156,7 +225,7 @@ mod tests {
         let kek = secret::KekName::new("runtime").expect("a name");
         let store = EncryptedStore::open(Memory::default(), &keys, &kek).expect("open");
         store.put("journey", b"7", b"before").expect("put");
-        let mut batch = Batch::empty();
+        let mut batch = Batch::empty(0);
         assert_eq!(
             batch.read(&store, "journey", b"7").expect("read"),
             Some(b"before".to_vec())

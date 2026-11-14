@@ -97,7 +97,13 @@ and 9).
   where each part's first is; the one writer finds each first again once a
   batch is decided, by one range from where it was, so no read steps over
   what `RocksDB` keeps of entries taken out (ADR-0013, amendment
-  2026-10-21); a Message marked failed waits for no retry, its due time
+  2026-10-21) — none where the batch leaves the queue holding none — and
+  keeps each queue's places as it left them (`due::Kept`, at most the
+  Storage node's `[tuning] storage_due_places` queues, `DUE_QUEUES`,
+  16,384, by default, `Embedded::keep_due` and
+  `standby::Timings::due_places`), read from the store once and only once a batch is in the
+  engine, so no batch reads or decrypts them again (ADR-0018, amendment
+  2026-11-14); a Message marked failed waits for no retry, its due time
   taken out with the mark; wait on queues (`wait_queues`, `Position`,
   `Watched`, `Moved`, `Waiter`; `storage/watch.rs`; open problem 46,
   ADR-0018, amendments 2026-11-12): each queue named with where its waiter
@@ -225,10 +231,15 @@ and 9).
   write returns once it is durable. Every operation is all or nothing: one
   that fails half-way writes nothing of itself. A request asked again after
   a lost answer does nothing twice: a Publication is kept as written by its
-  Message, with the digest of what was asked, so asked again it writes
+  Message, with the digest of what was asked — of every identifier it
+  carries: its Message, Journeys, places held and their queues, Dead
+  Message Queue entry's queue, audit record, claims asked with their
+  holders and tokens, and its lease, since 2026-11-14 never its bodies —
+  so asked again it writes
   nothing — no Message another node moved on since is written back or
   queued again — and answers the claims of it still held under their
-  tokens, while another Publication of that Message is refused (review of
+  tokens, while another Publication of that Message is refused, one built
+  again drawing a new audit record and new tokens (review of
   2026-10-06; the `publication` table on a database server); and a hand-on
   asked again is `true` while one after a mere release is `false` — the
   claim keeps which of the two ended it. And `query`: the identifiers of the
@@ -276,7 +287,13 @@ and 9).
   answers its writes with an error, and the lead goes on; one that panics
   once it may be in the engine stops the Storage node, as a failed sync
   does. A Publication is handed over by value
-  (`XmipStorage::publish`). A batch is written, answered, then synced: every write but a Publication
+  (`XmipStorage::publish`). **A place a batch makes new is never read**
+  (ADR-0018, amendment 2026-11-14): a queue's next place, and a
+  Publication's Message, its Journeys, their claims, their places in a
+  queue and its Dead Message Queue entry — their identifiers drawn fresh —
+  are kept as found empty (`Batch::absent`), and a record made new is
+  stamped and laid out as it is made (`Batch::created`), never decoded
+  again for its columns. A batch is written, answered, then synced: every write but a Publication
   and a claim asked ahead is waited on until durable, and a Publication is
   answered with its claims and its durability (`storage::Durable`), so its
   sends are prepared while the log syncs (ADR-0018, amendment 2026-10-20),

@@ -85,7 +85,7 @@ pub use dead::{
 };
 pub use due::{DuePart, DueQueue};
 pub use durable::Durable;
-pub use embedded::Embedded;
+pub use embedded::{DUE_QUEUES, Embedded};
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
 pub use hand_on::{HandOn, Wait};

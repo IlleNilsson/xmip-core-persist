@@ -25,22 +25,14 @@
 //! its write: the record it replaces is read for them — a point read of one
 //! key, which a server's `UPDATE` makes too.
 mod ordered;
+mod searched;
 
 use std::collections::HashMap;
 
-use super::act::{ACT, ActRecord};
-use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
-use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
-use super::dead::Dead;
-use super::failed::{FAILED, Failed};
-use super::hold::Held;
-use super::kept_audit::KeptAudit;
-use super::membership::{MEMBERSHIP, MemberRecord};
-use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
-use super::secret::{KeptSecret, SECRET};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
+use searched::{Searched, lay};
 
 /// Where the audit database keeps an audit record the keeper
 /// moved, by its identifier.
@@ -50,123 +42,16 @@ pub(crate) const KEPT_AUDIT: &str = "audit";
 /// (`super::embedded`).
 pub(crate) const ADMINISTRATION: &str = "administration/";
 
-/// The searchable tables, each the record it keeps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Searched {
-    Journey,
-    Message,
-    Held,
-    Dead,
-    Failed,
-    Audit,
-    AuditStream,
-    Administration,
-    Secret,
-    Membership,
-    Act,
-}
-
-impl Searched {
-    /// The table records of `kind` in `database` are, where it is one.
-    fn of(database: Database, kind: &str) -> Option<Self> {
-        Some(match (database, kind) {
-            (Database::Runtime, JOURNEY) => Self::Journey,
-            (Database::Runtime, MESSAGE) => Self::Message,
-            (Database::Runtime, HELD) => Self::Held,
-            (Database::Runtime, DEAD) => Self::Dead,
-            (Database::Runtime, FAILED) => Self::Failed,
-            (Database::Audit, KEPT_AUDIT) => Self::Audit,
-            (Database::Audit, KEPT_AUDIT_STREAMS) => Self::AuditStream,
-            (Database::Administration, kind) if kind.starts_with(ADMINISTRATION) => {
-                Self::Administration
-            }
-            (Database::Administration, SECRET) => Self::Secret,
-            (Database::Administration, MEMBERSHIP) => Self::Membership,
-            (Database::Administration, ACT) => Self::Act,
-            _ => return None,
-        })
-    }
-
-    const fn table(self) -> &'static str {
-        match self {
-            Self::Journey => "journey",
-            Self::Message => "message",
-            Self::Held => "held",
-            Self::Dead => "dead_message",
-            Self::Failed => "failed_message",
-            Self::Audit => "audit",
-            Self::AuditStream => "audit_stream",
-            Self::Administration => "administration",
-            Self::Secret => "secret",
-            Self::Membership => MEMBERSHIP,
-            Self::Act => ACT,
-        }
-    }
-
-    /// The row and the identifier of the record `bytes` hold, as it was
-    /// kept.
-    fn row(self, bytes: &[u8]) -> Result<(Row, u128), PersistError> {
-        match self {
-            Self::Journey => row::<JourneyRecord>(bytes),
-            Self::Message => row::<MessageRecord>(bytes),
-            Self::Held => row::<Held>(bytes),
-            Self::Dead => row::<Dead>(bytes),
-            Self::Failed => row::<Failed>(bytes),
-            Self::Audit => row::<KeptAudit>(bytes),
-            Self::AuditStream => row::<KeptStream>(bytes),
-            Self::Administration => row::<AdministrationRecord>(bytes),
-            Self::Secret => row::<KeptSecret>(bytes),
-            Self::Membership => row::<MemberRecord>(bytes),
-            Self::Act => row::<ActRecord>(bytes),
-        }
-    }
-
-    /// `bytes` stamped at `now` over `before`: the bytes to keep, the row,
-    /// and the identifier.
-    fn stamped(
-        self,
-        bytes: &[u8],
-        before: Option<&[u8]>,
-        now: u64,
-    ) -> Result<(Vec<u8>, Row, u128), PersistError> {
-        match self {
-            Self::Journey => stamp::<JourneyRecord>(bytes, before, now),
-            Self::Message => stamp::<MessageRecord>(bytes, before, now),
-            Self::Held => stamp::<Held>(bytes, before, now),
-            Self::Dead => stamp::<Dead>(bytes, before, now),
-            Self::Failed => stamp::<Failed>(bytes, before, now),
-            Self::Audit => stamp::<KeptAudit>(bytes, before, now),
-            Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
-            Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
-            Self::Secret => stamp::<KeptSecret>(bytes, before, now),
-            Self::Membership => stamp::<MemberRecord>(bytes, before, now),
-            Self::Act => stamp::<ActRecord>(bytes, before, now),
-        }
-    }
-}
-
-fn row<T: Columned>(bytes: &[u8]) -> Result<(Row, u128), PersistError> {
-    let record = T::from_bytes(bytes)?;
-    Ok((record.row(), record.id()))
-}
-
-fn stamp<T: Columned>(
-    bytes: &[u8],
-    before: Option<&[u8]>,
-    now: u64,
-) -> Result<(Vec<u8>, Row, u128), PersistError> {
-    let mut record = T::from_bytes(bytes)?;
-    let before = before.map(T::from_bytes).transpose()?;
-    record.stamp(now, before.as_ref());
-    Ok((record.bytes(), record.row(), record.id()))
-}
-
 /// The table named `name` in `database`.
 pub(crate) fn table(database: Database, name: &str) -> Option<&'static Table> {
     TABLES
         .iter()
         .find(|table| table.database == database && table.name == name)
 }
+
+/// The index entries of each record a batch made new and laid out as it
+/// made it, by its place, its kind and its key (`super::commit::Batch`).
+pub(crate) type Laid<'a> = HashMap<(&'a str, Vec<u8>), Vec<IndexEntry>>;
 
 /// One database's laid-out tables, as its records are written and its
 /// indexes read.
@@ -178,6 +63,28 @@ impl Columns {
     /// The tables of `database`.
     pub(crate) const fn of(database: Database) -> Self {
         Self { database }
+    }
+
+    /// `record`, of `kind`, made new — nothing is before it — stamped at
+    /// `now`: the bytes to keep, and the index entries of its table that go
+    /// with it; none where its kind is not a searchable table's. Laid out
+    /// from the record as it is: nothing read, nothing decoded.
+    ///
+    /// # Errors
+    ///
+    /// Where its table is not one the schema knows.
+    pub(crate) fn laid<T: Columned>(
+        &self,
+        kind: &str,
+        record: &mut T,
+        now: u64,
+    ) -> Result<(Vec<u8>, Vec<IndexEntry>), PersistError> {
+        let Some(searched) = Searched::of(self.database, kind) else {
+            return Ok((record.bytes(), Vec::new()));
+        };
+        let (bytes, row, id) = lay(record, None, now);
+        let keys = self.entries(searched.table(), &row, id)?;
+        Ok((bytes, keys.into_iter().map(|key| (key, Some(id))).collect()))
     }
 
     /// `changes` as they are written at `now` — each searchable record
@@ -194,19 +101,24 @@ impl Columns {
         changes: Vec<RecordChange<'a>>,
         now: u64,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
-        self.written_over(changes, now, |kind, key| store.get(kind, key))
+        let kept = |kind: &'a str, key: &[u8]| store.get(kind, key);
+        self.written_over((changes, HashMap::new()), now, kept)
     }
 
     /// As [`Columns::written`], each record a change replaces as `kept`
     /// says the store holds it: what a batch read of it already, read
-    /// once (`super::commit::Batch::before`).
+    /// once (`super::commit::Batch::before`); and each record `laid` holds
+    /// the index entries of — one the batch made new and laid out as it
+    /// made it (`super::commit::Batch::created`) — kept as it is: its first
+    /// change reads nothing it replaces, there being none, and is not
+    /// stamped again.
     ///
     /// # Errors
     ///
     /// As [`Columns::written`].
     pub(crate) fn written_over<'a>(
         &self,
-        changes: Vec<RecordChange<'a>>,
+        (changes, mut laid): (Vec<RecordChange<'a>>, Laid<'a>),
         now: u64,
         kept: impl Fn(&'a str, &[u8]) -> Result<Option<Vec<u8>>, PersistError>,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
@@ -218,10 +130,20 @@ impl Columns {
                 written.push((kind, key, value));
                 continue;
             };
-            let before = match latest.get(&(kind, key.clone())) {
+            let place = (kind, key);
+            let before = match latest.get(&place) {
                 Some(before) => before.clone(),
-                None => kept(kind, &key)?,
+                None => match laid.remove(&place) {
+                    Some(made) => {
+                        entries.extend(made);
+                        latest.insert(place.clone(), value.clone());
+                        written.push((place.0, place.1, value));
+                        continue;
+                    }
+                    None => kept(kind, &place.1)?,
+                },
             };
+            let (kind, key) = place;
             if let Some(before) = &before {
                 let (row, id) = searched.row(before)?;
                 let gone = self.entries(searched.table(), &row, id)?;
@@ -370,8 +292,9 @@ mod tests {
     use super::*;
     use crate::fixture::Memory;
     use crate::storage::{
-        AdministrationKind, Ask, AuditFacts, DeadMessage, Embedded, Hold, JourneyFacts,
-        MessageFacts, Publication, Query, Span, XmipStorage,
+        AdministrationKind, AdministrationRecord, Ask, AuditFacts, Dead, DeadMessage, Embedded,
+        Failed, Held, Hold, JourneyFacts, JourneyRecord, KeptAudit, KeptStream, MemberRecord,
+        MessageFacts, MessageRecord, Publication, Query, Span, XmipStorage,
     };
     use secret::KekName;
     use std::sync::{Arc, Mutex};

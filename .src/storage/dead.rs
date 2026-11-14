@@ -179,12 +179,9 @@ pub(crate) fn keep<R: Engine>(
     dead: &DeadMessage,
 ) -> Result<(), PersistError> {
     let about = (dead.queue, dead.message.value());
-    queue::place(store, batch, KINDS, about, |sequence| {
-        Dead {
-            sequence,
-            message: dead.clone(),
-        }
-        .bytes()
+    queue::place(store, batch, KINDS, about, |sequence| Dead {
+        sequence,
+        message: dead.clone(),
     })
     .map(drop)
 }
@@ -258,6 +255,9 @@ pub(crate) fn read_one<R: Engine>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{AuditFacts, MessageFacts, MessageRecord, Publication};
+    use codec::cursor::Cursor;
+    use xcore::AuditId;
 
     #[test]
     fn an_entry_and_a_replay_come_back_from_their_bytes_as_they_were() {
@@ -298,6 +298,94 @@ mod tests {
             );
         }
         assert!(Replayed::from_bytes(&[3]).is_err());
-        assert!(DeadMessage::from_bytes(&[2]).is_err(), "another form");
+        let refused = DeadMessage::read_numbered(&mut Cursor::new(&[2])).expect_err("another form");
+        assert_eq!(
+            refused.message,
+            "a Dead Message Queue entry of form 2, and this reads form 1"
+        );
+    }
+
+    /// An entry and the bytes it is written in: its form's number, then its
+    /// fields, each laid out by hand here, so a change of the form shows.
+    fn golden() -> (DeadMessage, Vec<u8>) {
+        let dead = DeadMessage {
+            queue: 9,
+            message: MessageId::new(1),
+            stream: StreamId::new(2),
+            node: "n".to_string(),
+            location: "l".to_string(),
+            received_unix_nanos: -7,
+            validation: vec![Named::new("a", "b")],
+            promoted: Vec::new(),
+            declines: vec![Named::new("c", "d")],
+            body: b"x".to_vec(),
+        };
+        let bytes = [
+            &[1][..],
+            &9u128.to_be_bytes(),
+            &1u128.to_be_bytes(),
+            &2u128.to_be_bytes(),
+            &[1, b'n', 1, b'l'],
+            &(-7i128).to_be_bytes(),
+            &[0, 0, 0, 1, 1, b'a', 1, b'b'],
+            &[0, 0, 0, 0],
+            &[0, 0, 0, 1, 1, b'c', 1, b'd'],
+            &[1, b'x'],
+        ]
+        .concat();
+        (dead, bytes)
+    }
+
+    #[test]
+    fn an_entry_is_written_kept_and_handed_on_in_the_bytes_of_its_form() {
+        let (message, entry) = golden();
+        let mut written = Vec::new();
+        message.write_numbered(&mut written);
+        assert_eq!(written, entry, "numbered");
+        let mut cursor = Cursor::new(&entry);
+        assert_eq!(DeadMessage::read_numbered(&mut cursor), Ok(message.clone()));
+        assert!(cursor.is_empty(), "read whole");
+        let dead = Dead {
+            sequence: 4,
+            message: message.clone(),
+        };
+        let kept = [&4u64.to_be_bytes()[..], &entry].concat();
+        assert_eq!(dead.bytes(), kept, "kept in its queue");
+        assert_eq!(Dead::from_bytes(&kept).expect("kept"), dead);
+        let standing = DeadEntry::Kept(Box::new(dead));
+        assert_eq!(standing.bytes(), [&[0][..], &kept].concat(), "as read");
+        let audit = AuditEntry {
+            id: AuditId::new(5),
+            body: Vec::new(),
+            audited: None,
+            facts: AuditFacts::default(),
+        };
+        let published = Publication {
+            message: MessageRecord {
+                message: MessageId::new(1),
+                body: Vec::new(),
+                facts: MessageFacts::default(),
+            },
+            journeys: Vec::new(),
+            held: Vec::new(),
+            dead: Some(message),
+            audit: audit.clone(),
+            claims: Vec::new(),
+            lease_nanos: 3,
+        };
+        let mut without = published.clone();
+        without.dead = None;
+        let before = without.message.bytes().len() + 8;
+        let handed = without.bytes();
+        let expected = [
+            &handed[..before],
+            &[1],
+            &entry,
+            &audit.bytes(),
+            &[0, 0, 0, 0],
+            &3u64.to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(published.bytes(), expected, "handed on in its Publication");
     }
 }

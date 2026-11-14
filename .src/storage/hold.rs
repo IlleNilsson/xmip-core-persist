@@ -165,15 +165,12 @@ pub(crate) fn keep<R: Engine>(
     kept: &Hold,
 ) -> Result<(), PersistError> {
     let about = (kept.queue, kept.journey.value());
-    queue::place(store, batch, KINDS, about, |sequence| {
-        Held {
-            sequence,
-            hold: kept.clone(),
-            held_unix_nanos: 0,
-            failed: false,
-            due_unix_nanos: None,
-        }
-        .bytes()
+    queue::place(store, batch, KINDS, about, |sequence| Held {
+        sequence,
+        hold: kept.clone(),
+        held_unix_nanos: 0,
+        failed: false,
+        due_unix_nanos: None,
     })
     .map(drop)
 }

@@ -1,17 +1,19 @@
 //! The `membership` table held to the millisecond rule: a node's row
 //! written within a millisecond beyond Xmip Storage's own write of an
 //! administration record, over the history of many starts kept, and a wait
-//! on the table woken within a millisecond of a row's write being asked.
+//! on the table woken within a millisecond of a row's write being asked,
+//! beside a plain wake measured in the same rounds (`super::Waiting`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use xcore::latency::Rounds;
 use xmip_core_persist::fixture::crowd::node;
 use xmip_core_persist::storage::{
     AdministrationKind, AdministrationRecord, MemberRecord, Position, Watched, XmipStorage,
 };
 
-use super::{ROUNDS, held_to_the_millisecond, woken};
+use super::{ROUNDS, WAKES, Waiting};
 
 /// How many times each node of the test cluster started before the rows
 /// timed: the history kept, never deleted (ADR-0040).
@@ -114,24 +116,19 @@ fn a_wait_on_the_membership_is_woken_within_a_millisecond_of_a_row_s_write() {
     // Where the table stands: a node started again rewrites its row before
     // too, so a write moves it by one or by two.
     let mut stands = 0;
-    let woken = (0..ROUNDS)
-        .map(|round| {
-            let seen = Position {
-                watched: Watched::Membership,
-                at: stands,
-            };
-            let place = usize::try_from(round).expect("a place");
-            let process = u128::from(round) + 1;
-            let (moved, took) = woken(&node, seen, || {
-                node.write_member(&start(process, place)).expect("written");
-            });
-            assert!(moved[0].position.at > stands, "{moved:?}");
-            stands = moved[0].position.at;
-            took
-        })
-        .collect();
-    held_to_the_millisecond(
-        "a wait on the membership woken after a node's row was asked written",
-        woken,
-    );
+    let (waiting, mut rounds) = (Waiting::on(&node), Rounds::crossing(WAKES));
+    for round in 0..ROUNDS {
+        let seen = Position {
+            watched: Watched::Membership,
+            at: stands,
+        };
+        let place = usize::try_from(round).expect("a place");
+        let process = u128::from(round) + 1;
+        let moved = waiting.round(&mut rounds, seen, || {
+            node.write_member(&start(process, place)).expect("written");
+        });
+        assert!(moved[0].position.at > stands, "{moved:?}");
+        stands = moved[0].position.at;
+    }
+    rounds.hold("a wait on the membership woken after a node's row was asked written");
 }

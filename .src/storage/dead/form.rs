@@ -5,7 +5,7 @@
 use codec::CodecError;
 use codec::cursor::Cursor;
 use codec::field;
-use codec::form::Form;
+use codec::form::{Form, numbered, opened};
 use codec::writer::ByteWriter;
 use xcore::{MessageId, StreamId};
 
@@ -29,9 +29,29 @@ impl Form for Named {
 /// The form's number, the first byte of every entry written.
 const FORM: u8 = 1;
 
+impl DeadMessage {
+    /// The entry after its form's number, written after what `out` holds:
+    /// how its queue keeps it ([`Dead`]) and a Publication hands it on.
+    pub(crate) fn write_numbered(&self, out: &mut Vec<u8>) {
+        numbered(out, FORM, self);
+    }
+
+    /// An entry [`DeadMessage::write_numbered`] wrote, read from where
+    /// `cursor` is.
+    ///
+    /// # Errors
+    /// Another form's number is there, said in words, or the entry is not
+    /// one ([`Form::read`]).
+    pub(crate) fn read_numbered(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        opened(cursor, FORM, "a Dead Message Queue entry")?;
+        Self::read(cursor)
+    }
+}
+
+/// The entry's fields, without the form's number
+/// [`DeadMessage::write_numbered`] writes before them.
 impl Form for DeadMessage {
     fn write(&self, out: &mut Vec<u8>) {
-        out.byte(FORM);
         out.u128_be(self.queue);
         out.u128_be(self.message.value());
         out.u128_be(self.stream.value());
@@ -45,12 +65,6 @@ impl Form for DeadMessage {
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        let form = cursor.byte()?;
-        if form != FORM {
-            return Err(CodecError::new(format!(
-                "a Dead Message Queue entry of form {form}, and this reads form {FORM}"
-            )));
-        }
         Ok(Self {
             queue: cursor.u128_be()?,
             message: MessageId::new(cursor.u128_be()?),
@@ -69,13 +83,13 @@ impl Form for DeadMessage {
 impl Form for Dead {
     fn write(&self, out: &mut Vec<u8>) {
         out.u64_be(self.sequence);
-        self.message.write(out);
+        self.message.write_numbered(out);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             sequence: cursor.u64_be()?,
-            message: DeadMessage::read(cursor)?,
+            message: DeadMessage::read_numbered(cursor)?,
         })
     }
 }

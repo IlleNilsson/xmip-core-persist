@@ -11,7 +11,7 @@ use xcore::{AuditId, Clock, JourneyId, MessageId};
 use super::{Counted, Memory};
 use crate::EncryptedStore;
 use crate::storage::{
-    AuditEntry, AuditFacts, Embedded, Failure, HandOn, Hold, JourneyFacts, JourneyRecord,
+    AuditEntry, AuditFacts, Claim, Embedded, Failure, HandOn, Hold, JourneyFacts, JourneyRecord,
     MessageFacts, MessageRecord, Publication, Wait, XmipStorage,
 };
 
@@ -74,6 +74,13 @@ pub fn node() -> (Node, Arc<Pinned>) {
 ///
 /// Where the publication is refused.
 pub fn published(node: &Node, ids: std::ops::Range<u128>) {
+    node.publish(publication(ids)).expect("published");
+}
+
+/// The Publication of the Messages of the Journeys `ids`, each held in
+/// [`QUEUE`], as [`published`] writes it.
+#[must_use]
+pub fn publication(ids: std::ops::Range<u128>) -> Publication {
     let journey = |id| JourneyRecord {
         journey: JourneyId::new(id),
         body: b"to send".to_vec(),
@@ -84,7 +91,7 @@ pub fn published(node: &Node, ids: std::ops::Range<u128>) {
         journey: JourneyId::new(id),
         body: Vec::new(),
     };
-    node.publish(Publication {
+    Publication {
         message: MessageRecord {
             message: MessageId::new(ids.start),
             body: Vec::new(),
@@ -101,8 +108,7 @@ pub fn published(node: &Node, ids: std::ops::Range<u128>) {
         },
         claims: Vec::new(),
         lease_nanos: 0,
-    })
-    .expect("published");
+    }
 }
 
 /// The Message of the Journey `id` claimed by `holder` and handed on as
@@ -113,13 +119,22 @@ pub fn published(node: &Node, ids: std::ops::Range<u128>) {
 /// Where the claim or the hand-on is refused.
 pub fn handed_by(node: &Node, holder: &str, id: u128, how: impl FnOnce(&mut HandOn)) {
     let claim = node.claim(JourneyId::new(id), holder, id, LEASE);
-    let mut hand_on = HandOn {
-        claim: claim.expect("asked").expect("claimed"),
+    let mut hand_on = hand_on(claim.expect("asked").expect("claimed"));
+    how(&mut hand_on);
+    assert!(node.hand_on(&hand_on).expect("handed on"));
+}
+
+/// The hand-on of the Message `claim` holds, its Journey tried and nothing
+/// else done, as [`handed_by`] starts it.
+#[must_use]
+pub fn hand_on(claim: Claim) -> HandOn {
+    HandOn {
         result: JourneyRecord {
-            journey: JourneyId::new(id),
+            journey: claim.journey,
             body: b"tried".to_vec(),
             facts: JourneyFacts::default(),
         },
+        claim,
         messages: Vec::new(),
         next: Vec::new(),
         leaves: Vec::new(),
@@ -129,9 +144,7 @@ pub fn handed_by(node: &Node, holder: &str, id: u128, how: impl FnOnce(&mut Hand
         cleared: Vec::new(),
         waits: None,
         kept_for_nanos: None,
-    };
-    how(&mut hand_on);
-    assert!(node.hand_on(&hand_on).expect("handed on"));
+    }
 }
 
 /// A hand-on that waits `after_nanos` to be retried.

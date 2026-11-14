@@ -23,15 +23,32 @@
 //!   thousand starts of each node kept, and a wait on the table is woken
 //!   within a millisecond of a row's write being asked (`membership`;
 //!   2026-11-13).
+//!
+//! Each wake is held as every wait that works as it wakes is, beside a
+//! plain wake measured in the same rounds (`xcore::latency::Rounds`): its
+//! wall clock under the millisecond plus a plain wake, and the process's
+//! processor time across it under the millisecond plus a plain wake's,
+//! each the fastest of five. One thread waits, kept across the rounds
+//! (`Waiting`). Until 2026-11-14 the wall clock's median and 99th
+//! percentile were held under a millisecond flat, and each round started
+//! a waiting thread of its own: on a machine the owner's own programs kept
+//! a quarter to half busy they failed alone, before the round of changes
+//! they were run for as much as after it.
 
 mod membership;
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// How many wakes are timed.
 const ROUNDS: u64 = 200;
 
+/// How many threads a write wakes where a plain wake wakes one: the
+/// waiting thread.
+const WAKES: u32 = 1;
+
+use xcore::latency::Rounds;
+use xcore::processor_time::ProcessorTime;
 use xmip_core_persist::fixture::crowd::{Node, QUEUE, crowded, handed_by, node, published};
 use xmip_core_persist::storage::{
     DuePart, Moved, Position, Waiter, Watched, XmipStorage, page_across_a_gap,
@@ -56,61 +73,80 @@ fn a_read_of_what_is_due_among_many_held_takes_under_a_millisecond() {
     assert!(fastest < Duration::from_millis(1), "{fastest:?}");
 }
 
-/// One wake: `seen` waited on in `node`, answered with what is due in a
-/// queue that moved, and `write` asked once the node lists the wait: what
-/// it answered, and how long after `write` was asked.
-fn woken(node: &Arc<Node>, seen: Position, write: impl FnOnce()) -> (Vec<Moved>, Duration) {
-    let waiter = Arc::new(Waiter::new());
-    let (waiting, held) = (Arc::clone(node), Arc::clone(&waiter));
-    let woken = std::thread::spawn(move || {
-        let moved = waiting.wait_queues(&[seen], (Duration::from_secs(60), 64), &held);
-        (moved.expect("answered"), Instant::now())
-    });
-    // Listed: held by the thread, and by the node twice.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while Arc::strong_count(&waiter) < 4 {
-        assert!(Instant::now() < deadline, "never listed");
-        std::thread::yield_now();
-    }
-    let asked = Instant::now();
-    write();
-    let (moved, at) = woken.join().expect("woken");
-    assert_eq!(moved.len(), 1, "{moved:?}");
-    (moved, at - asked)
+/// One thread waiting on a node, kept across rounds: each round hands it
+/// what to wait on, and it answers with what moved and when it woke, so a
+/// round times a wake and never a thread's start.
+struct Waiting {
+    asked: mpsc::Sender<Position>,
+    woke: mpsc::Receiver<(Vec<Moved>, Instant)>,
+    waiter: Arc<Waiter>,
 }
 
-/// The median and the 99th percentile of `woken`, said as `what`, each held
-/// under a millisecond.
-fn held_to_the_millisecond(what: &str, mut woken: Vec<Duration>) {
-    woken.sort();
-    let median = woken[woken.len() / 2];
-    let slowest = woken[woken.len() * 99 / 100];
-    eprintln!("{what}: median {median:?}, 99th percentile {slowest:?}");
-    let millisecond = Duration::from_millis(1);
-    assert!(median < millisecond, "the median {median:?}");
-    assert!(slowest < millisecond, "the 99th percentile {slowest:?}");
+impl Waiting {
+    /// A thread waiting on `node` for what it is handed.
+    fn on(node: &Arc<Node>) -> Self {
+        let waiter = Arc::new(Waiter::new());
+        let (asked, asks) = mpsc::channel::<Position>();
+        let (answer, woke) = mpsc::channel();
+        let (waiting, held) = (Arc::clone(node), Arc::clone(&waiter));
+        std::thread::spawn(move || {
+            for seen in asks {
+                let moved = waiting.wait_queues(&[seen], (Duration::from_secs(60), 64), &held);
+                let woke = (moved.expect("answered"), Instant::now());
+                if answer.send(woke).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            asked,
+            woke,
+            waiter,
+        }
+    }
+
+    /// One of `rounds`: `seen` waited on, answered with what is due in a
+    /// queue that moved, and `write` asked once the node lists the wait,
+    /// timed from then to the wait woken, by the wall clock and by the
+    /// process's processor time, a plain wake beside it. What it answered.
+    fn round(&self, rounds: &mut Rounds, seen: Position, write: impl FnOnce()) -> Vec<Moved> {
+        self.asked.send(seen).expect("the waiting thread waits");
+        // Listed: held here and by the waiting thread, and by the node twice.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Arc::strong_count(&self.waiter) < 4 {
+            assert!(Instant::now() < deadline, "never listed");
+            std::thread::yield_now();
+        }
+        let (asked, from) = (Instant::now(), ProcessorTime::process());
+        write();
+        let (moved, at) = self
+            .woke
+            .recv_timeout(Duration::from_secs(60))
+            .expect("woken");
+        rounds.took.push(at - asked);
+        rounds.worked.push(from.elapsed());
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        rounds.beside();
+        moved
+    }
 }
 
 #[test]
 fn a_wait_on_a_queue_is_woken_within_a_millisecond_of_the_publication_into_it() {
     let (node, _) = node();
     let node = Arc::new(node);
-    let woken = (0..ROUNDS)
-        .map(|place| {
-            let id = u128::from(place) + 1;
-            let (moved, took) = woken(&node, Position::queue(QUEUE, place), || {
-                published(&node, id..id + 1);
-            });
-            let due = moved[0].due.as_ref().expect("what is due, with the answer");
-            let held = usize::try_from(place + 1).expect("a count").min(64);
-            assert_eq!(due.held.len(), held, "every Message due, at most as asked");
-            took
-        })
-        .collect();
-    held_to_the_millisecond(
-        "a wait on a queue woken, with what is due, after the Publication into it was asked",
-        woken,
-    );
+    let (waiting, mut rounds) = (Waiting::on(&node), Rounds::crossing(WAKES));
+    for place in 0..ROUNDS {
+        let id = u128::from(place) + 1;
+        let moved = waiting.round(&mut rounds, Position::queue(QUEUE, place), || {
+            published(&node, id..id + 1);
+        });
+        let due = moved[0].due.as_ref().expect("what is due, with the answer");
+        let held = usize::try_from(place + 1).expect("a count").min(64);
+        assert_eq!(due.held.len(), held, "every Message due, at most as asked");
+    }
+    let what = "a wait on a queue woken, with what is due, after the Publication into it was asked";
+    rounds.hold(what);
 }
 
 #[test]
@@ -119,23 +155,20 @@ fn a_wait_on_a_queue_s_head_is_woken_within_a_millisecond_of_the_hand_on_taking_
     let node = Arc::new(node);
     let holder = configure::fixture::test_cluster().node_scope(0);
     published(&node, 1..u128::from(ROUNDS) + 1);
-    let woken = (0..ROUNDS)
-        .map(|taken| {
-            let head = Position {
-                watched: Watched::Head(QUEUE),
-                at: taken,
-            };
-            let id = u128::from(taken) + 1;
-            let (_, took) = woken(&node, head, || {
-                handed_by(&node, &holder, id, |sent| sent.leaves = vec![QUEUE]);
-            });
-            took
-        })
-        .collect();
-    held_to_the_millisecond(
+    let (waiting, mut rounds) = (Waiting::on(&node), Rounds::crossing(WAKES));
+    for taken in 0..ROUNDS {
+        let head = Position {
+            watched: Watched::Head(QUEUE),
+            at: taken,
+        };
+        let id = u128::from(taken) + 1;
+        waiting.round(&mut rounds, head, || {
+            handed_by(&node, &holder, id, |sent| sent.leaves = vec![QUEUE]);
+        });
+    }
+    rounds.hold(
         "a wait on a sequence's head woken after the claim and the hand-on taking its first out \
          were asked",
-        woken,
     );
 }
 

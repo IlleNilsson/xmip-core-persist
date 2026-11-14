@@ -1,7 +1,7 @@
 //! The embedded Storage node opened: its three stores, each brought to this
 //! build's schema, and its one writer started (`super`).
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use secret::{KekName, KeyStore};
@@ -16,7 +16,21 @@ use super::super::watch::Watch;
 use super::{Embedded, versioned};
 use crate::{EncryptedStore, Engine, PersistError};
 
+/// How many queues' places by when each is due a Storage node's writer
+/// keeps (`super::super::due::Kept`), where its `[tuning]
+/// storage_due_places` does not say: some 100 bytes each, under two
+/// megabytes in all, above the queues and sequences a node's batches write
+/// between two of one queue's (ADR-0018, amendment 2026-11-14).
+pub const DUE_QUEUES: usize = 16_384;
+
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
+    /// At most `most` queues' places by when each is due kept by its
+    /// writer, the first kept let go of first past it: its `[tuning]
+    /// storage_due_places`.
+    pub fn keep_due(&self, most: usize) {
+        self.due.store(most, Ordering::Relaxed);
+    }
+
     /// The node's databases over `runtime`, `administration` and `audit`,
     /// each sealed under its own data key wrapped by `keys` under `kek`.
     ///
@@ -60,6 +74,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         let runtime_columns = Arc::new(Columns::of(Database::Runtime));
         let epoch = Arc::new(AtomicU64::new(0));
         let watch = Arc::new(Watch::default());
+        let due = Arc::new(AtomicUsize::new(DUE_QUEUES));
         let committer = Committer::start(
             Arc::clone(&runtime),
             (
@@ -68,6 +83,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
                 Arc::clone(&epoch),
                 Arc::clone(&watch),
             ),
+            Arc::clone(&due),
         )?;
         Ok(Self {
             epoch,
@@ -83,6 +99,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             keeping: Mutex::new(()),
             versions,
             watch,
+            due,
         })
     }
 }

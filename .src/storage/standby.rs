@@ -120,6 +120,9 @@ pub struct Timings {
     /// The most of what no node waits on now its primary keeps where its
     /// writer left it (`super::watch`, [`super::UNWAITED`] by default).
     pub unwaited: usize,
+    /// The most queues' places by when each is due its primary's writer
+    /// keeps ([`super::DUE_QUEUES`] by default).
+    pub due_places: usize,
 }
 
 /// One database as a Storage node keeps it: its engine, its writes kept.

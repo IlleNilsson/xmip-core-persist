@@ -98,16 +98,13 @@ pub(crate) fn enter<R: Engine>(
         return Ok(());
     };
     hold::mark(store, batch, failure.queue, place, true)?;
-    queue::place(store, batch, KINDS, about, |sequence| {
-        Failed {
-            queue: failure.queue,
-            sequence,
-            journey,
-            place,
-            reason: failure.reason.clone(),
-            failed_unix_nanos: now,
-        }
-        .bytes()
+    queue::place(store, batch, KINDS, about, |sequence| Failed {
+        queue: failure.queue,
+        sequence,
+        journey,
+        place,
+        reason: failure.reason.clone(),
+        failed_unix_nanos: now,
     })
     .map(drop)
 }
