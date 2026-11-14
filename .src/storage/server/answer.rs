@@ -79,20 +79,17 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
         Request::ReadKeptAudit(id) => storage
             .read_kept_audit(id)
             .map(|entry| Answer::Audit(entry.map(Box::new))),
-        Request::WriteAdministration(record) => {
-            storage.write_administration(&record).map(|()| Answer::Done)
-        }
-        Request::ReadAdministration(kind, id) => storage
-            .read_administration(kind, id)
-            .map(Answer::Administration),
-        Request::RemoveAdministration(kind, id) => storage
-            .remove_administration(kind, id)
-            .map(|()| Answer::Done),
-        Request::WriteSecret(secret) => storage.write_secret(&secret).map(|()| Answer::Done),
-        Request::ReadSecret(name) => storage
-            .read_secret(&name)
-            .map(|secret| Answer::Secret(secret.map(Box::new))),
-        Request::ListSecrets => storage.list_secrets().map(Answer::Secrets),
+        request @ (Request::WriteAdministration(_)
+        | Request::ReadAdministration(..)
+        | Request::RemoveAdministration(..)
+        | Request::WriteSecret(_)
+        | Request::ReadSecret(_)
+        | Request::ListSecrets
+        | Request::WriteMember(_)
+        | Request::ReadMembers
+        | Request::AskAct(_)
+        | Request::DecideAct(..)
+        | Request::ReadActs(..)) => administered(storage, request),
         // Answered once durable here: the client's caller acknowledges on it.
         Request::Publish(publication) => storage
             .publish(*publication)
@@ -137,6 +134,43 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
         }),
     };
     answered.unwrap_or_else(refused)
+}
+
+/// What `storage` answers `request`, an operation on the administration
+/// database: its records, its secrets, the cluster's membership and the
+/// operator's acts.
+fn administered(storage: &dyn XmipStorage, request: Request) -> Result<Answer, PersistError> {
+    match request {
+        Request::WriteAdministration(record) => {
+            storage.write_administration(&record).map(|()| Answer::Done)
+        }
+        Request::ReadAdministration(kind, id) => storage
+            .read_administration(kind, id)
+            .map(Answer::Administration),
+        Request::RemoveAdministration(kind, id) => storage
+            .remove_administration(kind, id)
+            .map(|()| Answer::Done),
+        Request::WriteSecret(secret) => storage.write_secret(&secret).map(|()| Answer::Done),
+        Request::ReadSecret(name) => storage
+            .read_secret(&name)
+            .map(|secret| Answer::Secret(secret.map(Box::new))),
+        Request::ListSecrets => storage.list_secrets().map(Answer::Secrets),
+        Request::WriteMember(member) => storage.write_member(&member).map(|()| Answer::Done),
+        Request::ReadMembers => storage.read_members().map(Answer::Members),
+        Request::AskAct(act) => storage.ask_act(&act).map(|a| Answer::Act(Box::new(a))),
+        Request::DecideAct(act, outcome, said) => storage
+            .decide_act(act, (outcome, &said))
+            .map(|decided| Answer::Act(Box::new(decided))),
+        Request::ReadActs(node, after, most, open) => storage
+            .read_acts(&node, (after, most), open)
+            .map(Answer::Acts),
+        other => Err(PersistError::Failed {
+            reason: format!(
+                "{} is no operation on the administration database",
+                other.operation().1
+            ),
+        }),
+    }
 }
 
 /// What an operation that failed answers: a record that failed its tag,

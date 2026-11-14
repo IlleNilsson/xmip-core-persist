@@ -49,6 +49,11 @@ impl Request {
             Self::Wait(..) => ("read", "wait_queues"),
             Self::EndWait(_) => ("read", "end_wait"),
             Self::ReadClaimed(..) => ("read", "read_claimed"),
+            Self::AskAct(_) => ("write", "ask_act"),
+            Self::DecideAct(..) => ("write", "decide_act"),
+            Self::ReadActs(..) => ("read", "read_acts"),
+            Self::WriteMember(_) => ("write", "write_member"),
+            Self::ReadMembers => ("read", "read_members"),
         }
     }
 }

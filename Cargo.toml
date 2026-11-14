@@ -26,7 +26,8 @@ expect_used = "allow"
 
 [dependencies]
 # The identifiers a record is keyed by are the estate's, not this crate's
-# (ADR-0044).
+# (ADR-0044); and the audit chain's rule, its start, each next link and its
+# digest (xcore::audit_chain, ADR-0070 clause 5).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The key home: the data key a store's records are sealed under, wrapped by a
 # key-encryption key of the platform's key store, and the sealing itself
@@ -37,8 +38,11 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # admitted by it before it is answered (server.rs).
 authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main" }
 # Xmip Storage's records and its wire, read and written over the estate's
-# one byte cursor and writer; and SHA-1, which RFC 9562 names for a
-# name-based UUID, the identifier a held Journey's queue is found by.
+# one byte cursor and writer; SHA-1, which RFC 9562 names for a
+# name-based UUID, the identifier a held Journey's queue is found by; and
+# the estate's one SHA-256 (codec::digest): a Stream's bytes as they pass
+# once, kept in its record, what a read of an audit record's copy is held
+# to (ADR-0070), and the schema's fingerprint.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # The estate's one TCP connect, bounded, Nagle off, and the most a
 # connection is read for: how a node reaches a Storage node.
@@ -46,14 +50,14 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # Xmip's own TLS, mutual, between a node and a Storage node (ADR-0063,
 # amendment 2026-10-01).
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
+# The one turn every round robin of the cluster takes, the Storage nodes'
+# included (`cluster::Rotation`; ADR-0056, amendment 2026-11-13): the
+# cluster's pure part, without its sync plane.
+xcluster = { package = "xmip-core-cluster", git = "https://github.com/IlleNilsson/xmip-core-cluster", branch = "main", default-features = false }
 # SQL the language: how a script quotes a name and writes a literal, in
 # each server's dialect (ADR-0044, amendment 2026-10-12). The schema's own
 # types, roles and databases stay here.
 sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
-# SHA-256 of a Stream's bytes as they pass once, kept in its record, and
-# what a read of an audit record's copy is held to (ADR-0070); the crate
-# the estate's archive checksum uses.
-sha2 = "0.11"
 
 [features]
 # The engine in memory and the checks every engine runs against itself, from

@@ -40,18 +40,21 @@ use super::row;
 use super::schema::DatabaseVersion;
 use super::stream::{StreamRecord, chunk_key};
 use super::watch::{self, Moved, Position, Waiter, Watch};
-use super::{FailedQueue, SecretEntry, SecretRecord, XmipStorage};
+use super::{ActOutcome, ActRecord, FailedQueue, SecretEntry, SecretRecord, XmipStorage};
 use crate::{EncryptedStore, Engine, PersistError};
 use xcore::SecretName;
 
+mod acts;
 mod administration;
 mod epoch;
 mod keeper;
+mod membership;
 mod opened;
 mod searched;
 mod secrets;
 mod submitted;
 mod versioned;
+mod watched;
 
 /// The embedded Storage node's three databases, and the one writer to the
 /// first. The audit database is on the administration database's engine,
@@ -227,7 +230,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         (bound, due): (Duration, u32),
         waiter: &Arc<Waiter>,
     ) -> Result<Vec<Moved>, PersistError> {
-        let moved = self.watch.wait(&self.runtime, (seen, bound), waiter)?;
+        let stands = |watched| self.stands(watched);
+        let moved = self.watch.wait(&stands, (seen, bound), waiter)?;
         let now = self.clock.unix_timestamp_nanos();
         Ok(watch::answered(&self.runtime, moved, (due, now)))
     }
@@ -359,25 +363,33 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.secret_list()
     }
 
+    fn write_member(&self, member: &super::MemberRecord) -> Result<(), PersistError> {
+        self.member_written(member)
+    }
+
+    fn read_members(&self) -> Result<Vec<super::MemberRecord>, PersistError> {
+        self.members_now()
+    }
+
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError> {
+        self.act_asked(act)
+    }
+
+    fn decide_act(&self, act: u128, said: (ActOutcome, &str)) -> Result<ActRecord, PersistError> {
+        self.act_decided(act, said)
+    }
+
+    fn read_acts(
+        &self,
+        node: &str,
+        page: (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError> {
+        self.acts_read(node, page, open)
+    }
+
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
         self.searched(query)
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// How many wait on `watched` now: what a test waits for before it
-    /// writes, so a wait is listed rather than begun after the write.
-    #[must_use]
-    pub fn waiting_on(&self, watched: super::Watched) -> usize {
-        self.watch.waiting_on(watched)
-    }
-
-    /// How many counts its watch keeps, and of them how many none waits on
-    /// now: what a test of its bound reads.
-    #[must_use]
-    pub fn watch_kept(&self) -> (usize, usize) {
-        self.watch.kept()
     }
 }
 

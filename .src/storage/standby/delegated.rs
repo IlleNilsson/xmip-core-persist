@@ -11,10 +11,10 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use crate::PersistError;
 use crate::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed, DeadEntry, DeadQueue,
-    DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, InstanceRecord, JourneyRecord,
-    KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
-    StreamRecord, Turn, Waiter, XmipStorage,
+    ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed,
+    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue,
+    InstanceRecord, JourneyRecord, KeptAudit, MessageRecord, Moved, Position, Publication, Query,
+    Replay, Replayed, StreamChunk, StreamRecord, Turn, Waiter, XmipStorage,
 };
 
 /// What answers now, or why nothing does.
@@ -258,6 +258,35 @@ impl XmipStorage for Delegated {
 
     fn list_secrets(&self) -> Result<Vec<crate::storage::SecretEntry>, PersistError> {
         self.now()?.storage.list_secrets()
+    }
+
+    fn write_member(&self, member: &crate::storage::MemberRecord) -> Result<(), PersistError> {
+        self.now()?.storage.write_member(member)
+    }
+
+    fn read_members(&self) -> Result<Vec<crate::storage::MemberRecord>, PersistError> {
+        self.now()?.storage.read_members()
+    }
+
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError> {
+        self.now()?.storage.ask_act(act)
+    }
+
+    fn decide_act(
+        &self,
+        act: u128,
+        decided: (ActOutcome, &str),
+    ) -> Result<ActRecord, PersistError> {
+        self.now()?.storage.decide_act(act, decided)
+    }
+
+    fn read_acts(
+        &self,
+        node: &str,
+        page: (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError> {
+        self.now()?.storage.read_acts(node, page, open)
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {

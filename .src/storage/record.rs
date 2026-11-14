@@ -87,12 +87,12 @@ impl Claim {
 
 /// What the administration database keeps — what must be shared and kept
 /// over time, and never configuration (`deployment-model.md` section 7).
+/// Cluster membership is a table of its own, `membership`
+/// (`super::membership`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AdministrationKind {
     /// A node's registration.
     Registration,
-    /// Cluster membership.
-    Membership,
     /// An installed Module.
     Module,
     /// An available Handler or Extension.
@@ -105,9 +105,8 @@ pub enum AdministrationKind {
 
 impl AdministrationKind {
     /// Every kind, in the order the record lists them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Registration,
-        Self::Membership,
         Self::Module,
         Self::Handler,
         Self::Deployment,
@@ -119,7 +118,6 @@ impl AdministrationKind {
     pub const fn word(self) -> &'static str {
         match self {
             Self::Registration => "registration",
-            Self::Membership => "membership",
             Self::Module => "module",
             Self::Handler => "handler",
             Self::Deployment => "deployment",
@@ -130,11 +128,10 @@ impl AdministrationKind {
     fn number(self) -> u8 {
         match self {
             Self::Registration => 0,
-            Self::Membership => 1,
-            Self::Module => 2,
-            Self::Handler => 3,
-            Self::Deployment => 4,
-            Self::Operator => 5,
+            Self::Module => 1,
+            Self::Handler => 2,
+            Self::Deployment => 3,
+            Self::Operator => 4,
         }
     }
 
@@ -314,5 +311,6 @@ mod tests {
         let longer = [bytes.as_slice(), &[0]].concat();
         assert!(Claim::from_bytes(&longer).is_err());
         assert!(AdministrationKind::from_bytes(&[9]).is_err());
+        assert!(AdministrationKind::from_bytes(&[5]).is_err(), "five kinds");
     }
 }

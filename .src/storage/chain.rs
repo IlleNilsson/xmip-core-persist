@@ -24,6 +24,12 @@
 //! the keeper took as its chunks passed, and a Stream's bytes through
 //! theirs; a read of either is held to it (ADR-0070 clause 4).
 //!
+//! **How it is chained** is the estate's one rule (`xcore::audit_chain`):
+//! where a writer's chain starts, the number and the digest before it each
+//! next record takes from the head, the head kept as its number and its
+//! digest, and the SHA-256 the digest is; the file sink chains by the same
+//! rule. Until 2026-11-13 this file chained by hand over `sha2`.
+//!
 //! The walk that says where a chain breaks is the audit capability's, one
 //! for every log (`xmip-core-audit`, `audit_chain::walk`); what it walks
 //! here is found by the kept table's index on the writer and the number
@@ -31,8 +37,8 @@
 
 use codec::form::Form;
 use codec::writer::ByteWriter;
-use sha2::{Digest as _, Sha256};
 use xcore::StreamId;
+use xcore::audit_chain::{self, Head};
 
 use super::audit_entry::AuditEntry;
 use super::facts::AuditFacts;
@@ -68,7 +74,7 @@ pub fn canonical_form(kept: &KeptAudit, streams: &[StreamRecord]) -> Vec<u8> {
 /// The SHA-256 of the canonical form of `kept`, which carries `streams`.
 #[must_use]
 pub fn chain_digest(kept: &KeptAudit, streams: &[StreamRecord]) -> [u8; DIGEST] {
-    Sha256::digest(canonical_form(kept, streams)).into()
+    audit_chain::digest(&canonical_form(kept, streams))
 }
 
 /// The Streams `entry` carries, in its order, each once.
@@ -96,19 +102,14 @@ pub(crate) fn link<A: Engine>(
     streams: &[StreamRecord],
 ) -> Result<RecordChange<'static>, PersistError> {
     let writer = kept.facts.writer.as_bytes().to_vec();
-    let (position, previous) = match store.get(CHAIN, &writer)? {
-        Some(head) => {
-            let (number, digest) = head.split_at_checked(8).ok_or_else(cut)?;
-            let number = u64::from_be_bytes(number.try_into().map_err(|_| cut())?);
-            (number, digest.try_into().map_err(|_| cut())?)
-        }
-        None => (0, [0; DIGEST]),
+    let head = match store.get(CHAIN, &writer)? {
+        Some(bytes) => Head::from_bytes(&bytes).ok_or_else(cut)?,
+        None => Head::GENESIS,
     };
-    kept.facts.position = position + 1;
-    kept.facts.previous = previous;
+    (kept.facts.position, kept.facts.previous) = head.next();
     kept.facts.digest = chain_digest(kept, streams);
-    let head = [&kept.facts.position.to_be_bytes()[..], &kept.facts.digest].concat();
-    Ok((CHAIN, writer, Some(head)))
+    let moved = head.after(kept.facts.digest);
+    Ok((CHAIN, writer, Some(moved.bytes().to_vec())))
 }
 
 fn cut() -> PersistError {
@@ -233,6 +234,34 @@ mod tests {
         assert_eq!(chain.len(), 3);
         chained(&chain);
     }
+
+    /// The digest of a record kept before the chain's rule moved below
+    /// Xmip Storage (2026-11-13), held: every chain already kept still
+    /// verifies.
+    #[test]
+    fn a_kept_record_digests_as_it_always_has() {
+        let entry = KeptAudit {
+            id: AuditId::new(7),
+            streams: vec![StreamId::new(2)],
+            facts: AuditFacts {
+                writer: "edge-01".to_string(),
+                position: 3,
+                previous: [9; DIGEST],
+                ..AuditFacts::default()
+            },
+        };
+        let stream = StreamRecord {
+            stream: StreamId::new(2),
+            length: 3,
+            chunks: 1,
+            digest: [4; DIGEST],
+            written_unix_nanos: 5,
+        };
+        let digest = chain_digest(&entry, &[stream]);
+        assert_eq!(codec::hex::encode(&digest), GOLDEN);
+    }
+
+    const GOLDEN: &str = "f69c6d732cec0c1843b5b2238b9e00b8ac152f06acd1ee9bcabf19c0625a12d6";
 
     #[test]
     fn a_stream_s_record_is_inside_the_canonical_form() {

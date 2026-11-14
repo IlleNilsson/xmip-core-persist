@@ -36,6 +36,7 @@
 //! Xmip's TLS; and whatever serves a database server, which follows. Nothing
 //! above them knows which it has.
 
+mod act;
 mod audit_entry;
 mod audited;
 #[cfg(test)]
@@ -57,6 +58,7 @@ mod hand_on;
 mod hold;
 mod instance;
 mod kept_audit;
+mod membership;
 mod monotonic_clock;
 mod origin;
 mod publication;
@@ -72,6 +74,7 @@ mod stream;
 mod watch;
 mod wire;
 
+pub use act::{ActOutcome, ActRecord};
 pub use audit_entry::{AuditBody, AuditEntry};
 pub use audited::{Audited, KeptStream};
 pub use chain::{canonical_form, carried_streams, chain_digest};
@@ -89,6 +92,7 @@ pub use hand_on::{HandOn, Wait};
 pub use hold::{Held, HeldQueue, Hold, named};
 pub use instance::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
 pub use kept_audit::KeptAudit;
+pub use membership::MemberRecord;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
 #[cfg(any(test, feature = "test-support"))]
@@ -512,6 +516,67 @@ pub trait XmipStorage: Send + Sync {
     ///
     /// When it cannot be read, or fails its tag.
     fn list_secrets(&self) -> Result<Vec<SecretEntry>, PersistError>;
+
+    /// Write a node's row of the `membership` table, keyed by its process,
+    /// as its node's latest, the row of its node before it no longer the
+    /// latest, in one write; when it started, and where the row says it
+    /// stopped when it did, are Xmip Storage's to set (`membership`). Every
+    /// waiter on the table is told ([`Watched::Membership`]).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read or written.
+    fn write_member(&self, member: &MemberRecord) -> Result<(), PersistError>;
+
+    /// The members now: each node's latest row, by its node, running or
+    /// stopped in order.
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be read, or fails its tag.
+    fn read_members(&self) -> Result<Vec<MemberRecord>, PersistError>;
+
+    /// Ask an operator's act of the node `act` names: written asked to the
+    /// `operator_act` table with who asked, how the door proved them, the
+    /// role it judged them by, the relay and the door, at the next place
+    /// among the acts asked of that node and when, both Xmip Storage's to
+    /// set; and every node waiting on the acts asked of it told at once
+    /// ([`Watched::Acts`]). The act as written. Asked again by its
+    /// identifier after a lost answer, it writes nothing and answers the
+    /// act as kept (`act`).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be written.
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError>;
+
+    /// Decide the act `act` — taken, refused or failed, with its node's
+    /// sentence — as a conditional write that takes effect only where it is
+    /// still asked, so an act is decided once; every waiter on it told
+    /// ([`Watched::Act`]). The act as it stands: decided by this write, or
+    /// as it was decided before.
+    ///
+    /// # Errors
+    ///
+    /// When it was never asked, the decision is asked, or it cannot be read
+    /// or written.
+    fn decide_act(&self, act: u128, decided: (ActOutcome, &str))
+    -> Result<ActRecord, PersistError>;
+
+    /// Up to `most` of the acts asked of the node at `node` after the place
+    /// `after`, oldest first: every one, or, where `open` says, only those
+    /// still asked, found in an index that holds those alone.
+    ///
+    /// # Errors
+    ///
+    /// When they cannot be read, or one fails its tag.
+    fn read_acts(
+        &self,
+        node: &str,
+        page: (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError>;
+
     /// The identifiers of the records `query` finds, up to its most, in
     /// its index's order or the reverse: one index of one table read, a
     /// name or an identifier found by equality, as its column keeps it

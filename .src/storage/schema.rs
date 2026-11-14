@@ -394,7 +394,13 @@ mod tests {
             .iter()
             .filter(|table| table.database == Database::Administration)
             .map(|table| table.name);
-        assert!(administration.eq(["schema_version", "administration", "secret"]));
+        assert!(administration.eq([
+            "schema_version",
+            "administration",
+            "secret",
+            "operator_act",
+            "membership"
+        ]));
     }
 
     #[test]

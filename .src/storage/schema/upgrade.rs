@@ -21,8 +21,6 @@
 
 use std::fmt::Write as _;
 
-use sha2::{Digest, Sha256};
-
 use super::super::database::Server;
 use super::version::VERSION;
 use super::{Database, TABLES, Table, dialect, indexed, made, run_in};
@@ -184,12 +182,7 @@ pub fn fingerprint(tables: &[Table], version: u32) -> String {
         }
         text.push('\n');
     }
-    Sha256::digest(text.as_bytes())
-        .iter()
-        .fold(String::new(), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+    codec::hex::encode(&codec::digest::sha256(text.as_bytes()))
 }
 
 #[cfg(test)]

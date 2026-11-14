@@ -4,7 +4,9 @@
 //! them round robin*; ADR-0063, amendment 2026-10-01).
 //!
 //! **Round robin.** Each request goes to the next Storage node in the list,
-//! so the load is spread over them. **More than one is the safety** (the
+//! so the load is spread over them, the turn taken from the cluster's one
+//! rotation (`cluster::Rotation`; ADR-0056, amendment 2026-11-13), which
+//! placement takes its turns from too. **More than one is the safety** (the
 //! owner, 2026-10-01): a request the node it went to does not answer — it
 //! refused the connection, the connection broke, nothing came back within
 //! the time — is asked of the next, and so on round the list once, so a
@@ -45,9 +47,10 @@
 //! every one listed answers again. What it last came to with each is
 //! [`StorageClient::reached`], which every surface shows.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xcluster::Rotation;
 use xcore::lock::Locked;
 
 use super::server::ALPN;
@@ -149,7 +152,8 @@ pub struct Reached {
 /// nodes, round robin, or over one of them for one statement.
 pub struct StorageClient {
     nodes: Arc<[Node]>,
-    next: Arc<AtomicUsize>,
+    /// Where the next round robin starts, shared by every clone.
+    rotation: Arc<Rotation>,
     config: Arc<tls::ClientConfig>,
     timeout: Duration,
     pass_over: Duration,
@@ -205,7 +209,7 @@ impl StorageClient {
             .map_err(|error| unreachable(error.message))?;
         Ok(Self {
             nodes,
-            next: Arc::new(AtomicUsize::new(0)),
+            rotation: Arc::new(Rotation::new()),
             config: Arc::new(tls::alpn::offering(config, &[ALPN])),
             timeout,
             pass_over,
@@ -231,10 +235,8 @@ impl StorageClient {
     /// round robin, one that said it is a standby after those that did
     /// not, and one that did not answer lately last.
     fn turn(&self) -> impl Iterator<Item = usize> {
-        let first = self.next.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
-        let count = self.nodes.len();
-        let order: Vec<usize> = (0..count).map(|step| (first + step) % count).collect();
+        let order: Vec<usize> = self.rotation.turn(self.nodes.len()).collect();
         let rank = |index: &usize| {
             let node = &self.nodes[*index];
             match (node.passed_over(now), node.standby.load(Ordering::Relaxed)) {
@@ -725,6 +727,38 @@ mod tests {
 
         fn list_secrets(&self) -> Result<Vec<crate::storage::SecretEntry>, PersistError> {
             self.beneath.list_secrets()
+        }
+
+        fn write_member(&self, member: &crate::storage::MemberRecord) -> Result<(), PersistError> {
+            self.beneath.write_member(member)
+        }
+
+        fn read_members(&self) -> Result<Vec<crate::storage::MemberRecord>, PersistError> {
+            self.beneath.read_members()
+        }
+
+        fn ask_act(
+            &self,
+            act: &crate::storage::ActRecord,
+        ) -> Result<crate::storage::ActRecord, PersistError> {
+            self.beneath.ask_act(act)
+        }
+
+        fn decide_act(
+            &self,
+            act: u128,
+            decided: (crate::storage::ActOutcome, &str),
+        ) -> Result<crate::storage::ActRecord, PersistError> {
+            self.beneath.decide_act(act, decided)
+        }
+
+        fn read_acts(
+            &self,
+            node: &str,
+            page: (u64, u32),
+            open: bool,
+        ) -> Result<Vec<crate::storage::ActRecord>, PersistError> {
+            self.beneath.read_acts(node, page, open)
         }
 
         fn query(&self, query: &super::super::Query) -> Result<Vec<u128>, PersistError> {

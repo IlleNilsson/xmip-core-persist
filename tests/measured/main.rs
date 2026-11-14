@@ -17,7 +17,14 @@
 //!   the fastest of five held: a saturated zero;
 //! - a wait on a queue's head — a sequence — is woken within a millisecond
 //!   of the claim and the hand-on that take its first entry out being
-//!   asked, the same way (2026-11-12).
+//!   asked, the same way (2026-11-12);
+//! - a node's row of the `membership` table is written within a millisecond
+//!   beyond Xmip Storage's own write of an administration record, over a
+//!   thousand starts of each node kept, and a wait on the table is woken
+//!   within a millisecond of a row's write being asked (`membership`;
+//!   2026-11-13).
+
+mod membership;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
