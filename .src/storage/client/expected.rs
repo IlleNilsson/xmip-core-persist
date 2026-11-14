@@ -1,6 +1,7 @@
 //! The answer each operation expects of a Storage node, or why there was
 //! none ([`super::StorageClient`]).
 
+use super::super::act::ActRecord;
 use super::super::record::Claim;
 use super::super::wire::Answer;
 use crate::PersistError;
@@ -43,6 +44,23 @@ pub(super) fn held(answer: Answer) -> Result<Vec<Claim>, Answer> {
 pub(super) fn yes(answer: Answer) -> Result<bool, Answer> {
     match answer {
         Answer::Yes(yes) => Ok(yes),
+        other => Err(other),
+    }
+}
+
+/// An operator's act, as the Storage node keeps it after asking or deciding
+/// it.
+pub(super) fn kept_act(answer: Answer) -> Result<ActRecord, Answer> {
+    match answer {
+        Answer::Act(act) => Ok(*act),
+        other => Err(other),
+    }
+}
+
+/// The acts read of a node.
+pub(super) fn acts(answer: Answer) -> Result<Vec<ActRecord>, Answer> {
+    match answer {
+        Answer::Acts(acts) => Ok(acts),
         other => Err(other),
     }
 }

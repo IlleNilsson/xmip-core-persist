@@ -4,8 +4,9 @@
 use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
     AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_MESSAGE,
-    FAILED_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MESSAGE, MESSAGE_INDEXES,
-    SECRET, SECRET_INDEXES, STREAM,
+    FAILED_MESSAGE_INDEXES, HELD, HELD_INDEXES, JOURNEY, JOURNEY_INDEXES, MEMBERSHIP,
+    MEMBERSHIP_INDEXES, MESSAGE, MESSAGE_INDEXES, OPERATOR_ACT, OPERATOR_ACT_INDEXES, SECRET,
+    SECRET_INDEXES, STREAM,
 };
 use super::version::VERSIONS;
 use super::{Column, Database, Kind, Table};
@@ -42,7 +43,7 @@ const fn versions(database: Database) -> Table {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 25] = [
+pub const TABLES: [Table; 27] = [
     versions(Database::Runtime),
     Table {
         database: Database::Runtime,
@@ -328,8 +329,8 @@ pub const TABLES: [Table; 25] = [
         database: Database::Administration,
         name: "administration",
         since: 1,
-        keeps: "registration, membership, Modules, Handlers, deployment and operator state, \
-                and when each was last written",
+        keeps: "registration, Modules, Handlers, deployment and operator state, and when each \
+                was last written",
         columns: ADMINISTRATION,
         key: &["kind", "id"],
         unique: &[],
@@ -346,5 +347,33 @@ pub const TABLES: [Table; 25] = [
         key: &["secret"],
         unique: &["name"],
         indexes: SECRET_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "operator_act",
+        since: 1,
+        keeps: "each operator's act, kept, never deleted: the node it is asked of and its \
+                place among that node's acts, what it acts on and the act, who asked it, how \
+                the door that admitted it proved them, the role it judged them by, the relay \
+                they came through and the door, when it was asked, and what its node decided, \
+                its sentence and when; an act is decided once",
+        columns: OPERATOR_ACT,
+        key: &["act"],
+        unique: &[],
+        indexes: OPERATOR_ACT_INDEXES,
+    },
+    Table {
+        database: Database::Administration,
+        name: "membership",
+        since: 1,
+        keeps: "each start of each node of the cluster, kept, never deleted: its scope, the \
+                roles it declares and its capability's evidence, where its operate and sync \
+                listeners answer, its place among the Storage nodes, the signed save it runs, \
+                its process, when it started and when it stopped in order, the table's write \
+                count at its last write and whether it is its node's latest row",
+        columns: MEMBERSHIP,
+        key: &["process"],
+        unique: &[],
+        indexes: MEMBERSHIP_INDEXES,
     },
 ];

@@ -19,7 +19,7 @@ impl StorageClient {
     pub(super) fn pinned_to(&self, index: usize) -> Self {
         Self {
             nodes: Arc::clone(&self.nodes),
-            next: Arc::clone(&self.next),
+            rotation: Arc::clone(&self.rotation),
             config: Arc::clone(&self.config),
             timeout: self.timeout,
             pass_over: self.pass_over,

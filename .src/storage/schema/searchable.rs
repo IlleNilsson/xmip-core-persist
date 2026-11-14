@@ -259,3 +259,73 @@ pub(super) const SECRET: &[Column] = &[
 ];
 
 pub(super) const SECRET_INDEXES: &[Index] = &[index(24, "secret_name", &["name"])];
+
+/// An operator's act, kept, never deleted (ADR-0040): asked at a node's
+/// door of the node that owns what it acts on, with who asked, how the door
+/// proved them, the role it judged them by and the relay they came through,
+/// and decided once by that node, with its sentence; its times and its
+/// place among its node's acts Xmip Storage's (`super::super::act`). Its
+/// node is kept as its scope and as the name-based identifier of that
+/// scope, which its waits and its indexes name.
+pub(super) const OPERATOR_ACT: &[Column] = &[
+    column("act", Kind::Identifier),
+    column("node", Kind::Text),
+    column("node_id", Kind::Identifier),
+    column("place", Kind::Number),
+    column("noun", Kind::Word),
+    column("target", Kind::Text),
+    column("act_word", Kind::Word),
+    column("who", Kind::Text),
+    column("proven", Kind::Word),
+    maybe("certificate", Kind::Bytes),
+    column("role", Kind::Word),
+    maybe("through", Kind::Text),
+    column("door", Kind::Text),
+    column("asked_at", Kind::Time),
+    column("outcome", Kind::Word),
+    column("said", Kind::LongText),
+    maybe("decided_at", Kind::Time),
+    column("open", Kind::Flag),
+];
+
+/// The acts asked of a node in their order, one range from a place; and,
+/// in an index holding only those, the acts still asked, whatever the acts
+/// decided before them number.
+pub(super) const OPERATOR_ACT_INDEXES: &[Index] = &[
+    index(25, "operator_act_node", &["node_id", "place"]),
+    Index {
+        only: Some("open"),
+        ..index(26, "operator_act_open", &["node_id", "place"])
+    },
+];
+
+/// A node's start, kept, never deleted (ADR-0040): everything its node says
+/// of itself as it reaches Xmip Storage, and when it started and stopped,
+/// the table's write count at its last write and whether it is its node's
+/// latest row, Xmip Storage's (`super::super::membership`).
+pub(super) const MEMBERSHIP: &[Column] = &[
+    column("process", Kind::Identifier),
+    column("node", Kind::Text),
+    column("roles", Kind::Text),
+    column("evidence", Kind::LongText),
+    maybe("operate", Kind::Text),
+    maybe("sync", Kind::Text),
+    maybe("storage_place", Kind::Count),
+    column("save", Kind::Text),
+    column("serial", Kind::Number),
+    column("started_at", Kind::Time),
+    maybe("stopped_at", Kind::Time),
+    column("written", Kind::Number),
+    column("latest", Kind::Flag),
+];
+
+/// The members now — each node's latest row, by its node — in one range of
+/// an index holding only those, whatever the rows before them number; and
+/// the table's latest write, what a wait on it counts.
+pub(super) const MEMBERSHIP_INDEXES: &[Index] = &[
+    Index {
+        only: Some("latest"),
+        ..index(27, "membership_latest", &["latest", "node"])
+    },
+    index(28, "membership_written", &["written"]),
+];

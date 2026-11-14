@@ -24,11 +24,13 @@ use codec::form::Form;
 use codec::writer::ByteWriter;
 use xcore::{AuditId, JourneyId, MessageId, SecretName, StreamId};
 
+use super::act::{ActOutcome, ActRecord};
 use super::audit_entry::AuditEntry;
 use super::dead::Replay;
 use super::due::DuePart;
 use super::hand_on::HandOn;
 use super::instance::Turn;
+use super::membership::MemberRecord;
 use super::publication::Publication;
 use super::query::Query;
 use super::record::{
@@ -104,6 +106,18 @@ pub(crate) enum Request {
     /// twice, the claim once readable and, where it was taken, a second
     /// frame once it is durable or why it is not (`Answer::Kept`).
     ClaimAhead(Claim, u64),
+    /// An operator's act asked of the node it names (`super::act`).
+    AskAct(Box<ActRecord>),
+    /// An act, by its identifier, decided once: its outcome and its node's
+    /// sentence.
+    DecideAct(u128, ActOutcome, String),
+    /// The acts asked of a node after a place, so many at most, or only
+    /// those still asked.
+    ReadActs(String, u64, u32, bool),
+    /// A node's membership row written (`super::membership`).
+    WriteMember(Box<MemberRecord>),
+    /// The members now: each node's latest row.
+    ReadMembers,
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -296,6 +310,18 @@ impl Form for Request {
                 Self::ReadClaimed(queue, at, JourneyId::new(cursor.u128_be()?))
             }
             40 => Self::ClaimAhead(Claim::read(cursor)?, cursor.u64_be()?),
+            41 => Self::AskAct(Box::new(ActRecord::read(cursor)?)),
+            42 => Self::DecideAct(
+                cursor.u128_be()?,
+                ActOutcome::read(cursor)?,
+                field::read_text(cursor)?,
+            ),
+            43 => {
+                let (node, after) = (field::read_text(cursor)?, cursor.u64_be()?);
+                Self::ReadActs(node, after, cursor.u32_be()?, cursor.byte()? != 0)
+            }
+            44 => Self::WriteMember(Box::new(MemberRecord::read(cursor)?)),
+            45 => Self::ReadMembers,
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }

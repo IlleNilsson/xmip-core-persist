@@ -107,7 +107,13 @@ and 9).
   as the wait is answered; and a queue's head (how many entries were ever
   taken out of it), a Work Process Instance (its turns) and a key of the
   Instance Key table (held or not), each answered the moment a write moves
-  it — told by the embedded Storage node's one writer to
+  it, the operator's acts asked of a node by the place of the last
+  (`Watched::Acts`) and one act by its decision (`Watched::Act`), each told
+  by the administration database's writer as it writes the act or decides
+  it, and the administration database's `membership` table by its latest
+  write (`Watched::Membership`, told by the write of a row, read for a wait
+  by `Embedded::stands`, which reads each count from the database keeping
+  it; 2026-11-13) — told by the embedded Storage node's one writer to
   every waiter on what it moved as soon as the batch is readable, but quietly,
   never woken, to the node's own (`Waiter::of`) whose claims in that write
   hold every Message it put there (`storage/watch/moved.rs`), the writer
@@ -175,11 +181,40 @@ and 9).
   and its own over its canonical form — the kept row but its own digest and
   the keeper's time, and its Streams' records (`chain_digest`) — the head of
   each writer's chain kept in `audit_chain_head` in the record's own write,
-  so it goes on after a restart; `Ask::AuditChain` finds a writer's records in their order by the
+  so it goes on after a restart — chained by the estate's one rule,
+  `xcore::audit_chain`, its SHA-256 `codec::digest` (ADR-0070, amendment
+  2026-11-13); `Ask::AuditChain` finds a writer's records in their order by the
   `audit_chain` index for the walk (`xmip-core-audit`'s `audit_chain::walk`,
   called by the runtime); and
-  the administration records — registration, membership,
+  the administration records — registration,
   Modules, Handlers, deployment and operator state — keyed by UUIDv7. And
+  the cluster's membership, in a table of its own, `membership`
+  (`storage::membership`; ADR-0056, amendment 2026-11-13): a row for each
+  start of each node, keyed by the process it runs in, drawn new at each
+  start, its every value in a column of its own — the node, its roles and
+  its capability's evidence, its operate and sync addresses, its place
+  among the Storage nodes, the save and serial of the slice it runs — and
+  Xmip Storage's own: when it started and stopped in order, the table's
+  write count at its last write, and whether it is its node's latest row;
+  written by `write_member`, which makes the row its node's latest and the
+  one before it no longer so, in one write, and stamps a stop the row says
+  with Xmip Storage's time; the members now read by `read_members`, each
+  node's latest row by one range of the index holding only those
+  (`membership_latest`), so the rows kept, never deleted (ADR-0040,
+  amendment 2026-11-13), cost a read nothing; persist reads no word of a
+  row. And an operator's acts, in a table of their own, `operator_act`
+  (`storage::act`; ADR-0014, amendment 2026-11-13): each by its `UUIDv7`,
+  every value in a column of its own — the node it is asked of, by its
+  scope and that scope's name-based identifier, what it acts on, the act,
+  who asked, how proven, the certificate they presented, the role, the
+  relay and the door — and Xmip
+  Storage's own: its place among its node's acts, when it was asked and
+  decided; asked by `ask_act`, which, asked again by its identifier after a
+  lost answer, writes nothing; decided once by `decide_act`, a conditional
+  write that takes effect only where it is still asked; read by
+  `read_acts`, a node's acts after a place by one range of
+  `operator_act_node`, or only those still asked by one range of
+  `operator_act_open`; kept, never deleted (wire operations 41 to 43). And
   the secrets Locations present, in a table of their own, `secret`, each
   value sealed by Xmip under the administration database's data key, its
   name and kind bound in, before any store keeps it (`secret::sealed`): set by
@@ -319,7 +354,9 @@ and 9).
 - **`standby`** — embedded Storage nodes as a primary and its standbys
   (ADR-0056, amendments 2026-10-22, drafted, and 2026-11-08). `StorageNode`
   is one of the Storage nodes a cluster lists, over its three engines: it
-  asks every one listed what it is (`Standing`), follows a primary that
+  asks every one listed what it is (`Standing`), keeps its own place among
+  them where one answers as its own process (`StorageNode::place`, what its
+  node's membership row says), follows a primary that
   answers, and is promoted only where every one listed answered and none
   of them is a primary — the one holding most of the latest epoch, the
   first listed of equals. A primary that is gone is waited for, never

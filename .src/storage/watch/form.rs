@@ -16,6 +16,10 @@ impl Form for Watched {
             Self::Head(id) => (1, id),
             Self::Instance(id) => (2, id),
             Self::Key(id) => (3, id),
+            Self::Acts(node) => (4, node),
+            Self::Act(id) => (5, id),
+            // The table is one: it is named by its kind alone.
+            Self::Membership => (6, &0),
         };
         out.byte(kind);
         out.u128_be(*id);
@@ -29,6 +33,9 @@ impl Form for Watched {
             1 => Self::Head(id),
             2 => Self::Instance(id),
             3 => Self::Key(id),
+            4 => Self::Acts(id),
+            5 => Self::Act(id),
+            6 => Self::Membership,
             other => return Err(CodecError::new(format!("nothing watched is kind {other}"))),
         })
     }

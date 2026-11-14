@@ -99,6 +99,18 @@ pub enum Watched {
     /// A key of the Instance Key table: one where an Instance holds it,
     /// none where none does.
     Key(u128),
+    /// The operator's acts asked of a node, by the name-based identifier
+    /// of its scope (`super::act`): the place of the last, which only an
+    /// act asked of it moves — what a node's act watch waits on.
+    Acts(u128),
+    /// One operator's act by its identifier: none while it is asked, one
+    /// once its node decided it, which only its decision moves — what the
+    /// door that asked it waits on.
+    Act(u128),
+    /// The administration database's `membership` table by the number of
+    /// its latest write, which only a node's membership row written moves
+    /// (`super::membership`): what a node following the members waits on.
+    Membership,
 }
 
 /// Where what a wait watches stands: its count, as [`Watched`] says what is
@@ -187,18 +199,19 @@ impl Watch {
         self.waiting.locked().known.keep(most);
     }
 
-    /// `seen` waited on by `waiter` in `store` for at most `bound`: every
-    /// one that stands elsewhere than `seen` says, as it stands — at once
-    /// where one does as the wait begins — or none where no write moved one
+    /// `seen` waited on by `waiter` for at most `bound`, each count not
+    /// kept read by `stands` — from whichever database keeps it: every one
+    /// that stands elsewhere than `seen` says, as it stands — at once where
+    /// one does as the wait begins — or none where no write moved one
     /// within `bound`, or `waiter` was stopped.
     ///
     /// # Errors
     ///
     /// Where a count cannot be read, or the wait is refused
     /// ([`Watch::refuse`]).
-    pub(crate) fn wait<R: Engine>(
+    pub(crate) fn wait(
         &self,
-        store: &EncryptedStore<R>,
+        stands: &dyn Fn(Watched) -> Result<u64, PersistError>,
         (seen, bound): (&[Position], Duration),
         waiter: &Arc<Waiter>,
     ) -> Result<Vec<Position>, PersistError> {
@@ -209,7 +222,7 @@ impl Watch {
         let (_listening, unknown) = self.listening(seen, waiter)?;
         let read = unknown
             .into_iter()
-            .map(|watched| Ok((watched, stands(store, watched)?)))
+            .map(|watched| Ok((watched, stands(watched)?)))
             .collect::<Result<Vec<_>, PersistError>>()?;
         let now = self.standing(seen, &read);
         waiter.waited(seen, now, until)
@@ -290,14 +303,27 @@ impl Drop for Listening<'_> {
     }
 }
 
-/// Where `watched` stands in `store`.
-fn stands<R: Engine>(store: &EncryptedStore<R>, watched: Watched) -> Result<u64, PersistError> {
+/// Where `watched` stands in `store`, the runtime database, for what it
+/// keeps; what another database keeps is read there (`Embedded::stands`).
+///
+/// # Errors
+///
+/// Where a count cannot be read, or the runtime database keeps none of it.
+pub(crate) fn stands<R: Engine>(
+    store: &EncryptedStore<R>,
+    watched: Watched,
+) -> Result<u64, PersistError> {
     let places = |queue| queue::places(store, &Batch::empty(), KINDS, queue);
     Ok(match watched {
         Watched::Queue(queue) => places(queue)?.next,
         Watched::Head(queue) => places(queue)?.taken(),
         Watched::Instance(id) => instance::read_instance(store, id)?.map_or(0, |found| found.turns),
         Watched::Key(key) => u64::from(instance::read_instance_key(store, key)?.is_some()),
+        other => {
+            return Err(super::record::malformed(format!(
+                "the runtime database keeps no count of {other:?}"
+            )));
+        }
     })
 }
 

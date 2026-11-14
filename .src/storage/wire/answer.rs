@@ -7,6 +7,7 @@ use codec::field;
 use codec::form::Form;
 use codec::writer::ByteWriter;
 
+use super::super::act::ActRecord;
 use super::super::claimed::Claimed;
 use super::super::dead::{DeadEntry, DeadQueue, Replayed};
 use super::super::due::DueQueue;
@@ -14,6 +15,7 @@ use super::super::failed::FailedQueue;
 use super::super::hold::HeldQueue;
 use super::super::instance::InstanceRecord;
 use super::super::kept_audit::KeptAudit;
+use super::super::membership::MemberRecord;
 use super::super::record::{
     AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
@@ -74,6 +76,12 @@ pub(crate) enum Answer {
     /// A claim asked ahead's second frame: durable on the Storage node, or
     /// why it is not.
     Kept(Option<String>),
+    /// An operator's act as kept (`super::super::act`).
+    Act(Box<ActRecord>),
+    /// The acts read of a node.
+    Acts(Vec<ActRecord>),
+    /// The members now (`super::super::membership`).
+    Members(Vec<MemberRecord>),
 }
 
 impl Answer {
@@ -112,6 +120,18 @@ impl Answer {
                 out.byte(28);
                 out.byte(u8::from(why.is_some()));
                 field::text(out, why.as_deref().unwrap_or_default());
+            }
+            Self::Act(act) => {
+                out.byte(29);
+                act.write(out);
+            }
+            Self::Acts(acts) => {
+                out.byte(30);
+                acts.write(out);
+            }
+            Self::Members(members) => {
+                out.byte(31);
+                members.write(out);
             }
             _ => {}
         }
@@ -272,6 +292,9 @@ impl Form for Answer {
                 let why = field::read_text(cursor)?;
                 Self::Kept(said.then_some(why))
             }
+            29 => Self::Act(Box::new(ActRecord::read(cursor)?)),
+            30 => Self::Acts(Vec::read(cursor)?),
+            31 => Self::Members(Vec::read(cursor)?),
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

@@ -71,7 +71,7 @@ pub use shipped::{Follow, Shipped, Standing};
 pub(crate) use position::POSITION;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use xcore::lock::{Locked, ReadWriteLocked};
@@ -147,6 +147,9 @@ struct Held {
 pub struct StorageNode {
     process: u128,
     listed: Vec<String>,
+    /// Its own place in `listed`, once it found itself among them by the
+    /// process it answers as ([`StorageNode::place`]).
+    place: OnceLock<usize>,
     engines: [Arc<dyn Engine>; DATABASES],
     keys: Arc<dyn KeyStore>,
     kek: KekName,
@@ -219,6 +222,7 @@ impl StorageNode {
         Ok(Arc::new(Self {
             process: u128::from_be_bytes(codec::random::array()),
             listed: listed.to_vec(),
+            place: OnceLock::new(),
             engines,
             keys,
             kek,
@@ -369,6 +373,15 @@ impl StorageNode {
     #[must_use]
     pub fn is_primary(&self) -> bool {
         self.primary().is_some()
+    }
+
+    /// Its place among the Storage nodes listed, from zero, found by the
+    /// process it answers as and never by a name: what its node's
+    /// membership row says. None until it has asked them once and answered
+    /// itself, which its start waits for.
+    #[must_use]
+    pub fn place(&self) -> Option<usize> {
+        self.place.get().copied()
     }
 }
 

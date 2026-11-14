@@ -148,9 +148,12 @@ impl StorageNode {
         }
     }
 
-    /// What each Storage node listed answers, those that do.
+    /// What each Storage node listed answers, those that do; and where it
+    /// answered as this node's own process, its own place, kept
+    /// ([`StorageNode::place`]).
     pub(super) fn standings(&self) -> Vec<Answered> {
-        self.listed
+        let answered: Vec<Answered> = self
+            .listed
             .iter()
             .enumerate()
             .filter_map(|(place, address)| {
@@ -161,7 +164,11 @@ impl StorageNode {
                     standing,
                 })
             })
-            .collect()
+            .collect();
+        if let Some(me) = answered.iter().find(|a| a.standing.process == self.process) {
+            let _ = self.place.set(me.place);
+        }
+        answered
     }
 
     /// What the Storage node at `address` is, asked within the silence: one

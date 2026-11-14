@@ -28,12 +28,14 @@ mod ordered;
 
 use std::collections::HashMap;
 
+use super::act::{ACT, ActRecord};
 use super::audited::{KEPT_AUDIT_STREAMS, KeptStream};
 use super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::dead::Dead;
 use super::failed::{FAILED, Failed};
 use super::hold::Held;
 use super::kept_audit::KeptAudit;
+use super::membership::{MEMBERSHIP, MemberRecord};
 use super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
@@ -60,6 +62,8 @@ enum Searched {
     AuditStream,
     Administration,
     Secret,
+    Membership,
+    Act,
 }
 
 impl Searched {
@@ -77,6 +81,8 @@ impl Searched {
                 Self::Administration
             }
             (Database::Administration, SECRET) => Self::Secret,
+            (Database::Administration, MEMBERSHIP) => Self::Membership,
+            (Database::Administration, ACT) => Self::Act,
             _ => return None,
         })
     }
@@ -92,6 +98,8 @@ impl Searched {
             Self::AuditStream => "audit_stream",
             Self::Administration => "administration",
             Self::Secret => "secret",
+            Self::Membership => MEMBERSHIP,
+            Self::Act => ACT,
         }
     }
 
@@ -108,6 +116,8 @@ impl Searched {
             Self::AuditStream => row::<KeptStream>(bytes),
             Self::Administration => row::<AdministrationRecord>(bytes),
             Self::Secret => row::<KeptSecret>(bytes),
+            Self::Membership => row::<MemberRecord>(bytes),
+            Self::Act => row::<ActRecord>(bytes),
         }
     }
 
@@ -129,6 +139,8 @@ impl Searched {
             Self::AuditStream => stamp::<KeptStream>(bytes, before, now),
             Self::Administration => stamp::<AdministrationRecord>(bytes, before, now),
             Self::Secret => stamp::<KeptSecret>(bytes, before, now),
+            Self::Membership => stamp::<MemberRecord>(bytes, before, now),
+            Self::Act => stamp::<ActRecord>(bytes, before, now),
         }
     }
 }
@@ -430,7 +442,28 @@ mod tests {
             ("audit", audit.row()),
             ("audit_stream", kept_stream.row()),
             ("administration", administration.row()),
+            ("membership", member().row()),
         ]
+    }
+
+    /// A member stopped in order at a Storage node's place: every column
+    /// it may hold nothing in holding something.
+    fn member() -> MemberRecord {
+        MemberRecord {
+            process: 6,
+            node: "a node".to_string(),
+            roles: "storage".to_string(),
+            evidence: "declares storage; offline".to_string(),
+            operate: Some("127.0.0.1:7443".to_string()),
+            sync: Some("127.0.0.1:7444".to_string()),
+            storage_place: Some(0),
+            save: "sha256:00".to_string(),
+            serial: 1,
+            started_unix_nanos: 1,
+            stopped_unix_nanos: Some(2),
+            written: 3,
+            latest: true,
+        }
     }
 
     #[test]

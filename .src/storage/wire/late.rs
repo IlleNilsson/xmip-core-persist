@@ -104,6 +104,40 @@ impl Request {
                 claim.write(out);
                 out.u64_be(*lease);
             }
+            // Numbered from 41 on.
+            _ => self.write_administered(out),
+        }
+    }
+
+    /// The operations numbered from 41 on, on the administration
+    /// database's operator acts and membership, written as `write_late`
+    /// writes the rest.
+    fn write_administered(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::AskAct(act) => {
+                out.byte(41);
+                act.write(out);
+            }
+            Self::DecideAct(act, outcome, said) => {
+                out.byte(42);
+                out.u128_be(*act);
+                outcome.write(out);
+                field::text(out, said);
+            }
+            Self::ReadActs(node, after, most, open) => {
+                out.byte(43);
+                field::text(out, node);
+                out.u64_be(*after);
+                out.u32_be(*most);
+                out.byte(u8::from(*open));
+            }
+            Self::WriteMember(member) => {
+                out.byte(44);
+                member.write(out);
+            }
+            Self::ReadMembers => {
+                out.byte(45);
+            }
             _ => {}
         }
     }

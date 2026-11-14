@@ -7,6 +7,7 @@ use std::time::Duration;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
 use super::super::XmipStorage;
+use super::super::act::{ActOutcome, ActRecord};
 use super::super::audit_entry::AuditEntry;
 use super::super::claimed::Claimed;
 use super::super::dead::{DeadEntry, DeadQueue, Replay, Replayed};
@@ -17,6 +18,7 @@ use super::super::hand_on::HandOn;
 use super::super::hold::HeldQueue;
 use super::super::instance::{InstanceRecord, Turn};
 use super::super::kept_audit::KeptAudit;
+use super::super::membership::MemberRecord;
 use super::super::publication::Publication;
 use super::super::query::Query;
 use super::super::record::{
@@ -27,7 +29,7 @@ use super::super::stream::StreamRecord;
 use super::super::watch::{Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::StorageClient;
-use super::expected::{claimed, done, expected, held, yes};
+use super::expected::{acts, claimed, done, expected, held, kept_act, yes};
 use crate::PersistError;
 use xcore::SecretName;
 
@@ -350,6 +352,37 @@ impl XmipStorage for StorageClient {
             Answer::Secrets(entries) => Ok(entries),
             other => Err(other),
         })
+    }
+
+    fn write_member(&self, member: &MemberRecord) -> Result<(), PersistError> {
+        let asked = Request::WriteMember(Box::new(member.clone()));
+        expected(self.ask(&asked)?, done)
+    }
+
+    fn read_members(&self) -> Result<Vec<MemberRecord>, PersistError> {
+        expected(self.ask(&Request::ReadMembers)?, |answer| match answer {
+            Answer::Members(members) => Ok(members),
+            other => Err(other),
+        })
+    }
+
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError> {
+        expected(self.ask(&Request::AskAct(Box::new(act.clone())))?, kept_act)
+    }
+
+    fn decide_act(&self, act: u128, said: (ActOutcome, &str)) -> Result<ActRecord, PersistError> {
+        let asked = Request::DecideAct(act, said.0, said.1.to_string());
+        expected(self.ask(&asked)?, kept_act)
+    }
+
+    fn read_acts(
+        &self,
+        node: &str,
+        (after, most): (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError> {
+        let asked = Request::ReadActs(node.to_string(), after, most, open);
+        expected(self.ask(&asked)?, acts)
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {

@@ -35,7 +35,6 @@ use codec::cursor::Cursor;
 use codec::form::Form;
 use codec::hex;
 use codec::writer::ByteWriter;
-use sha2::{Digest as _, Sha256};
 use xcore::{AuditId, StreamId};
 
 use super::XmipStorage;
@@ -101,9 +100,10 @@ pub(crate) fn read_digest(cursor: &mut Cursor<'_>) -> codec::Result<[u8; DIGEST]
 
 /// The SHA-256 of a Stream's bytes, taken a chunk at a time as they pass:
 /// what its writer keeps in its record, and what a read of an audit
-/// record's copy is held to.
+/// record's copy is held to: the estate's one SHA-256 (`codec::digest`),
+/// named for what it digests here.
 #[derive(Clone, Default)]
-pub struct StreamDigest(Sha256);
+pub struct StreamDigest(codec::digest::Sha256);
 
 impl StreamDigest {
     /// `bytes` taken in, after those before.
@@ -114,7 +114,7 @@ impl StreamDigest {
     /// The digest of everything taken in.
     #[must_use]
     pub fn finish(self) -> [u8; DIGEST] {
-        self.0.finalize().into()
+        self.0.finish()
     }
 }
 
