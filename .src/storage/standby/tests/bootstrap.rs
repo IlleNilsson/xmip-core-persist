@@ -67,7 +67,7 @@ fn a_whole_copy_is_copying_then_catching_up_then_ready_each_kept_across_a_restar
     let own = Own::new();
     let node = over(&own, &authority);
     assert_eq!(node.bootstrap(), Bootstrap::Ready, "never copied");
-    let mut taking = Taking::new();
+    let mut taking = Taking::new(node.clock.monotonic_nanos());
     node.take(whole(EPOCH), &mut taking).expect("taken");
     assert_eq!(node.bootstrap(), Bootstrap::Copying);
     assert_eq!(
@@ -112,7 +112,7 @@ fn a_whole_copy_is_copying_then_catching_up_then_ready_each_kept_across_a_restar
     let said = again.said();
     assert!(said.contains("catching up, 1 writes to go"), "{said}");
     assert!(again.promote(EPOCH + 1).is_err(), "{}", again.said());
-    let mut taking = Taking::new();
+    let mut taking = Taking::new(again.clock.monotonic_nanos());
     let replayed = vec![change(b"a", b"after"), change(b"b", b"after")];
     taken(&again, &mut taking, vec![Shipped::Copy(0, 5, replayed)]);
     taken(&again, &mut taking, vec![Shipped::Beat(EPOCH)]);
@@ -132,7 +132,7 @@ fn a_catch_up_goes_on_only_under_its_copy_s_epoch_and_a_whole_copy_starts_it_aga
     let authority = Authority::new();
     let own = Own::new();
     let node = over(&own, &authority);
-    let mut taking = Taking::new();
+    let mut taking = Taking::new(node.clock.monotonic_nanos());
     let copied = vec![
         whole(EPOCH),
         Shipped::Copied(0, 1, 4),

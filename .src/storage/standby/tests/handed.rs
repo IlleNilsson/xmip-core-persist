@@ -77,6 +77,9 @@ fn a_primary_counts_what_it_hands_each_standby_by_the_node_its_certificate_names
     let follower = &copied[0];
     assert_eq!(follower.node.as_deref(), Some(second_node.as_str()));
     assert!(follower.entries > 0, "a whole copy's entries: {follower:?}");
+    // The Journeys written before the copy was read travel in its pages:
+    // counted among its entries, never as writes handed on.
+    assert_eq!(follower.writes, 0, "{follower:?}");
     assert!(follower.bytes > 0, "{follower:?}");
     assert!(
         one.said()

@@ -13,7 +13,9 @@
 //! Storage node that stops stops no work while another is left
 //! (`deployment-model.md` section 9). One that did not answer is passed
 //! over for a while — asked only after every other — so the requests after
-//! it do not each wait on it again. A connection kept from before that
+//! it do not each wait on it again, the while counted on the monotonic
+//! reading of the client's Clock (ADR-0068, amendment 2026-11-15). A
+//! connection kept from before that
 //! fails is opened once afresh on the same node before the next is tried,
 //! since a Storage node that restarted ends every connection it had.
 //!
@@ -47,11 +49,12 @@
 //! every one listed answers again. What it last came to with each is
 //! [`StorageClient::reached`], which every surface shows.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use xcluster::Rotation;
 use xcore::lock::Locked;
+use xcore::{Clock, SystemClock};
 
 use super::server::ALPN;
 use super::wire::{self, Answer, Request};
@@ -60,11 +63,14 @@ use crate::PersistError;
 mod ahead;
 mod claimed;
 mod expected;
+mod node;
 mod operations;
 mod statement;
 mod waiting;
 
 pub use statement::statement;
+
+use node::Node;
 
 type Connection = tls::Guarded;
 
@@ -79,42 +85,6 @@ pub const PASS_OVER: Duration = Duration::from_secs(5);
 /// What bounds each connect and each read, where the node's `[tuning]
 /// storage_timeout` does not say.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
-
-/// One Storage node, the connections to it no request is using, until
-/// when it is passed over, whether it said it is a standby, and what it
-/// last came to.
-struct Node {
-    address: String,
-    host: String,
-    idle: Mutex<Vec<Connection>>,
-    passed_over: Mutex<Option<Instant>>,
-    standby: AtomicBool,
-    last: Mutex<Option<Reached>>,
-}
-
-impl Node {
-    fn passed_over(&self, now: Instant) -> bool {
-        let until = *self.passed_over.locked();
-        until.is_some_and(|until| until > now)
-    }
-
-    fn answered<T>(&self, asked: &Result<T, Asked>, pass_over: Duration) {
-        let (answered, standby, said) = match asked {
-            Ok(_) => (true, false, "answered".to_string()),
-            Err(Asked::Standby(said)) => (false, true, said.clone()),
-            Err(Asked::Failed(said)) => (false, self.standby.load(Ordering::Relaxed), said.clone()),
-        };
-        self.standby.store(standby, Ordering::Relaxed);
-        *self.passed_over.locked() = (!answered).then(|| Instant::now() + pass_over);
-        *self.last.locked() = Some(Reached {
-            address: self.address.clone(),
-            answered,
-            standby,
-            said,
-            at: Instant::now(),
-        });
-    }
-}
 
 /// Why a Storage node did not answer a request.
 enum Asked {
@@ -144,8 +114,8 @@ pub struct Reached {
     pub standby: bool,
     /// What it came to, in words.
     pub said: String,
-    /// When.
-    pub at: Instant,
+    /// When, on the client's Clock's monotonic reading.
+    pub at: i128,
 }
 
 /// Xmip Storage as a node reaches it: [`super::XmipStorage`] over the Storage
@@ -157,6 +127,8 @@ pub struct StorageClient {
     config: Arc<tls::ClientConfig>,
     timeout: Duration,
     pass_over: Duration,
+    /// What a Storage node passed over is counted on.
+    clock: Arc<dyn Clock>,
     /// The latest epoch a Storage node answered in: a primary of an earlier
     /// one is not asked (`super::standby`).
     epoch: Arc<AtomicU64>,
@@ -170,7 +142,7 @@ impl StorageClient {
     /// trusting its anchors, each connect and each read bounded by
     /// `timeout`, and one that did not answer passed over for `pass_over`
     /// (the node's `[tuning]`; [`TIMEOUT`] and [`PASS_OVER`] where it does
-    /// not say).
+    /// not say), counted on the operating system's clock.
     ///
     /// # Errors
     ///
@@ -182,27 +154,29 @@ impl StorageClient {
         timeout: Duration,
         pass_over: Duration,
     ) -> Result<Self, PersistError> {
+        Self::with_clock(nodes, identity, timeout, pass_over, Arc::new(SystemClock))
+    }
+
+    /// [`StorageClient::new`], one that did not answer passed over for
+    /// `pass_over` counted on `clock`.
+    ///
+    /// # Errors
+    ///
+    /// As [`StorageClient::new`].
+    pub fn with_clock(
+        nodes: &[String],
+        identity: &tls::Identity,
+        timeout: Duration,
+        pass_over: Duration,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, PersistError> {
         if nodes.is_empty() {
             return Err(unreachable("no Storage node is listed"));
         }
         let nodes = nodes
             .iter()
-            .map(|address| {
-                let (host, _) = address
-                    .rsplit_once(':')
-                    .ok_or_else(|| unreachable(format!("'{address}' names no port")))?;
-                Ok(Node {
-                    address: address.clone(),
-                    host: host
-                        .trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .to_string(),
-                    idle: Mutex::new(Vec::new()),
-                    passed_over: Mutex::new(None),
-                    standby: AtomicBool::new(false),
-                    last: Mutex::new(None),
-                })
-            })
+            .map(String::as_str)
+            .map(Node::listed)
             .collect::<Result<Arc<[Node]>, PersistError>>()?;
         let config = identity
             .client()
@@ -213,6 +187,7 @@ impl StorageClient {
             config: Arc::new(tls::alpn::offering(config, &[ALPN])),
             timeout,
             pass_over,
+            clock,
             epoch: Arc::new(AtomicU64::new(0)),
             pinned: None,
         })
@@ -235,7 +210,7 @@ impl StorageClient {
     /// round robin, one that said it is a standby after those that did
     /// not, and one that did not answer lately last.
     fn turn(&self) -> impl Iterator<Item = usize> {
-        let now = Instant::now();
+        let now = self.clock.monotonic_nanos();
         let order: Vec<usize> = self.rotation.turn(self.nodes.len()).collect();
         let rank = |index: &usize| {
             let node = &self.nodes[*index];
@@ -264,7 +239,7 @@ impl StorageClient {
         if let Some(index) = self.pinned {
             let node = &self.nodes[index];
             let asked = asking(index);
-            node.answered(&asked, self.pass_over);
+            node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
             return asked.map_err(|failure| {
                 unreachable(format!(
                     "the statement's Storage node {} did not answer: {failure}",
@@ -276,7 +251,7 @@ impl StorageClient {
         for index in self.turn() {
             let node = &self.nodes[index];
             let asked = asking(index);
-            node.answered(&asked, self.pass_over);
+            node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
             match asked {
                 Ok(answer) => return Ok(answer),
                 Err(failure) => failures.push(format!("{}: {failure}", node.address)),
@@ -383,6 +358,7 @@ fn unreachable(reason: impl Into<String>) -> PersistError {
 mod tests {
     use std::assert_matches;
     use std::net::TcpListener;
+    use std::sync::Mutex;
 
     use secret::{Held, KekName};
 
@@ -1094,6 +1070,34 @@ mod tests {
         assert!(StorageClient::new(&[], &identity, TIMEOUT, PASS_OVER).is_err());
         let portless = ["storage-1.example".to_string()];
         assert!(StorageClient::new(&portless, &identity, TIMEOUT, PASS_OVER).is_err());
+    }
+
+    #[test]
+    fn a_storage_node_that_did_not_answer_is_asked_last_until_its_pass_over_has_passed() {
+        let authority = Authority::new();
+        let clock = Arc::new(xcore::clock::Stepped::default());
+        let nodes = ["127.0.0.1:1".to_string(), "127.0.0.1:2".to_string()];
+        let identity = authority.issue(&authority);
+        let counted = Arc::clone(&clock) as Arc<dyn Clock>;
+        let client = StorageClient::with_clock(&nodes, &identity, TIMEOUT, PASS_OVER, counted)
+            .expect("client");
+        let first_refuses = |index: usize| match index {
+            0 => Err(Asked::Failed("refused".to_string())),
+            _ => Ok(index),
+        };
+        // Round robin from the first listed, which does not answer.
+        assert_eq!(client.ask_each(first_refuses).expect("answered"), 1);
+        let reached = client.reached();
+        let at = |at: usize| reached[at].1.as_ref().map(|r| (r.answered, r.at));
+        assert_eq!((at(0), at(1)), (Some((false, 0)), Some((true, 0))));
+        let last = || (0..2).map(|_| client.turn().last()).collect::<Vec<_>>();
+        assert_eq!(last(), [Some(0), Some(0)], "asked last, either turn");
+        let nanosecond = Duration::from_nanos(1);
+        clock.pass(PASS_OVER.saturating_sub(nanosecond));
+        assert_eq!(last(), [Some(0), Some(0)], "a nanosecond short");
+        clock.pass(nanosecond);
+        let first: Vec<_> = (0..2).map(|_| client.turn().next()).collect();
+        assert!(first.contains(&Some(0)), "in its turn again: {first:?}");
     }
 
     #[test]

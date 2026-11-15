@@ -51,7 +51,9 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
   by a value within a time, oldest or newest first, their values in the
   clear in the files, and neither key nor kind nor value anywhere in them,
   a tampered record refused with its scope, the store refused under another
-  key of the same name.
+  key of the same name. Its crowded node (`fixture::crowd`) tells time by
+  the estate's one test clock, `xcore::clock::Stepped`, as every test here
+  does.
 
 ## Xmip Storage
 
@@ -378,7 +380,10 @@ and 9).
   passing over one that did not for its pass-over; each connect and read is
   bounded by its timeout, both given to `StorageClient::new` from the node's
   `[tuning]` (`storage_timeout`, `storage_pass_over`; five seconds each by
-  default, `storage::client::TIMEOUT` and `PASS_OVER`). `storage::statement` binds
+  default, `storage::client::TIMEOUT` and `PASS_OVER`). The pass-over is
+  counted on the monotonic reading of the client's Clock:
+  `StorageClient::with_clock` takes it, `new` hands in `SystemClock`
+  (ADR-0068, amendment 2026-11-15). `storage::statement` binds
   it to one Storage node for a whole statement — a receive cycle's chunks,
   Publication and Journeys — which fails with that node rather than moving
   on (the owner, 2026-10-03). A new connection first asks what its Storage
@@ -408,9 +413,10 @@ and 9).
   first, synced before it is said whole, where it cannot take them on,
   with its data key handed inside the mutual TLS and wrapped under its own
   key-encryption key (ADR-0063, amendment 2026-10-22) — the standby
-  copying, then catching up on the writes taken while each was read, then
-  ready, and promoted only once ready (`Bootstrap`; ADR-0056, amendment
-  2026-11-12). `StorageServer::several`
+  copying — from when it stands by the primary, where it holds no
+  history's writes — then catching up on the writes taken while each was
+  read, then ready, and promoted only once ready (`Bootstrap`; ADR-0056,
+  amendments 2026-11-12 and 2026-11-15). `StorageServer::several`
   serves one; `StorageNode::served` refuses every operation while it is not
   the primary (`PersistError::Standby`) — a wait on queues held by no loan,
   so a primary's stop waits for none, and refused as it stops or steps down,
@@ -427,7 +433,13 @@ and 9).
   primary runs (`standby/followers.rs`). `StorageNode::followers` lists
   each standby following now with its counts and how many writes it is
   behind — what the primary's standing says, and what its node draws as
-  *copies to* (ADR-0052 and ADR-0056, amendments 2026-11-13).
+  *copies to* (ADR-0052 and ADR-0056, amendments 2026-11-13). A standby
+  syncs what it copied on each beat, and once ten milliseconds have passed
+  since its last sync on the node's Clock: `StorageNode::with_clock` takes
+  it, and its client and its primary, once promoted, tell time by it too;
+  `new` hands in `SystemClock` (ADR-0068, amendment 2026-11-15). What
+  bounds its dealings with the others, `Timings`, and their defaults are
+  `standby/timings.rs`.
 - **`database`** and **`schema`** — what each data domain's database is
   kept on, `Technology` — `rocksdb`, `sqlite`, `postgresql`, `mssql` or
   `mariadb`, as each domain's own table in the configuration names it in
@@ -528,6 +540,15 @@ the primary's return can still lose and duplicate the following.
   its standing and at `<node>/storage`. It goes on catching up only from a
   primary of the epoch it was copied in, and is copied whole again from
   any other (`standby/tests/interrupted.rs`, `standby/tests/bootstrap.rs`).
+- **A standby waiting for its first whole copy is never promoted**
+  (ADR-0056, amendment 2026-11-15). One holding no history's writes —
+  started empty, or a former primary, which gave up its positions — is
+  *copying* from when it stands by a primary, written before it keeps that
+  primary's epoch: of that epoch and holding none of its Ledger, it is
+  never taken for one holding it. A primary stopped before the copy began
+  is promoted again once both are back, even listed after the standby, and
+  the standby is copied whole from it — never the standby promoted and the
+  Ledger copied over from it (`standby/tests/uncopied.rs`).
 
 ## A record that fails its tag
 

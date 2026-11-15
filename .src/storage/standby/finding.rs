@@ -9,8 +9,8 @@ use xcore::lock::Locked;
 
 use super::super::embedded::Embedded;
 use super::super::wire::{self, Answer, Request};
-use super::{Copied, POSITION, Primary, Role, Standing, StorageNode};
-use crate::PersistError;
+use super::{Bootstrap, Copied, POSITION, Primary, Role, Standing, StorageNode};
+use crate::{EncryptedStore, PersistError};
 
 /// What one Storage node listed answered, at its place in the list.
 pub(super) struct Answered {
@@ -36,7 +36,7 @@ impl StorageNode {
             });
             if let Some(primary) = primary {
                 let (address, epoch) = (primary.address.clone(), primary.standing.epoch);
-                if let Err(problem) = self.take_up(Role::Standby(address.clone()), epoch) {
+                if let Err(problem) = self.stand_by(&address, epoch) {
                     self.told(&format!("could not follow {address}: {problem}"));
                     self.rest(self.timings.beat);
                     continue;
@@ -56,6 +56,24 @@ impl StorageNode {
             }
             self.rest(self.timings.beat);
         }
+    }
+
+    /// A standby of the primary at `address` from now, in its `epoch`. One
+    /// that holds no history's writes — started empty, or a former primary,
+    /// which gave up its positions when promoted — is copied whole by
+    /// whichever primary it follows, so it is copying first, kept durable
+    /// before that epoch: a standby waiting for its first whole copy is never
+    /// ready, never promoted, and never taken for one holding the epoch's
+    /// Ledger (ADR-0056, amendment 2026-11-15).
+    ///
+    /// # Errors
+    ///
+    /// Where copying or the epoch could not be kept: it takes up no role.
+    pub(super) fn stand_by(&self, address: &str, epoch: u64) -> Result<(), PersistError> {
+        if self.copies.history() == 0 && self.bootstrap().is_ready() {
+            self.bootstrapped(Bootstrap::Copying, &[])?;
+        }
+        self.take_up(Role::Standby(address.to_string()), epoch)
     }
 
     /// Whether this node is the one promoted: only where every Storage node
@@ -119,15 +137,12 @@ impl StorageNode {
         for engine in &self.engines {
             engine.remove(POSITION)?;
         }
-        let opened =
-            |at: usize| Copied::new(Arc::clone(&self.engines[at]), at, Arc::clone(&self.copies));
-        let primary: Primary = Embedded::open(
-            opened(0),
-            opened(1),
-            opened(2),
-            self.keys.as_ref(),
-            &self.kek,
-        )?;
+        let opened = |at: usize| {
+            let copied = Copied::new(Arc::clone(&self.engines[at]), at, Arc::clone(&self.copies));
+            EncryptedStore::open(copied, self.keys.as_ref(), &self.kek)
+        };
+        let clock = Arc::clone(&self.clock);
+        let primary: Primary = Embedded::over(opened(0)?, opened(1)?, opened(2)?, clock)?;
         primary.in_epoch(epoch);
         primary.keep_unwaited(self.timings.unwaited);
         primary.keep_written(self.timings.writer_kept);

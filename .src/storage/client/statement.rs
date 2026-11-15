@@ -23,6 +23,7 @@ impl StorageClient {
             config: Arc::clone(&self.config),
             timeout: self.timeout,
             pass_over: self.pass_over,
+            clock: Arc::clone(&self.clock),
             epoch: Arc::clone(&self.epoch),
             pinned: Some(index),
         }

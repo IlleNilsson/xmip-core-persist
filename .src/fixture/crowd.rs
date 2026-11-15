@@ -3,9 +3,10 @@
 //! `storage::due`'s tests and the module's timing program (`tests/measured`)
 //! both read what is due from. Through the storage's public surface alone.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use xcore::clock::Stepped;
 use xcore::{AuditId, Clock, JourneyId, MessageId};
 
 use super::{Counted, Memory};
@@ -22,41 +23,20 @@ pub const LEASE: Duration = Duration::from_secs(30);
 /// An hour, in nanoseconds: a retry not due while a test runs.
 pub const HOUR: u64 = 3_600_000_000_000;
 
-/// A clock a test moves by hand.
-#[derive(Default)]
-pub struct Pinned(Mutex<i128>);
-
-impl Pinned {
-    /// The clock moved on by `nanos`.
-    ///
-    /// # Panics
-    ///
-    /// Where another thread panicked holding it.
-    pub fn pass(&self, nanos: i128) {
-        *self.0.lock().expect("clock") += nanos;
-    }
-}
-
-impl Clock for Pinned {
-    fn unix_timestamp_nanos(&self) -> i128 {
-        *self.0.lock().expect("clock")
-    }
-}
-
 /// A Storage node in memory, its runtime database counting what it reads.
 pub type Node = Embedded<Box<Counted>, Memory>;
 
-/// An empty [`Node`] and its clock, a microsecond past the epoch.
+/// An empty [`Node`] and the clock it is stepped by, a microsecond past the
+/// epoch.
 ///
 /// # Panics
 ///
 /// Where the node does not open.
 #[must_use]
-pub fn node() -> (Node, Arc<Pinned>) {
+pub fn node() -> (Node, Arc<Stepped>) {
     let keys = secret::Held::new(secret::fixture::Memory::default());
     let kek = secret::KekName::new("storage").expect("name");
-    let clock = Arc::new(Pinned::default());
-    clock.pass(1_000);
+    let clock = Arc::new(Stepped::at(1_000));
     let node = Embedded::over(
         EncryptedStore::open(Box::default(), &keys, &kek).expect("runtime"),
         EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),

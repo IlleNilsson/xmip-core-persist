@@ -70,7 +70,7 @@ fn each_node_s_latest_row_is_a_member_and_the_rows_before_it_are_kept() {
     storage
         .write_member(&start(1, &first, false))
         .expect("written");
-    clock.pass(1_000);
+    clock.pass(Duration::from_micros(1));
     storage
         .write_member(&start(1, &first, false))
         .expect("asked again");
@@ -80,7 +80,7 @@ fn each_node_s_latest_row_is_a_member_and_the_rows_before_it_are_kept() {
     assert_eq!(one.started_unix_nanos, 1_000, "Storage's time, kept");
     assert!(one.latest && one.runs());
 
-    clock.pass(1_000);
+    clock.pass(Duration::from_micros(1));
     storage
         .write_member(&start(1, &first, true))
         .expect("stopped");
@@ -91,7 +91,7 @@ fn each_node_s_latest_row_is_a_member_and_the_rows_before_it_are_kept() {
         "a member stopped in order is still listed"
     );
 
-    clock.pass(1_000);
+    clock.pass(Duration::from_micros(1));
     storage
         .write_member(&start(2, &first, false))
         .expect("started again");

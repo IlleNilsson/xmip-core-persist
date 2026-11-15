@@ -318,7 +318,9 @@ mod tests {
         MessageFacts, MessageRecord, Publication, Query, Span, XmipStorage,
     };
     use secret::KekName;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use xcore::clock::Stepped;
     use xcore::{AuditId, Clock, JourneyId, MessageId};
 
     /// A record of each searchable table, as a row.
@@ -463,26 +465,12 @@ mod tests {
         }
     }
 
-    /// A clock a test sets by hand.
-    #[derive(Default)]
-    struct Pinned(Mutex<i128>);
-
-    impl Pinned {
-        fn set(&self, nanos: i128) {
-            *self.0.lock().expect("clock") = nanos;
-        }
-    }
-
-    impl Clock for Pinned {
-        fn unix_timestamp_nanos(&self) -> i128 {
-            *self.0.lock().expect("clock")
-        }
-    }
-
-    fn node() -> (Embedded<Memory, Memory>, Arc<Pinned>) {
+    /// A node at the epoch, and the clock it is stepped by: its time is the
+    /// nanoseconds passed since.
+    fn node() -> (Embedded<Memory, Memory>, Arc<Stepped>) {
         let keys = secret::Held::new(secret::fixture::Memory::default());
         let kek = KekName::new("storage").expect("name");
-        let clock = Arc::new(Pinned::default());
+        let clock = Arc::new(Stepped::default());
         let node = Embedded::over(
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("runtime"),
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
@@ -567,12 +555,12 @@ mod tests {
 
     /// Three Publications: partner-x's to Billing at ten, partner-x's to
     /// Archive and Fabrikam's to Billing, in another state, at twenty.
-    fn three() -> (Embedded<Memory, Memory>, Arc<Pinned>) {
+    fn three() -> (Embedded<Memory, Memory>, Arc<Stepped>) {
         let (node, clock) = node();
-        clock.set(10);
+        clock.pass(Duration::from_nanos(10));
         node.publish(published(1, "partner-x", "Billing", "Active"))
             .expect("published");
-        clock.set(20);
+        clock.pass(Duration::from_nanos(10));
         node.publish(published(2, "partner-x", "Archive", "Active"))
             .expect("published");
         node.publish(published(3, "Fabrikam", "Billing", "Completed"))
@@ -634,7 +622,7 @@ mod tests {
         };
         assert_eq!(find(&node, crossed), [], "a Party is no Send Port");
 
-        clock.set(30);
+        clock.pass(Duration::from_nanos(10));
         node.write_journey(&journey(1, "Billing", "Completed"))
             .expect("written again");
         assert_eq!(find(&node, waiting), [102], "its old entries gone");
@@ -764,7 +752,7 @@ mod tests {
     #[test]
     fn administration_and_dead_messages_are_found_by_time() {
         let (node, clock) = node();
-        clock.set(5);
+        clock.pass(Duration::from_nanos(5));
         let record = AdministrationRecord {
             kind: AdministrationKind::Operator,
             id: 6,
@@ -777,7 +765,7 @@ mod tests {
             updated,
         };
         assert_eq!(find(&node, updated(span(5, 5))), [6]);
-        clock.set(9);
+        clock.pass(Duration::from_nanos(4));
         node.write_administration(&record).expect("written again");
         assert_eq!(find(&node, updated(span(5, 5))), [], "moved on");
         assert_eq!(find(&node, updated(span(9, 9))), [6]);

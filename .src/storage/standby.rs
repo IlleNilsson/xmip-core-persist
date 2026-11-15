@@ -45,7 +45,10 @@
 //! 2026-11-12): its primary's pages reflect the writes taken while it
 //! scanned in part, so it holds one state of its primary's only once it has
 //! replayed them as far as the primary said the copy reaches; until then it
-//! says so in its standing and is never promoted, across a restart too.
+//! says so in its standing and is never promoted, across a restart too. One
+//! holding no history's writes is copying from when it stands by a primary,
+//! so one waiting for its first whole copy is never ready either (amendment
+//! 2026-11-15).
 //! Each epoch is kept, durable, before a role is taken in it; a promotion
 //! whose epoch cannot be kept fails. What a failover loses and duplicates
 //! is the README's *What a failover loses*. What a primary hands each
@@ -61,12 +64,14 @@ mod position;
 mod served;
 mod ship;
 mod shipped;
+mod timings;
 
 pub use bootstrap::Bootstrap;
 pub use copies::{Behind, Copied, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
 pub use followers::Follower;
 pub use shipped::{Follow, Shipped, Standing};
+pub use timings::{BEAT, KEPT, SILENCE, Timings};
 
 pub(crate) use position::POSITION;
 
@@ -75,6 +80,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use xcore::lock::{Locked, ReadWriteLocked};
+use xcore::{Clock, SystemClock};
 
 use secret::{KekName, KeyStore};
 
@@ -86,44 +92,6 @@ use crate::{Engine, PersistError};
 /// Where a Storage node keeps, in its runtime database, the latest epoch it
 /// met.
 const EPOCH: &[u8] = b"\0xmip-core-persist/epoch\0";
-
-/// How often a primary says it is there to a standby it has nothing to
-/// hand, where the node's `[tuning] storage_beat` does not say.
-pub const BEAT: Duration = Duration::from_millis(100);
-
-/// How long a Storage node waits to hear from another — the standing it
-/// asks for, its primary's next write or beat — and how often a primary
-/// asks the others what they are, where the node's `[tuning]
-/// storage_silence` does not say.
-pub const SILENCE: Duration = Duration::from_secs(1);
-
-/// The most bytes of each database's writes a Storage node keeps for a
-/// standby behind it, where the node's `[tuning] storage_kept` does not say.
-pub const KEPT: usize = 64 * 1024 * 1024;
-
-/// What bounds a Storage node's dealings with the others, and what it keeps
-/// of their waits while it is the primary.
-#[derive(Clone, Copy, Debug)]
-pub struct Timings {
-    /// How often a primary beats to an idle standby.
-    pub beat: Duration,
-    /// How long it waits to hear from another — a standing asked, its
-    /// primary's next write or beat — and how often a primary asks the
-    /// others what they are.
-    pub silence: Duration,
-    /// What bounds each connect and each read of another.
-    pub timeout: Duration,
-    /// How long one that did not answer is asked last, as a node asks.
-    pub pass_over: Duration,
-    /// The most bytes of each database's writes kept for a standby.
-    pub kept: usize,
-    /// The most of what no node waits on now its primary keeps where its
-    /// writer left it (`super::watch`, [`super::UNWAITED`] by default).
-    pub unwaited: usize,
-    /// The most bytes of the records it wrote its primary's writer keeps
-    /// ([`super::WRITER_KEPT`] by default).
-    pub writer_kept: usize,
-}
 
 /// One database as a Storage node keeps it: its engine, its writes kept.
 pub type Database = Copied<Arc<dyn Engine>>;
@@ -166,6 +134,9 @@ pub struct StorageNode {
     config: Arc<tls::ClientConfig>,
     reaching: Arc<StorageClient>,
     timings: Timings,
+    /// What its standby's syncs, its primary's times and its own client's
+    /// passing over are counted on.
+    clock: Arc<dyn Clock>,
     stopping: AtomicBool,
     /// Each standby it hands writes to, by the node its certificate names,
     /// and what it handed each ([`followers`]).
@@ -185,8 +156,8 @@ impl StorageNode {
     /// A Storage node over `engines` — runtime, administration, audit —
     /// sealed under `kek` in `keys`, one of the Storage nodes `listed`,
     /// presenting `identity` to the others and to a primary it asks for
-    /// its own work. It serves nothing and settles nothing until
-    /// [`StorageNode::start`].
+    /// its own work, on the operating system's clock. It serves nothing and
+    /// settles nothing until [`StorageNode::start`].
     ///
     /// # Errors
     ///
@@ -194,10 +165,27 @@ impl StorageNode {
     /// address with no port, or `identity` makes no client.
     pub fn new(
         engines: [Arc<dyn Engine>; DATABASES],
+        keys: (Arc<dyn KeyStore>, KekName),
+        listed: &[String],
+        identity: &tls::Identity,
+        timings: Timings,
+    ) -> Result<Arc<Self>, PersistError> {
+        let clock = Arc::new(SystemClock);
+        Self::with_clock(engines, keys, listed, identity, timings, clock)
+    }
+
+    /// [`StorageNode::new`] on `clock`.
+    ///
+    /// # Errors
+    ///
+    /// As [`StorageNode::new`].
+    pub fn with_clock(
+        engines: [Arc<dyn Engine>; DATABASES],
         (keys, kek): (Arc<dyn KeyStore>, KekName),
         listed: &[String],
         identity: &tls::Identity,
         timings: Timings,
+        clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, PersistError> {
         let positions = engines
             .iter()
@@ -216,7 +204,9 @@ impl StorageNode {
             .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
             .map_or(0, u64::from_be_bytes);
         let bootstrap = bootstrap::kept(engines[0].as_ref())?;
-        let reaching = StorageClient::new(listed, identity, timings.timeout, timings.pass_over)?;
+        let (timeout, pass_over) = (timings.timeout, timings.pass_over);
+        let reaching =
+            StorageClient::with_clock(listed, identity, timeout, pass_over, Arc::clone(&clock))?;
         let config = identity
             .client()
             .map_err(|error| PersistError::Unreachable {
@@ -240,6 +230,7 @@ impl StorageNode {
             config: Arc::new(tls::alpn::offering(config, &[ALPN])),
             reaching: Arc::new(reaching),
             timings,
+            clock,
             stopping: AtomicBool::new(false),
             followers: followers::Followers::default(),
             finding: Mutex::new(None),

@@ -5,12 +5,14 @@
 //! keeps of every record, what the store holds of it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use xcore::clock::Stepped;
 use xcore::{Clock, JourneyId};
 
 use super::super::{DUE_PLACES, DuePlaces, NO_RETRY, places_key, said};
 use crate::EncryptedStore;
-use crate::fixture::crowd::{HOUR, LEASE, Pinned, QUEUE, hand_on, publication};
+use crate::fixture::crowd::{HOUR, LEASE, QUEUE, hand_on, publication};
 use crate::fixture::{Hooked, Hooks, Memory};
 use crate::storage::commit::HELD;
 use crate::storage::queue::entry_key;
@@ -24,7 +26,7 @@ struct Opened {
     runtime: Arc<Hooked<Memory>>,
     hooks: Arc<Hooks>,
     keys: secret::Held<secret::fixture::Memory>,
-    clock: Arc<Pinned>,
+    clock: Arc<Stepped>,
 }
 
 impl Opened {
@@ -32,8 +34,7 @@ impl Opened {
         let hooks = Arc::new(Hooks::default());
         let runtime = Arc::new(Hooked::new(Memory::default(), &hooks));
         let keys = secret::Held::new(secret::fixture::Memory::default());
-        let clock = Arc::new(Pinned::default());
-        clock.pass(1_000);
+        let clock = Arc::new(Stepped::at(1_000));
         Self {
             runtime,
             hooks,
@@ -141,7 +142,7 @@ fn what_the_writer_keeps_is_what_the_store_holds_after_every_write_a_refusal_and
     holds(&node, "a failure");
     assert!(handed(&node, 1, sent));
     holds(&node, "the first sent");
-    opened.clock.pass(10);
+    opened.clock.pass(Duration::from_nanos(10));
     assert!(handed(&node, 3, sent));
     holds(&node, "the retry due, sent");
 

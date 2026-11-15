@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use codec::form::Form;
+use xcore::clock::nanos;
 use xcore::{AuditId, Clock, JourneyId, MessageId, StreamId};
 
 use super::audit_entry::AuditEntry;
-use super::claim::lease_nanos;
 use super::columns::Columns;
 use super::commit::{CHUNK, Committer, Done, JOURNEY, MESSAGE, Op, STREAM};
 use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
@@ -259,7 +259,7 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     ) -> Result<Option<Claim>, PersistError> {
         self.claimed(Op::Claim {
             claim: Claim::asked(journey, holder, token),
-            lease_nanos: lease_nanos(lease),
+            lease_nanos: nanos(lease),
         })
     }
 
@@ -272,14 +272,14 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     ) -> Result<(Option<Claim>, Durable), PersistError> {
         self.claimed_ahead(Op::Claim {
             claim: Claim::asked(journey, holder, token),
-            lease_nanos: lease_nanos(lease),
+            lease_nanos: nanos(lease),
         })
     }
 
     fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
         self.held(Op::Renew {
             claims: claims.to_vec(),
-            lease_nanos: lease_nanos(lease),
+            lease_nanos: nanos(lease),
         })
     }
 
@@ -406,22 +406,7 @@ mod tests {
     use crate::storage::{AuditFacts, JourneyFacts, MessageFacts};
     use secret::{Held, KekName};
     use std::assert_matches;
-
-    /// A clock a test moves by hand.
-    #[derive(Default)]
-    struct Pinned(Mutex<i128>);
-
-    impl Pinned {
-        fn pass(&self, nanos: i128) {
-            *self.0.lock().expect("clock") += nanos;
-        }
-    }
-
-    impl Clock for Pinned {
-        fn unix_timestamp_nanos(&self) -> i128 {
-            *self.0.lock().expect("clock")
-        }
-    }
+    use xcore::clock::Stepped;
 
     type Node = Embedded<Memory, Memory>;
 
@@ -430,10 +415,10 @@ mod tests {
         configure::fixture::test_cluster().node_scope(place)
     }
 
-    fn node() -> (Node, Arc<Pinned>) {
+    fn node() -> (Node, Arc<Stepped>) {
         let keys = Held::new(secret::fixture::Memory::default());
         let kek = KekName::new("storage").expect("name");
-        let clock = Arc::new(Pinned::default());
+        let clock = Arc::new(Stepped::default());
         let node = Embedded::over(
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("runtime"),
             EncryptedStore::open(Memory::default(), &keys, &kek).expect("administration"),
@@ -568,14 +553,14 @@ mod tests {
             .claim(JOURNEY_ID, &holder(0), 1, LEASE)
             .expect("claimed")
             .expect("taken");
-        clock.pass(10_000_000_000);
+        clock.pass(Duration::from_secs(10));
         let renewed = node
             .renew(std::slice::from_ref(&old), LEASE)
             .expect("renewed")
             .pop()
             .expect("still held");
         assert_eq!(renewed.until_unix_nanos, 40_000_000_000);
-        clock.pass(41_000_000_000);
+        clock.pass(Duration::from_secs(41));
         let new = node
             .claim(JOURNEY_ID, &holder(1), 2, LEASE)
             .expect("claimed")
@@ -622,7 +607,7 @@ mod tests {
                 .expect("claimed")
                 .expect("taken");
             fences.push(held.fence);
-            clock.pass(31_000_000_000);
+            clock.pass(Duration::from_secs(31));
         }
         assert!(fences.windows(2).all(|w| w[0] < w[1]), "{fences:?}");
         assert_eq!(fences[2] >> 32, 4, "the epoch in the high half");
@@ -671,7 +656,7 @@ mod tests {
 
         assert_eq!(renewed.len(), 1, "the one given back is not renewed");
         assert_eq!(renewed[0].until_unix_nanos, 300_000_000_000);
-        clock.pass(31_000_000_000);
+        clock.pass(Duration::from_secs(31));
         let early = node.claim(JOURNEY_ID, &holder(1), 9, LEASE).expect("asked");
         assert_eq!(
             early, None,
@@ -1300,7 +1285,7 @@ mod tests {
         assert_eq!(waiting.held[0].hold.journey, JourneyId::new(1), "joined");
         let other = node.claim(JourneyId::new(1), &holder(1), 2, LEASE);
         assert_eq!(other.expect("claimed"), None, "kept until it is due");
-        clock.pass(5_000_000_001);
+        clock.pass(Duration::from_nanos(5_000_000_001));
         let lapsed = node.claim(JourneyId::new(1), &holder(1), 2, LEASE);
         assert!(lapsed.expect("claimed").is_some(), "due: another takes it");
     }
@@ -1338,7 +1323,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [7]
         );
-        clock.pass(1_001);
+        clock.pass(Duration::from_nanos(1_001));
         let lapsed = node.claim(JourneyId::new(1), &holder(1), 8, LEASE);
         assert!(lapsed.expect("claimed").is_some(), "its lease ran out");
     }
@@ -1380,7 +1365,7 @@ mod tests {
         assert_eq!(first.len(), 1, "its node holds what it claimed");
         // Its answer lost, its claim lapses; another node sends the Message
         // and takes it out of its queue.
-        clock.pass(1_001);
+        clock.pass(Duration::from_nanos(1_001));
         assert!(
             node.hand_on(leaving(&node, 7, 1, b"completed"))
                 .expect("sent")
