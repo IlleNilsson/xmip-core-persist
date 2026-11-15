@@ -222,8 +222,11 @@ impl XmipStorage for StorageClient {
         expected(self.ask(&Request::Release(claim.clone()))?, yes)
     }
 
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
-        expected(self.ask(&Request::HandOn(hand_on.clone()))?, yes)
+    /// Answered by the Storage node once durable there; what its batch
+    /// worked is not told over the wire.
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
+        let taken = expected(self.ask(&Request::HandOn(hand_on))?, yes)?;
+        Ok((taken, Durable::kept()))
     }
 
     fn turn(&self, turn: &Turn) -> Result<bool, PersistError> {

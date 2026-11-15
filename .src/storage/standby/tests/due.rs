@@ -14,7 +14,7 @@ fn handed(client: &StorageClient, id: u128, how: impl FnOnce(&mut HandOn)) {
     let claim = client.claim(JourneyId::new(id), &holder, id, LEASE);
     let mut handing = hand_on(claim.expect("asked").expect("claimed"));
     how(&mut handing);
-    assert!(client.hand_on(&handing).expect("handed on"));
+    assert!(client.hand_on(handing).expect("handed on").0);
 }
 
 /// The Journeys `part` of [`QUEUE`] holds, in its order, and how many keep

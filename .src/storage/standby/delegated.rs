@@ -180,7 +180,7 @@ impl XmipStorage for Delegated {
         self.now()?.storage.release(claim)
     }
 
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
         self.now()?.storage.hand_on(hand_on)
     }
 

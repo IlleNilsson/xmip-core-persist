@@ -358,10 +358,10 @@ mod tests {
         counted.touched();
         published(&node, 2..3);
         // Its Message, Journey, claim, place and holder record are new, and
-        // its queue's places by when each is due kept by the writer: read are
-        // its own record, by its Message, and its queue's places; and one
-        // range, for the first due since held, which finds the Message
-        // before it.
-        assert_eq!(counted.touched(), (2, 1, 1));
+        // its queue's places, and by when each is due, kept by the writer as
+        // the Publication before left them: read is its own record, by its
+        // Message; and one range, for the first due since held, which finds
+        // the Message before it.
+        assert_eq!(counted.touched(), (1, 1, 1));
     }
 }

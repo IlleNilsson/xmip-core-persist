@@ -2,7 +2,8 @@
 //! that submits to it reads the answer (`super::super::commit`): written,
 //! a claim — once durable, or ahead of its sync with when it is durable —
 //! the claims a Publication's node holds — answered before its sync, with
-//! when it is durable — or a verdict.
+//! when it is durable — or a verdict, once durable, with what its batch
+//! worked for it.
 
 use super::super::commit::{Done, Op};
 use super::super::durable::Durable;
@@ -48,8 +49,24 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     }
 
     pub(super) fn yes(&self, op: Op) -> Result<bool, PersistError> {
-        match self.committer.submit(op)? {
-            Done::Yes(yes) => Ok(yes),
+        self.yes_kept(op).map(|(yes, _)| yes)
+    }
+
+    /// Each record its writer keeps of what it wrote, by its place, as it
+    /// keeps it: what a test holds against the store
+    /// (`super::super::commit::kept`).
+    #[cfg(test)]
+    pub(crate) fn writer_kept(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        self.committer.kept()
+    }
+
+    /// A verdict, once durable, and its durability: what its batch worked
+    /// for it (`Durable::worked`).
+    pub(super) fn yes_kept(&self, op: Op) -> Result<(bool, Durable), PersistError> {
+        let (done, durable) = self.committer.ahead(op)?;
+        durable.wait()?;
+        match done {
+            Done::Yes(yes) => Ok((yes, durable)),
             _ => Err(malformed("the writer answered no verdict")),
         }
     }

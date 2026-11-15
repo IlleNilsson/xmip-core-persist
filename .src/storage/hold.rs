@@ -192,10 +192,12 @@ pub(crate) fn wait<R: Engine>(
     let Some(bytes) = batch.read(store, KINDS.entry, &key)? else {
         return Ok(());
     };
-    let mut held = Held::from_bytes(&bytes)?;
-    held.due_unix_nanos = Some(due);
-    batch.put(KINDS.entry, key, Some(held.bytes()));
-    Ok(())
+    let before = Held::from_bytes(&bytes)?;
+    let held = Held {
+        due_unix_nanos: Some(due),
+        ..before.clone()
+    };
+    batch.replaced(KINDS.entry, key, held, Some(&before))
 }
 
 /// The Message held at `sequence` in `queue` marked `failed`, or not, in
@@ -213,15 +215,16 @@ pub(crate) fn mark<R: Engine>(
     let Some(bytes) = batch.read(store, KINDS.entry, &key)? else {
         return Ok(());
     };
-    let mut held = Held::from_bytes(&bytes)?;
-    if held.failed != failed {
-        held.failed = failed;
-        if failed {
-            held.due_unix_nanos = None;
-        }
-        batch.put(KINDS.entry, key, Some(held.bytes()));
+    let before = Held::from_bytes(&bytes)?;
+    if before.failed == failed {
+        return Ok(());
     }
-    Ok(())
+    let held = Held {
+        failed,
+        due_unix_nanos: before.due_unix_nanos.filter(|_| !failed),
+        ..before.clone()
+    };
+    batch.replaced(KINDS.entry, key, held, Some(&before))
 }
 
 /// The Message held at `sequence` in `queue` let go of, in `batch`: its
@@ -453,7 +456,7 @@ mod tests {
             waits: None,
             kept_for_nanos: None,
         };
-        assert!(node.hand_on(&retried).expect("handed on"));
+        assert!(node.hand_on(retried).expect("handed on").0);
         let read = node.read_held(queue, 0, 10).expect("read");
         let order: Vec<u128> = read.held.iter().map(|h| h.hold.journey.value()).collect();
         assert_eq!(order, [2, 3, 1], "taken up after what waits now");

@@ -23,7 +23,7 @@ fn timings() -> Timings {
         pass_over: Duration::from_millis(200),
         kept: 1 << 20,
         unwaited: crate::storage::UNWAITED,
-        due_places: crate::storage::DUE_QUEUES,
+        writer_kept: crate::storage::WRITER_KEPT,
     }
 }
 

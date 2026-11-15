@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
+use crate::encrypted_store::place::place;
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 use searched::{Searched, lay};
 
@@ -49,9 +50,10 @@ pub(crate) fn table(database: Database, name: &str) -> Option<&'static Table> {
         .find(|table| table.database == database && table.name == name)
 }
 
-/// The index entries of each record a batch made new and laid out as it
-/// made it, by its place, its kind and its key (`super::commit::Batch`).
-pub(crate) type Laid<'a> = HashMap<(&'a str, Vec<u8>), Vec<IndexEntry>>;
+/// The changes to the index entries of each record a batch laid out as it
+/// made it — new, or over the record it replaces — by its place, as the
+/// store seals it for (`super::commit::Batch`).
+pub(crate) type Laid = HashMap<Vec<u8>, Vec<IndexEntry>>;
 
 /// One database's laid-out tables, as its records are written and its
 /// indexes read.
@@ -65,10 +67,14 @@ impl Columns {
         Self { database }
     }
 
-    /// `record`, of `kind`, made new — nothing is before it — stamped at
-    /// `now`: the bytes to keep, and the index entries of its table that go
-    /// with it; none where its kind is not a searchable table's. Laid out
-    /// from the record as it is: nothing read, nothing decoded.
+    /// `record`, of `kind`, written over `before`, the record it replaces —
+    /// none where it is made new — stamped at `now`: the bytes to keep, and
+    /// the changes to its table's index entries that go with it: each entry
+    /// `before` has and `record` has not taken out, each `record` has and
+    /// `before` has not put in, and none both have touched; none where its
+    /// kind is not a searchable table's. Laid out from both as they are:
+    /// nothing read, nothing decoded (2026-11-14, and a record replaced
+    /// 2026-11-15).
     ///
     /// # Errors
     ///
@@ -77,14 +83,30 @@ impl Columns {
         &self,
         kind: &str,
         record: &mut T,
+        before: Option<&T>,
         now: u64,
     ) -> Result<(Vec<u8>, Vec<IndexEntry>), PersistError> {
         let Some(searched) = Searched::of(self.database, kind) else {
             return Ok((record.bytes(), Vec::new()));
         };
-        let (bytes, row, id) = lay(record, None, now);
-        let keys = self.entries(searched.table(), &row, id)?;
-        Ok((bytes, keys.into_iter().map(|key| (key, Some(id))).collect()))
+        let table = searched.table();
+        let gone = match before {
+            Some(before) => self.entries(table, &before.row(), before.id())?,
+            None => Vec::new(),
+        };
+        let (bytes, row, id) = lay(record, before, now);
+        let kept = self.entries(table, &row, id)?;
+        let mut entries: Vec<IndexEntry> = gone
+            .iter()
+            .filter(|key| !kept.contains(key))
+            .map(|key| (key.clone(), None))
+            .collect();
+        entries.extend(
+            kept.into_iter()
+                .filter(|key| !gone.contains(key))
+                .map(|key| (key, Some(id))),
+        );
+        Ok((bytes, entries))
     }
 
     /// `changes` as they are written at `now` — each searchable record
@@ -108,42 +130,42 @@ impl Columns {
     /// As [`Columns::written`], each record a change replaces as `kept`
     /// says the store holds it: what a batch read of it already, read
     /// once (`super::commit::Batch::before`); and each record `laid` holds
-    /// the index entries of — one the batch made new and laid out as it
-    /// made it (`super::commit::Batch::created`) — kept as it is: its first
-    /// change reads nothing it replaces, there being none, and is not
-    /// stamped again.
+    /// the index entries of — one the batch laid out as it made it, new or
+    /// over the record it replaces (`super::commit::Batch::created`,
+    /// `super::commit::Batch::replaced`) — kept as it is: its first change
+    /// reads nothing it replaces and is not stamped again.
     ///
     /// # Errors
     ///
     /// As [`Columns::written`].
     pub(crate) fn written_over<'a>(
         &self,
-        (changes, mut laid): (Vec<RecordChange<'a>>, Laid<'a>),
+        (changes, mut laid): (Vec<RecordChange<'a>>, Laid),
         now: u64,
         kept: impl Fn(&'a str, &[u8]) -> Result<Option<Vec<u8>>, PersistError>,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
         let mut entries = Vec::new();
-        let mut latest: HashMap<(&'a str, Vec<u8>), Option<Vec<u8>>> = HashMap::new();
-        let mut written = Vec::with_capacity(changes.len());
+        // Where in `written` each searchable place was last written.
+        let mut latest: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut written: Vec<RecordChange<'a>> = Vec::with_capacity(changes.len());
         for (kind, key, value) in changes {
             let Some(searched) = Searched::of(self.database, kind) else {
                 written.push((kind, key, value));
                 continue;
             };
-            let place = (kind, key);
-            let before = match latest.get(&place) {
-                Some(before) => before.clone(),
-                None => match laid.remove(&place) {
+            let at = place(kind, &key);
+            let last = latest.insert(at.to_vec(), written.len());
+            let before = match last {
+                Some(last) => written[last].2.clone(),
+                None => match laid.remove(&*at) {
                     Some(made) => {
                         entries.extend(made);
-                        latest.insert(place.clone(), value.clone());
-                        written.push((place.0, place.1, value));
+                        written.push((kind, key, value));
                         continue;
                     }
-                    None => kept(kind, &place.1)?,
+                    None => kept(kind, &key)?,
                 },
             };
-            let (kind, key) = place;
             if let Some(before) = &before {
                 let (row, id) = searched.row(before)?;
                 let gone = self.entries(searched.table(), &row, id)?;
@@ -158,7 +180,6 @@ impl Columns {
                 }
                 None => None,
             };
-            latest.insert((kind, key.clone()), value.clone());
             written.push((kind, key, value));
         }
         Ok((written, entries))
@@ -624,6 +645,97 @@ mod tests {
         let facts = facts.expect("there").facts;
         let times = (facts.created_unix_nanos, facts.updated_unix_nanos);
         assert_eq!(times, (10, 30), "created kept, updated now");
+    }
+
+    /// Every index entry `store` keeps, its key after the index mark and the
+    /// record it finds, in their order.
+    fn indexed(store: &EncryptedStore<Memory>) -> Vec<(Vec<u8>, u128)> {
+        let entries = store.scan_index_keyed(&[], &[0xFF; 80], usize::MAX, false);
+        entries.expect("read")
+    }
+
+    /// `first` of `kind` written, then each of `changes` made to it and
+    /// written over it twice: as a whole rewrite, the record it replaces
+    /// read and decoded; and laid out once over it ([`Columns::laid`]).
+    /// Both leave the same record and the same index entries, and the
+    /// second writes only the entries the two differ in.
+    fn laid_once_as_rewritten<T: Columned + Clone>(
+        kind: &'static str,
+        first: &T,
+        changes: &[fn(&mut T)],
+    ) {
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        let kek = KekName::new("storage").expect("name");
+        let columns = Columns::of(Database::Runtime);
+        let key = first.id().to_be_bytes().to_vec();
+        for change in changes {
+            let open = || EncryptedStore::open(Memory::default(), &keys, &kek).expect("open");
+            let (whole, once) = (open(), open());
+            for store in [&whole, &once] {
+                let made = vec![(kind, key.clone(), Some(first.bytes()))];
+                let (written, entries) = columns.written(store, made, 10).expect("laid");
+                store.apply_indexed(&written, &entries).expect("written");
+            }
+            let mut after = first.clone();
+            change(&mut after);
+            let rewrite = vec![(kind, key.clone(), Some(after.bytes()))];
+            let (written, rewritten) = columns.written(&whole, rewrite, 20).expect("laid");
+            whole.apply_indexed(&written, &rewritten).expect("written");
+            let before = once.get(kind, &key).expect("read").expect("there");
+            let before = T::from_bytes(&before).expect("a record");
+            let (bytes, entries) = columns
+                .laid(kind, &mut after, Some(&before), 20)
+                .expect("laid");
+            let written = [(kind, key.clone(), Some(bytes))];
+            once.apply_indexed(&written, &entries).expect("written");
+            let read = |store: &EncryptedStore<Memory>| store.get(kind, &key).expect("read");
+            assert_eq!(read(&once), read(&whole), "{kind}: the same record");
+            assert_eq!(indexed(&once), indexed(&whole), "{kind}: the same entries");
+            assert!(
+                entries.len() < rewritten.len(),
+                "{kind}: {} entries written where a rewrite writes {}",
+                entries.len(),
+                rewritten.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_laid_out_once_over_the_one_it_replaces_leaves_what_a_whole_rewrite_leaves() {
+        let first = journey(1, "Billing", "Active");
+        laid_once_as_rewritten(
+            super::super::commit::JOURNEY,
+            &first,
+            &[
+                |after| after.facts.state = "Completed".to_string(),
+                |after| after.facts.send_port = Some("Archive".to_string()),
+                |after| after.facts.previous_journey = None,
+                |after| {
+                    after.facts.origin = Some(9);
+                    after.facts.open = true;
+                },
+                |after| after.body = b"sent".to_vec(),
+            ],
+        );
+        let held = Held {
+            sequence: 4,
+            hold: Hold {
+                queue: 9,
+                journey: JourneyId::new(101),
+                body: b"facts".to_vec(),
+            },
+            held_unix_nanos: 0,
+            failed: false,
+            due_unix_nanos: None,
+        };
+        laid_once_as_rewritten(
+            super::super::commit::HELD,
+            &held,
+            &[
+                |after| after.due_unix_nanos = Some(5_000),
+                |after| after.failed = true,
+            ],
+        );
     }
 
     #[test]

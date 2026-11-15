@@ -85,7 +85,7 @@ pub use dead::{
 };
 pub use due::{DuePart, DueQueue};
 pub use durable::Durable;
-pub use embedded::{DUE_QUEUES, Embedded};
+pub use embedded::{Embedded, WRITER_KEPT};
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
 pub use hand_on::{HandOn, Wait};
@@ -96,7 +96,7 @@ pub use membership::MemberRecord;
 pub use publication::Publication;
 pub use query::{Ask, Query, Span};
 #[cfg(any(test, feature = "test-support"))]
-pub use queue::gap::page_across_a_gap;
+pub use queue::gap::across_a_gap;
 pub use record::{
     AdministrationKind, AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
@@ -377,12 +377,15 @@ pub trait XmipStorage: Send + Sync {
     /// step waits — together; or nothing, and `false`, where the claim is no
     /// longer its holder's. A hand-on repeated after a lost answer is `true`
     /// and writes nothing again; one after its claim was only given back is
-    /// `false`.
+    /// `false`. Answered once durable, with what its batch worked for it
+    /// ([`Durable::worked`]): a Message's share of the Storage node's work
+    /// on its hand-on, which its own share counts (2026-11-15); nothing
+    /// where the Storage node is reached over the wire, which tells none.
     ///
     /// # Errors
     ///
     /// When it cannot be read or written; nothing of it is written then.
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError>;
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError>;
 
     /// Hand a Work Process's turn on as one atomic write: its Message's
     /// hand-on, the Instances it moved and the correlation keys it set and

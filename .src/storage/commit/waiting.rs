@@ -45,6 +45,13 @@ pub(super) trait Decides {
     /// again from what was written — or, where the batch may be in the
     /// engine, the Storage node stopped.
     fn recover(&mut self);
+
+    /// Each record the writer keeps of what it wrote, by its place, as it
+    /// keeps it: what a test holds against the store (`super::kept`).
+    #[cfg(test)]
+    fn kept(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        Vec::new()
+    }
 }
 
 /// The writes waiting for a batch, and the writer that decides them.
@@ -145,6 +152,12 @@ impl Waiting {
 
     fn queue(&self) -> MutexGuard<'_, Queue> {
         self.queue.locked()
+    }
+
+    /// Each record the writer keeps, as it keeps it ([`Decides::kept`]).
+    #[cfg(test)]
+    pub(super) fn kept(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        self.writer.locked().kept()
     }
 }
 

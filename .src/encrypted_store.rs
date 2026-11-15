@@ -2,7 +2,7 @@
 //! clause 2), whatever engine holds the bytes.
 
 mod index;
-mod place;
+pub(crate) mod place;
 mod stopped;
 mod viewed;
 

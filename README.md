@@ -98,12 +98,10 @@ and 9).
   batch is decided, by one range from where it was, so no read steps over
   what `RocksDB` keeps of entries taken out (ADR-0013, amendment
   2026-10-21) — none where the batch leaves the queue holding none — and
-  keeps each queue's places as it left them (`due::Kept`, at most the
-  Storage node's `[tuning] storage_due_places` queues, `DUE_QUEUES`,
-  16,384, by default, `Embedded::keep_due` and
-  `standby::Timings::due_places`), read from the store once and only once a batch is in the
-  engine, so no batch reads or decrypts them again (ADR-0018, amendment
-  2026-11-14); a Message marked failed waits for no retry, its due time
+  keeps each queue's places as it left them, with every record it decides
+  a condition on (`commit::kept`; ADR-0018, amendments 2026-11-14 and
+  2026-11-15), so no batch reads or decrypts them again; a Message marked
+  failed waits for no retry, its due time
   taken out with the mark; wait on queues (`wait_queues`, `Position`,
   `Watched`, `Moved`, `Waiter`; `storage/watch.rs`; open problem 46,
   ADR-0018, amendments 2026-11-12): each queue named with where its waiter
@@ -293,11 +291,32 @@ and 9).
   queue and its Dead Message Queue entry — their identifiers drawn fresh —
   are kept as found empty (`Batch::absent`), and a record made new is
   stamped and laid out as it is made (`Batch::created`), never decoded
-  again for its columns. A batch is written, answered, then synced: every write but a Publication
-  and a claim asked ahead is waited on until durable, and a Publication is
-  answered with its claims and its durability (`storage::Durable`), so its
-  sends are prepared while the log syncs (ADR-0018, amendment 2026-10-20),
-  as a claim asked ahead is with its own (amendment 2026-11-12). The sync is a thread of
+  again for its columns. **The writer keeps what it wrote** (ADR-0018,
+  amendment 2026-11-15; `storage::commit::kept`): each record a later batch
+  decides a condition on — a claim, a Journey, a queue's entry, its index
+  and its places, its places by when each is due, a holder's count, the
+  audit sequence, a failed Message's and a Dead Message Queue's records, a
+  Work Process Instance and its keys — kept as the last batch left it,
+  once that batch is in the engine, and read from there (`Batch::before`),
+  neither from the engine nor decrypted again: a Message's hand-on reads
+  none of what its Publication wrote. The writer's copy is trusted, not
+  authenticated against the store again; every other read is. At most the
+  Storage node's `[tuning] storage_writer_kept` bytes, `WRITER_KEPT`,
+  sixteen mebibytes, by default (`Embedded::keep_written`,
+  `standby::Timings::writer_kept`), the first kept let go of first; a node
+  opened anew or a standby promoted keeps none, and a writer that panicked
+  forgets them. A record a batch replaces is laid out once, over what the
+  batch read of it (`Batch::replaced`): stamped, and only the index entries
+  the two differ in written. Every place a batch writes, reads or keeps is
+  found by its bytes, as the store seals it for, each value kept once. A
+  batch is written, answered, then synced: every write but a Publication,
+  a claim asked ahead and a hand-on is waited on until durable, and a
+  Publication is answered with its claims and its durability
+  (`storage::Durable`), so its sends are prepared while the log syncs
+  (ADR-0018, amendment 2026-10-20), as a claim asked ahead is with its own
+  (amendment 2026-11-12); a hand-on is answered once durable, with its
+  durability, for what its batch worked for it, which its Message's own
+  share counts (amendment 2026-11-15). The sync is a thread of
   its own (`xmip-storage-sync`), handed each batch once it is written, so
   the writer decides the next batch while the last syncs and one sync makes
   every batch written meanwhile durable together; until 2026-10-21 the
@@ -308,7 +327,8 @@ and 9).
   batch takes the stage only once the whole operation has been decided.
   A batch that writes nothing — a Publication, a hand-on or a claim asked
   again and found written — is durable with the latest batch handed to the
-  sync, never before what it found is. **A sync that fails stops the
+  sync, never before what it found is, and says what it worked itself,
+  never the latest batch's (`Durable::beside`, 2026-11-15). **A sync that fails stops the
   Storage node** (fail-stop, `EncryptedStore::sync`): the writes before it
   are in the engine, readable and perhaps answered, and may or may not
   reach the disk, so every read and write through the store is refused

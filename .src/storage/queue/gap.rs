@@ -1,10 +1,8 @@
 //! A queue whose entries lie a million places apart, written as the one
-//! writer writes them, and what its page and the writer's removal before
-//! it each cost: what `queue`'s tests read, and what the module's timing
-//! program (`tests/measured`) holds to the millisecond rule. A test's,
+//! writer writes them, and its page and the writer's removal before it:
+//! what `queue`'s tests read, and what the module's timing program
+//! (`tests/measured`) times and holds to the millisecond rule. A test's,
 //! never a node's.
-
-use std::time::{Duration, Instant};
 
 use codec::form::Form;
 use secret::KekName;
@@ -87,33 +85,22 @@ pub fn taken_out(store: &EncryptedStore<&Counted>, sequence: u64) -> Laid {
     laid
 }
 
-/// The fastest of five rounds of `round`: what it costs apart from the
-/// scheduler's.
-fn fastest(mut round: impl FnMut()) -> Duration {
-    (0..5)
-        .map(|_| {
-            let started = Instant::now();
-            round();
-            started.elapsed()
-        })
-        .min()
-        .unwrap_or_default()
-}
-
-/// What a page across a gap of a million places costs, and the writer's
-/// removal of the entry before it, each the fastest of five rounds.
+/// A queue whose two entries lie a million places apart, handed to
+/// `measure` as two calls it may make as often as it likes: a page across
+/// the gap, and the writer's removal of the entry before it decided. What
+/// it answers; the timing program times each (`tests/measured`), so how a
+/// time is held is written there once.
 ///
 /// # Panics
 ///
 /// Where the page or the removal fails.
-#[must_use]
-pub fn page_across_a_gap() -> (Duration, Duration) {
+pub fn across_a_gap<T>(measure: impl FnOnce(&mut dyn FnMut(), &mut dyn FnMut()) -> T) -> T {
     let counted = Counted::default();
     let store = queue(&counted, &[0, GAP], GAP + 1);
-    let paged = fastest(|| {
+    let mut paged = || {
         let (_, entries) = page(&store, KINDS, QUEUE, 0, 64).expect("a page");
         assert_eq!(entries.len(), 2);
-    });
-    let taken = fastest(|| drop(taken_out(&store, 0)));
-    (paged, taken)
+    };
+    let mut taken = || drop(taken_out(&store, 0));
+    measure(&mut paged, &mut taken)
 }

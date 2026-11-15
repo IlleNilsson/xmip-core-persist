@@ -64,7 +64,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
             .renew(&claims, Duration::from_nanos(lease))
             .map(Answer::Claims),
         Request::Release(claim) => storage.release(&claim).map(Answer::Yes),
-        Request::HandOn(hand_on) => storage.hand_on(&hand_on).map(Answer::Yes),
+        Request::HandOn(hand_on) => storage.hand_on(hand_on).map(|(yes, _)| Answer::Yes(yes)),
         Request::Turn(turn) => storage.turn(&turn).map(Answer::Yes),
         Request::ReadInstance(id) => storage
             .read_instance(id)

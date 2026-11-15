@@ -56,7 +56,7 @@ mod submitted;
 mod versioned;
 mod watched;
 
-pub use opened::DUE_QUEUES;
+pub use opened::WRITER_KEPT;
 
 /// The embedded Storage node's three databases, and the one writer to the
 /// first. The audit database is on the administration database's engine,
@@ -88,8 +88,8 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     epoch: Arc<AtomicU64>,
     /// Who waits on which queue, told by its writer (`super::watch`).
     watch: Arc<Watch>,
-    /// How many queues' places by when each is due its writer keeps.
-    due: Arc<AtomicUsize>,
+    /// The most bytes of the records it wrote its writer keeps.
+    kept: Arc<AtomicUsize>,
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
@@ -287,8 +287,8 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
         self.yes(Op::Release(claim.clone()))
     }
 
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
-        self.yes(Op::HandOn(Box::new(hand_on.clone())))
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
+        self.yes_kept(Op::HandOn(Box::new(hand_on)))
     }
 
     fn turn(&self, turn: &Turn) -> Result<bool, PersistError> {
@@ -601,7 +601,7 @@ mod tests {
             waits: None,
             kept_for_nanos: None,
         };
-        assert!(!node.hand_on(&late).expect("hand-on"));
+        assert!(!node.hand_on(late).expect("hand-on").0);
         assert_eq!(node.read_journey(JOURNEY_ID).expect("read"), None);
         assert!(!node.release(&old).expect("release"));
         assert!(node.release(&new).expect("release"));
@@ -663,7 +663,7 @@ mod tests {
             waits: None,
             kept_for_nanos: Some(300_000_000_000),
         };
-        assert!(node.hand_on(&kept).expect("kept to its due time"));
+        assert!(node.hand_on(kept).expect("kept to its due time").0);
         assert!(node.release(&claims[1]).expect("given back"));
 
         // The renewal asked before the hand-on, answered after it.
@@ -704,7 +704,13 @@ mod tests {
             waits: None,
             kept_for_nanos: None,
         };
-        assert!(node.hand_on(&hand_on).expect("handed on"));
+        let (taken, durable) = node.hand_on(hand_on.clone()).expect("handed on");
+        assert!(taken);
+        assert_eq!(durable.told(), Some(true), "answered once durable");
+        assert!(
+            durable.worked() > Duration::ZERO,
+            "what its batch worked for it"
+        );
         assert_eq!(
             node.read_journey(JOURNEY_ID).expect("read"),
             Some(hand_on.result.clone())
@@ -719,7 +725,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            node.hand_on(&hand_on).expect("asked again"),
+            node.hand_on(hand_on).expect("asked again").0,
             "a lost answer"
         );
         let taken = node
@@ -955,6 +961,8 @@ mod tests {
         use super::super::commit::DEAD_PLACES;
         use super::super::queue::places_key;
         let (node, _) = node();
+        // Its writer keeps nothing: it reads what is torn beneath it.
+        node.keep_written(0);
         node.runtime()
             .put(DEAD_PLACES, &places_key(7), b"torn")
             .expect("torn");
@@ -991,8 +999,8 @@ mod tests {
         assert_eq!(read.held[2].hold.journey, JourneyId::new(3));
 
         let delivered = leaving(&node, 7, 2, b"delivered");
-        assert!(node.hand_on(&delivered).expect("let go of"));
-        assert!(node.hand_on(&delivered).expect("asked again"));
+        assert!(node.hand_on(delivered.clone()).expect("let go of").0);
+        assert!(node.hand_on(delivered.clone()).expect("asked again").0);
         assert_eq!(
             node.read_journey(JourneyId::new(2)).expect("read"),
             Some(delivered.result)
@@ -1000,8 +1008,9 @@ mod tests {
         let read = node.read_held(7, 0, 10).expect("read");
         assert_eq!((read.first, read.count), (0, 3), "the first stays");
         assert!(
-            node.hand_on(&leaving(&node, 7, 1, b"done"))
+            node.hand_on(leaving(&node, 7, 1, b"done"))
                 .expect("let go of")
+                .0
         );
         let read = node.read_held(7, 0, 2).expect("read");
         let places: Vec<u64> = read.held.iter().map(|held| held.sequence).collect();
@@ -1015,6 +1024,8 @@ mod tests {
         use super::super::commit::{HELD, PLACES};
         use super::super::queue::{entry_key as held_key, places_key};
         let (node, _) = node();
+        // Its writer keeps nothing: it reads what is torn beneath it.
+        node.keep_written(0);
         let torn = |queue: u128| {
             node.runtime()
                 .put(PLACES, &places_key(queue), b"torn")
@@ -1039,7 +1050,7 @@ mod tests {
         node.publish(holding(8, 2)).expect("published");
         let delivered = leaving(&node, 8, 2, b"delivered");
         torn(8);
-        assert!(node.hand_on(&delivered).is_err());
+        assert!(node.hand_on(delivered).is_err());
         let left = node.read_journey(JourneyId::new(2)).expect("read");
         assert_eq!(left, Some(journey(JourneyId::new(2), b"held")));
         let still = node.runtime().get(HELD, &held_key(8, 0)).expect("read");
@@ -1090,11 +1101,11 @@ mod tests {
             done.result.facts.origin = Some(if id == 3 { 200 } else { 100 });
             done
         };
-        assert!(node.hand_on(&closing(1)).expect("handed on"));
+        assert!(node.hand_on(closing(1)).expect("handed on").0);
         assert_eq!(head(&node), Some(100), "one of its Journeys is still open");
-        assert!(node.hand_on(&closing(2)).expect("handed on"));
+        assert!(node.hand_on(closing(2)).expect("handed on").0);
         assert_eq!(head(&node), Some(200), "the next Stream heads it now");
-        assert!(node.hand_on(&closing(3)).expect("handed on"));
+        assert!(node.hand_on(closing(3)).expect("handed on").0);
         assert_eq!(head(&node), None);
     }
 
@@ -1141,16 +1152,16 @@ mod tests {
         placing.result.facts.group_delivery = Some(300);
         placing.result.facts.group_open = true;
         placing.queued = vec![place(late, 300)];
-        assert!(node.hand_on(&placing).expect("handed on"));
+        assert!(node.hand_on(placing).expect("handed on").0);
         assert_eq!(head(late), Some(300));
         let closing = |id: u128, delivery: u128| {
             let mut done = leaving(&node, 7, id, b"sent");
             done.result.facts.group_delivery = Some(delivery);
             done
         };
-        assert!(node.hand_on(&closing(1, 300)).expect("handed on"));
+        assert!(node.hand_on(closing(1, 300)).expect("handed on").0);
         assert_eq!(head(sequence), Some(300), "one member is still open");
-        assert!(node.hand_on(&closing(2, 300)).expect("handed on"));
+        assert!(node.hand_on(closing(2, 300)).expect("handed on").0);
         assert_eq!(head(sequence), Some(301), "the set is complete");
         assert_eq!(head(late), None, "its late place let go with it");
     }
@@ -1283,7 +1294,7 @@ mod tests {
             body: b"facts".to_vec(),
         }];
         moved.kept_for_nanos = Some(5_000_000_000);
-        assert!(node.hand_on(&moved).expect("handed on"));
+        assert!(node.hand_on(moved).expect("handed on").0);
         assert_eq!(node.read_held(7, 0, 10).expect("read").count, 0, "left");
         let waiting = node.read_held(9, 0, 10).expect("read");
         assert_eq!(waiting.held[0].hold.journey, JourneyId::new(1), "joined");
@@ -1371,8 +1382,9 @@ mod tests {
         // and takes it out of its queue.
         clock.pass(1_001);
         assert!(
-            node.hand_on(&leaving(&node, 7, 1, b"completed"))
+            node.hand_on(leaving(&node, 7, 1, b"completed"))
                 .expect("sent")
+                .0
         );
 
         let again = node.publish(publication).expect("asked again").0;
@@ -1458,7 +1470,7 @@ mod tests {
             waits: None,
             kept_for_nanos: None,
         };
-        assert!(!node.hand_on(&hand_on).expect("hand-on"), "only released");
+        assert!(!node.hand_on(hand_on).expect("hand-on").0, "only released");
         assert_eq!(node.read_journey(JOURNEY_ID).expect("read"), None);
     }
 
