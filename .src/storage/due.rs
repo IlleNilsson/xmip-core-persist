@@ -20,12 +20,9 @@
 //! decided, each queue it wrote an entry of finds its first again with one
 //! range from where it was, which steps over each mark once — none where
 //! the batch leaves it holding none — and the writer keeps each queue's
-//! places as it left them ([`Kept`]), so no batch reads them from the store
-//! again (2026-11-14).
-
-mod kept;
-
-pub(crate) use kept::{Kept, Settled};
+//! places as it left them, with every record it decides a condition on
+//! (`super::commit::kept`; 2026-11-14, and 2026-11-15), so no batch reads
+//! them from the store again.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -133,7 +130,7 @@ pub(crate) fn read<R: Engine>(
     (from, most): ((u64, u64), u32),
     now: i128,
 ) -> Result<DueQueue, PersistError> {
-    let places = kept(store, queue)?;
+    let places = said(store.get(DUE_PLACES, &places_key(queue))?)?;
     let at = nanos(now);
     let most = usize::try_from(most).unwrap_or(usize::MAX);
     let later = (at.saturating_add(1), 0).max(places.retry);
@@ -177,15 +174,14 @@ pub(crate) fn read<R: Engine>(
 /// counted on, and the first of each part found again from where it was —
 /// the first the batch did not write of what the engine holds, or one the
 /// batch wrote, whichever is first; and where the batch leaves the queue
-/// holding none, where its next place is, no range read. Each as `kept`
-/// keeps it, the writer's own ([`Kept`]): what the batch leaves, kept once
-/// it is in the engine. Called once a batch is decided, before its index
-/// entries are laid out.
+/// holding none, where its next place is, no range read. Each as the batch
+/// found it before ([`Batch::before`]): as its writer keeps it, where it
+/// does. Called once a batch is decided, before its index entries are laid
+/// out.
 pub(crate) fn settle<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    kept: &mut Kept,
-) -> Result<Settled, PersistError> {
+) -> Result<(), PersistError> {
     let mut queues: BTreeMap<u128, Vec<Written>> = BTreeMap::new();
     for (key, value) in batch.written_of(HELD) {
         let (Some(queue), Some(place)) = (key.get(..16), key.get(16..24)) else {
@@ -196,16 +192,14 @@ pub(crate) fn settle<R: Engine>(
         let value = value.map(<[u8]>::to_vec);
         queues.entry(queue).or_default().push((place, value));
     }
-    let mut settled = Settled::default();
     for (queue, written) in queues {
-        let before = kept.places(store, queue)?;
+        let before = said(batch.before(store, DUE_PLACES, &places_key(queue))?)?;
         let places = settled_one(store, batch, (queue, before), written)?;
         if places != before {
             batch.put(DUE_PLACES, places_key(queue), Some(places.bytes()));
-            settled.0.push((queue, places));
         }
     }
-    Ok(settled)
+    Ok(())
 }
 
 /// `queue`'s places, `before` the batch, as `batch` leaves them, having
@@ -324,13 +318,12 @@ fn region<R: Engine>(
         .collect()
 }
 
-/// `queue`'s [`DuePlaces`] as `store` keeps them.
-fn kept<R: Engine>(store: &EncryptedStore<R>, queue: u128) -> Result<DuePlaces, PersistError> {
-    store
-        .get(DUE_PLACES, &places_key(queue))?
-        .map_or(Ok(DuePlaces::default()), |bytes| {
-            DuePlaces::from_bytes(&bytes).map_err(PersistError::from)
-        })
+/// A queue's [`DuePlaces`] as `kept`, what its place holds, says them: as
+/// a queue that never held any has them where none is.
+fn said(kept: Option<Vec<u8>>) -> Result<DuePlaces, PersistError> {
+    kept.map_or(Ok(DuePlaces::default()), |bytes| {
+        DuePlaces::from_bytes(&bytes).map_err(PersistError::from)
+    })
 }
 
 impl Form for DuePlaces {
@@ -396,6 +389,8 @@ impl Form for DueQueue {
 
 #[cfg(test)]
 mod tests {
+    mod settled;
+
     use super::*;
     use crate::fixture::crowd::{HOUR, Node, QUEUE, fails, handed_by, node, published, waits};
     use crate::storage::{HandOn, XmipStorage};
@@ -430,7 +425,8 @@ mod tests {
     }
 
     fn places(node: &Node) -> DuePlaces {
-        kept(node.runtime(), QUEUE).expect("its places")
+        let kept = node.runtime().get(DUE_PLACES, &places_key(QUEUE));
+        said(kept.expect("read")).expect("its places")
     }
 
     #[test]

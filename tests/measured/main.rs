@@ -8,11 +8,13 @@
 //! - a read of what is due among many held takes under a millisecond, over
 //!   the crowded node `storage::due`'s tests read (`fixture::crowd`);
 //! - a page across a gap of a million places, and the writer's removal
-//!   before it, each take under a millisecond (`storage::page_across_a_gap`);
+//!   before it, each take under a millisecond (`storage::across_a_gap`);
+//!   each of these an answer from what is held, the fastest of five
+//!   (`xcore::latency::at_once`);
 //! - a wait on a queue is woken within a millisecond of the Publication
 //!   that puts a Message in it being asked, answered with what is due in it
-//!   (2026-11-12), the median and the 99th percentile of two hundred
-//!   (`storage::watch`; open problem 46). Until 2026-11-12 it was timed
+//!   (2026-11-12), over two hundred rounds (`storage::watch`; open problem
+//!   46). Until 2026-11-12 it was timed
 //!   from the Publication's answer, which comes after the wake, and only
 //!   the fastest of five held: a saturated zero;
 //! - a wait on a queue's head — a sequence — is woken within a millisecond
@@ -20,7 +22,8 @@
 //!   asked, the same way (2026-11-12);
 //! - a node's row of the `membership` table is written within a millisecond
 //!   beyond Xmip Storage's own write of an administration record, over a
-//!   thousand starts of each node kept, and a wait on the table is woken
+//!   thousand starts of each node kept, beside it in the same rounds, the
+//!   fastest of five each; and a wait on the table is woken
 //!   within a millisecond of a row's write being asked (`membership`;
 //!   2026-11-13).
 //!
@@ -47,30 +50,28 @@ const ROUNDS: u64 = 200;
 /// waiting thread.
 const WAKES: u32 = 1;
 
-use xcore::latency::Rounds;
+use xcore::latency::{Rounds, at_once};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_persist::fixture::crowd::{Node, QUEUE, crowded, handed_by, node, published};
 use xmip_core_persist::storage::{
-    DuePart, Moved, Position, Waiter, Watched, XmipStorage, page_across_a_gap,
+    DuePart, Moved, Position, Waiter, Watched, XmipStorage, across_a_gap,
 };
 
 #[test]
 fn a_read_of_what_is_due_among_many_held_takes_under_a_millisecond() {
     let holder = configure::fixture::test_cluster().node_scope(0);
     let node = crowded(&holder, 10_000, 1_000);
-    let fastest = (0..5)
-        .map(|_| {
-            let started = Instant::now();
-            let read = node
-                .read_due(QUEUE, DuePart::Due, (0, 0), 64)
-                .expect("read");
-            assert_eq!(read.held.len(), 3);
-            started.elapsed()
-        })
-        .min()
-        .unwrap_or_default();
-    eprintln!("three due of 11,003 held: read in {fastest:?}");
-    assert!(fastest < Duration::from_millis(1), "{fastest:?}");
+    // An answer from what is held, no wake in it: the fastest of five
+    // (`xcore::latency::at_once`). Until 2026-11-15 a copy of it here.
+    let (read, fastest, _) = at_once("three due of 11,003 held, read", || {
+        node.read_due(QUEUE, DuePart::Due, (0, 0), 64)
+            .expect("read")
+    });
+    assert_eq!(read.held.len(), 3);
+    assert!(
+        fastest < Duration::from_millis(1),
+        "{fastest:?}, the fastest of five"
+    );
 }
 
 /// One thread waiting on a node, kept across rounds: each round hands it
@@ -174,9 +175,21 @@ fn a_wait_on_a_queue_s_head_is_woken_within_a_millisecond_of_the_hand_on_taking_
 
 #[test]
 fn a_page_across_a_gap_and_the_writer_taking_out_before_it_each_take_under_a_millisecond() {
-    let (paged, taken) = page_across_a_gap();
-    eprintln!("a gap of a million places: a page {paged:?}, a removal decided {taken:?}");
+    // Each an answer from what is held, no wake in it: the fastest of five
+    // (`xcore::latency::at_once`). Until 2026-11-15 a copy of it in
+    // `storage::queue::gap`.
+    let (paged, taken) = across_a_gap(|page, removal| {
+        let ((), paged, _) = at_once("a page across a gap of a million places", page);
+        let ((), taken, _) = at_once("the entry before it taken out, decided", removal);
+        (paged, taken)
+    });
     let millisecond = Duration::from_millis(1);
-    assert!(paged < millisecond, "a page took {paged:?}");
-    assert!(taken < millisecond, "a removal took {taken:?}");
+    assert!(
+        paged < millisecond,
+        "a page took {paged:?}, the fastest of five"
+    );
+    assert!(
+        taken < millisecond,
+        "a removal took {taken:?}, the fastest of five"
+    );
 }

@@ -279,7 +279,7 @@ mod tests {
         let lease = Duration::from_secs(30);
         let claim = node.claim(JourneyId::new(id), &holder, id ^ 0x5eed, lease);
         let claim = claim.expect("asked").expect("claimed");
-        assert!(node.hand_on(&step(claim)).expect("handed on"));
+        assert!(node.hand_on(step(claim)).expect("handed on").0);
     }
 
     fn hand_on(claim: Claim, body: &[u8]) -> HandOn {

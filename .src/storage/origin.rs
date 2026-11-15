@@ -75,13 +75,15 @@ fn holders(record: &JourneyRecord) -> [(Option<u128>, bool); 2] {
 /// names: each Journey that opens or closes moves the holder's count, the
 /// queues `places` holds it a place in are kept beside it, and the last to
 /// close lets every place go and the count with it. Nothing for a holder
-/// whose openness did not change and that takes no place.
+/// whose openness did not change and that takes no place. The Journey it
+/// replaces, as the batch read it: what it is written over
+/// (`Batch::replaced`), decoded once.
 pub(crate) fn counted<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
     record: &JourneyRecord,
     places: &[Hold],
-) -> Result<(), PersistError> {
+) -> Result<Option<JourneyRecord>, PersistError> {
     let before = batch
         .read(store, JOURNEY, &record.journey.value().to_be_bytes())?
         .map(|bytes| JourneyRecord::from_bytes(&bytes))
@@ -102,7 +104,7 @@ pub(crate) fn counted<R: Engine>(
             )?;
         }
     }
-    Ok(())
+    Ok(before)
 }
 
 /// One Journey of `holder` opened or closed, `moved` saying which where

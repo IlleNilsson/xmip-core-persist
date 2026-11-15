@@ -223,13 +223,13 @@ impl Form for Turn {
 pub(crate) fn turn<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    turn: &Turn,
+    turn: Turn,
     now: i128,
 ) -> Result<bool, PersistError> {
     if !current(store, batch, &turn.instances, &turn.keys)? {
         return Ok(false);
     }
-    if !super::claim::hand_on(store, batch, &turn.hand_on, now)? {
+    if !super::claim::hand_on(store, batch, turn.hand_on, now)? {
         return Ok(false);
     }
     write(store, batch, (&turn.instances, &turn.keys), &turn.unkeyed)?;

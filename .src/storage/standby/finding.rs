@@ -90,8 +90,8 @@ impl StorageNode {
     /// databases opened over what it copied, its writes numbered on in the
     /// history it followed — a new one where it followed none — its watch
     /// keeping its `[tuning] storage_unwaited` of what none waits on, its
-    /// writer its `[tuning] storage_due_places` queues' places by when each
-    /// is due, and its positions given up, so a copy of another primary
+    /// writer its `[tuning] storage_writer_kept` bytes of the records it
+    /// writes, and its positions given up, so a copy of another primary
     /// later starts whole.
     ///
     /// # Errors
@@ -130,7 +130,7 @@ impl StorageNode {
         )?;
         primary.in_epoch(epoch);
         primary.keep_unwaited(self.timings.unwaited);
-        primary.keep_due(self.timings.due_places);
+        primary.keep_written(self.timings.writer_kept);
         self.take_up(Role::Primary(Arc::new(primary)), epoch)
     }
 

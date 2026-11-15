@@ -476,6 +476,37 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_on_over_the_wire_is_answered_durable_and_tells_nothing_its_batch_worked() {
+        let authority = Authority::new();
+        let behind = storage();
+        let server = serve(&behind, &authority.issue(&authority));
+        let nodes = [server.address().to_string()];
+        let client = StorageClient::new(&nodes, &authority.issue(&authority), TIMEOUT, PASS_OVER)
+            .expect("client");
+        client.write_journey(&journey(b"waiting")).expect("written");
+        let holder = configure::fixture::test_cluster().node_scope(0);
+        let claim = client.claim(journey(b"").journey, &holder, 7, TIMEOUT);
+        let hand_on = HandOn {
+            claim: claim.expect("asked").expect("taken"),
+            result: journey(b"completed"),
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: Vec::new(),
+            queued: Vec::new(),
+            requeued: Vec::new(),
+            failed: None,
+            cleared: Vec::new(),
+            waits: None,
+            kept_for_nanos: None,
+        };
+        let (taken, durable) = client.hand_on(hand_on).expect("handed on");
+        assert!(taken);
+        assert_eq!(durable.told(), Some(true), "durable once answered");
+        assert_eq!(durable.worked(), Duration::ZERO, "not told over the wire");
+        server.stop();
+    }
+
+    #[test]
     fn a_statement_is_asked_of_one_storage_node_throughout_and_fails_with_it() {
         let authority = Authority::new();
         // Two Storage nodes, each with a database of its own: only asking
@@ -643,7 +674,7 @@ mod tests {
             self.beneath.release(claim)
         }
 
-        fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+        fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
             self.beneath.hand_on(hand_on)
         }
 
@@ -790,7 +821,7 @@ mod tests {
                 waits: None,
                 kept_for_nanos: None,
             };
-            assert!(storage.hand_on(&hand_on).expect("sent"));
+            assert!(storage.hand_on(hand_on).expect("sent").0);
         });
         let losing: Arc<dyn XmipStorage> = Arc::new(LosesAnswer {
             beneath: Arc::clone(&behind),

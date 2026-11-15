@@ -7,7 +7,8 @@ use codec::form::Form;
 
 use super::commit::{Batch, CLAIM, JOURNEY, MESSAGE};
 use super::hand_on::HandOn;
-use super::record::{Claim, malformed};
+use super::hold::Hold;
+use super::record::{Claim, JourneyRecord, malformed};
 use super::{failed, hold};
 use crate::{EncryptedStore, Engine, PersistError};
 
@@ -154,11 +155,12 @@ pub(crate) fn stored<R: Engine>(
 /// Messages, and its claim ended handed on — or kept, where the step waits —
 /// `true`, where the claim is its holder's; `true` and nothing written
 /// where it was handed on already under its token, an answer that was
-/// lost; `false` otherwise.
+/// lost; `false` otherwise. Each Journey it writes is laid out once, over
+/// the one it replaces (`Batch::replaced`).
 pub(crate) fn hand_on<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    hand_on: &HandOn,
+    hand_on: HandOn,
     now: i128,
 ) -> Result<bool, PersistError> {
     let Some(stored) = stored(store, batch, &hand_on.claim)? else {
@@ -173,34 +175,32 @@ pub(crate) fn hand_on<R: Engine>(
         Standing::Held if !ours => return Ok(false),
         Standing::Held => {}
     }
-    let result = &hand_on.result;
-    super::origin::counted(store, batch, result, &hand_on.queued)?;
-    batch.record(JOURNEY, result.journey.value(), result);
+    let journey = hand_on.claim.journey;
+    written(store, batch, hand_on.result, &hand_on.queued)?;
     for message in &hand_on.messages {
         batch.record(MESSAGE, message.message.value(), message);
     }
-    for next in &hand_on.next {
-        super::origin::counted(store, batch, next, &hand_on.queued)?;
-        batch.record(JOURNEY, next.journey.value(), next);
+    for next in hand_on.next {
+        written(store, batch, next, &hand_on.queued)?;
     }
     for queue in &hand_on.leaves {
-        hold::let_go_of(store, batch, *queue, hand_on.claim.journey)?;
+        hold::let_go_of(store, batch, *queue, journey)?;
     }
     for kept in &hand_on.queued {
         hold::keep(store, batch, kept)?;
     }
     for queue in &hand_on.requeued {
-        hold::to_the_end(store, batch, *queue, hand_on.claim.journey)?;
+        hold::to_the_end(store, batch, *queue, journey)?;
     }
     if let Some(failure) = &hand_on.failed {
-        failed::enter(store, batch, hand_on.claim.journey, failure, now)?;
+        failed::enter(store, batch, journey, failure, now)?;
     }
     for queue in &hand_on.cleared {
-        failed::clear(store, batch, *queue, hand_on.claim.journey)?;
+        failed::clear(store, batch, *queue, journey)?;
     }
     if let Some(wait) = &hand_on.waits {
         let due = now.saturating_add(i128::from(wait.after_nanos));
-        hold::wait(store, batch, (wait.queue, hand_on.claim.journey), due)?;
+        hold::wait(store, batch, (wait.queue, journey), due)?;
     }
     match hand_on.kept_for_nanos {
         Some(nanos) => {
@@ -209,4 +209,18 @@ pub(crate) fn hand_on<R: Engine>(
         None => end(batch, stored.claim, Standing::HandedOn),
     }
     Ok(true)
+}
+
+/// `record` counted for each holder it names (`super::origin::counted`)
+/// and written in `batch` over the Journey it replaces, `places` the places
+/// its hand-on takes.
+fn written<R: Engine>(
+    store: &EncryptedStore<R>,
+    batch: &mut Batch<'_>,
+    record: JourneyRecord,
+    places: &[Hold],
+) -> Result<(), PersistError> {
+    let before = super::origin::counted(store, batch, &record, places)?;
+    let key = record.journey.value().to_be_bytes().to_vec();
+    batch.replaced(JOURNEY, key, record, before.as_ref())
 }

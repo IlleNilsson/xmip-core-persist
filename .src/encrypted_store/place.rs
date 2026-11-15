@@ -1,7 +1,9 @@
 //! A record's place: its kind, a zero byte, its key — what it is sealed
 //! for and what its lookup key is hashed from. Every read and write of a
 //! record makes one, so one that fits is made on the stack, never taken
-//! from the heap: a kind and an identifier, or two, always do.
+//! from the heap: a kind and an identifier, or two, always do. The one
+//! writer finds what a batch wrote, read or keeps by it too
+//! (`storage::commit`; 2026-11-15), so a record's key is made once a lookup.
 
 use core::ops::Deref;
 
@@ -9,7 +11,7 @@ use core::ops::Deref;
 const SHORT: usize = 64;
 
 /// A record's place, as bytes.
-pub(super) enum Place {
+pub(crate) enum Place {
     Short { bytes: [u8; SHORT], length: usize },
     Long(Vec<u8>),
 }
@@ -26,7 +28,7 @@ impl Deref for Place {
 }
 
 /// `kind`'s record `key`'s place.
-pub(super) fn place(kind: &str, key: &[u8]) -> Place {
+pub(crate) fn place(kind: &str, key: &[u8]) -> Place {
     let length = kind.len() + 1 + key.len();
     if length > SHORT {
         return Place::Long([kind.as_bytes(), &[0], key].concat());

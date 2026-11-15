@@ -16,19 +16,19 @@ use super::super::watch::Watch;
 use super::{Embedded, versioned};
 use crate::{EncryptedStore, Engine, PersistError};
 
-/// How many queues' places by when each is due a Storage node's writer
-/// keeps (`super::super::due::Kept`), where its `[tuning]
-/// storage_due_places` does not say: some 100 bytes each, under two
-/// megabytes in all, above the queues and sequences a node's batches write
-/// between two of one queue's (ADR-0018, amendment 2026-11-14).
-pub const DUE_QUEUES: usize = 16_384;
+/// How many bytes of the records it wrote a Storage node's writer keeps
+/// (`super::super::commit::kept`), where its `[tuning] storage_writer_kept`
+/// does not say: sixteen mebibytes, some eight thousand Messages' claims,
+/// Journeys and places between their Publication and their hand-on, above
+/// what a node's Send pool holds in flight (ADR-0018, amendment 2026-11-15).
+pub const WRITER_KEPT: usize = 16 * 1024 * 1024;
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
-    /// At most `most` queues' places by when each is due kept by its
-    /// writer, the first kept let go of first past it: its `[tuning]
-    /// storage_due_places`.
-    pub fn keep_due(&self, most: usize) {
-        self.due.store(most, Ordering::Relaxed);
+    /// At most `most` bytes of the records it wrote kept by its writer, the
+    /// first kept let go of first past it: its `[tuning]
+    /// storage_writer_kept`.
+    pub fn keep_written(&self, most: usize) {
+        self.kept.store(most, Ordering::Relaxed);
     }
 
     /// The node's databases over `runtime`, `administration` and `audit`,
@@ -74,7 +74,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
         let runtime_columns = Arc::new(Columns::of(Database::Runtime));
         let epoch = Arc::new(AtomicU64::new(0));
         let watch = Arc::new(Watch::default());
-        let due = Arc::new(AtomicUsize::new(DUE_QUEUES));
+        let kept = Arc::new(AtomicUsize::new(WRITER_KEPT));
         let committer = Committer::start(
             Arc::clone(&runtime),
             (
@@ -83,7 +83,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
                 Arc::clone(&epoch),
                 Arc::clone(&watch),
             ),
-            Arc::clone(&due),
+            Arc::clone(&kept),
         )?;
         Ok(Self {
             epoch,
@@ -99,7 +99,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             keeping: Mutex::new(()),
             versions,
             watch,
-            due,
+            kept,
         })
     }
 }

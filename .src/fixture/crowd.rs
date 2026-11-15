@@ -121,7 +121,7 @@ pub fn handed_by(node: &Node, holder: &str, id: u128, how: impl FnOnce(&mut Hand
     let claim = node.claim(JourneyId::new(id), holder, id, LEASE);
     let mut hand_on = hand_on(claim.expect("asked").expect("claimed"));
     how(&mut hand_on);
-    assert!(node.hand_on(&hand_on).expect("handed on"));
+    assert!(node.hand_on(hand_on).expect("handed on").0);
 }
 
 /// The hand-on of the Message `claim` holds, its Journey tried and nothing

@@ -9,7 +9,9 @@
 //! amendment 2026-10-20). So is a claim a send is taken under, asked ahead
 //! (`XmipStorage::claim_ahead`): its send is prepared while the claim
 //! syncs, and abandoned where it never is (ADR-0018, amendment 2026-11-12).
-//! Every other write is answered once durable, as before.
+//! Every other write is answered once durable, as before; a hand-on with
+//! its durability too (`XmipStorage::hand_on`), for what its batch worked
+//! (ADR-0018, amendment 2026-11-15).
 //!
 //! **Told where it was decided, read once.** A Storage node reached over
 //! the wire tells a claim's durability in a frame of its own after the
@@ -21,10 +23,16 @@
 //! **It says what the Storage node's writer worked for each write in it**
 //! ([`Durable::worked`]): the processor time its batch took outside its
 //! I/O, shared equally among the batch's writes — a Message's share of the
-//! Ledger's work, which its own share counts (`xcore::spent`). **And what
+//! Ledger's work on its Publication and on its hand-on, which its own share
+//! counts (`xcore::spent`). **And what
 //! the sync that made it durable waited for the disk** ([`Durable::synced`]):
 //! the sync's wait shared equally among every write it made durable, a
 //! Message's share of the disk's time, never its own share.
+//!
+//! **A batch's figures are its own** (2026-11-15). A batch that writes
+//! nothing — a request asked again, found written — is durable once the
+//! latest batch handed to the sync is, and is told with it, but says what
+//! it worked itself ([`Durable::beside`]), never the latest batch's.
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -49,16 +57,28 @@ impl fmt::Debug for Fetching {
     }
 }
 
-/// A write's durability: told once, waited on by anyone holding it.
+/// A write's durability: told once, waited on by anyone holding it, and
+/// what its batch worked for it.
 #[derive(Clone, Debug)]
-pub struct Durable(Arc<State>);
+pub struct Durable {
+    /// What it is told, shared by every write its batch's sync makes
+    /// durable — and by a write of a batch that writes nothing, durable
+    /// with the latest ([`Durable::beside`]).
+    told: Arc<Telling>,
+    /// Its batch's own figures.
+    figures: Arc<Figures>,
+}
 
 #[derive(Debug, Default)]
-struct State {
+struct Telling {
     told: Mutex<Option<Result<(), String>>>,
     woken: Condvar,
     /// What tells it, run by the first wait, where it is read from afar.
     fetch: Mutex<Fetching>,
+}
+
+#[derive(Debug, Default)]
+struct Figures {
     /// What the writer worked for each write of its batch, in nanoseconds.
     worked: AtomicU64,
     /// How many writes its batch holds.
@@ -80,7 +100,20 @@ impl Durable {
 
     /// Not told yet.
     pub(crate) fn pending() -> Self {
-        Self(Arc::default())
+        Self {
+            told: Arc::default(),
+            figures: Arc::default(),
+        }
+    }
+
+    /// Told as this one is, with figures of its own: the durability of a
+    /// write in a batch that writes nothing, durable once the latest batch
+    /// is, which says what its own batch worked, never the latest's.
+    pub(crate) fn beside(&self) -> Self {
+        Self {
+            told: Arc::clone(&self.told),
+            figures: Arc::default(),
+        }
     }
 
     /// Told by `fetch`, run once by the first [`Durable::wait`] — every
@@ -88,16 +121,16 @@ impl Durable {
     /// dropped unrun with the last clone (ADR-0018, amendment 2026-11-12).
     pub(crate) fn fetching(fetch: impl FnOnce() -> Result<(), String> + Send + 'static) -> Self {
         let durable = Self::pending();
-        durable.0.fetch.locked().0 = Some(Box::new(fetch));
+        durable.told.fetch.locked().0 = Some(Box::new(fetch));
         durable
     }
 
     /// Told what the sync came to; told once, the first word stands.
     pub(crate) fn tell(&self, synced: Result<(), String>) {
-        let mut told = self.0.told.locked();
+        let mut told = self.told.told.locked();
         if told.is_none() {
             *told = Some(synced);
-            self.0.woken.notify_all();
+            self.told.woken.notify_all();
         }
     }
 
@@ -105,21 +138,21 @@ impl Durable {
     /// shared equally among them.
     pub(crate) fn worked_by(&self, worked: Duration, writes: u32) {
         let writes = writes.max(1);
-        self.0.writes.store(writes, Ordering::Relaxed);
-        self.0
+        self.figures.writes.store(writes, Ordering::Relaxed);
+        self.figures
             .worked
             .store(nanos(worked / writes), Ordering::Relaxed);
     }
 
     /// How many writes its batch holds: what a sync's wait is shared by.
     pub(crate) fn writes(&self) -> u32 {
-        self.0.writes.load(Ordering::Relaxed).max(1)
+        self.figures.writes.load(Ordering::Relaxed).max(1)
     }
 
     /// `synced`, what the sync waited for the disk for each write it made
     /// durable. Set before it is told.
     pub(crate) fn synced_each(&self, synced: Duration) {
-        self.0.synced.store(nanos(synced), Ordering::Relaxed);
+        self.figures.synced.store(nanos(synced), Ordering::Relaxed);
     }
 
     /// The processor time the Storage node's writer worked for each write
@@ -127,16 +160,17 @@ impl Durable {
     /// a write answered durable already. Set before the write is answered.
     #[must_use]
     pub fn worked(&self) -> Duration {
-        Duration::from_nanos(self.0.worked.load(Ordering::Relaxed))
+        Duration::from_nanos(self.figures.worked.load(Ordering::Relaxed))
     }
 
     /// What the sync that made this write durable waited for the storage
     /// device, for each write it made durable: the disk's time, never
     /// Xmip's own share (`xcore::spent::on_sync`); nothing for a write
-    /// answered durable already. Set before it is told ([`Durable::wait`]).
+    /// answered durable already, nor for one whose batch wrote nothing.
+    /// Set before it is told ([`Durable::wait`]).
     #[must_use]
     pub fn synced(&self) -> Duration {
-        Duration::from_nanos(self.0.synced.load(Ordering::Relaxed))
+        Duration::from_nanos(self.figures.synced.load(Ordering::Relaxed))
     }
 
     /// Wait until the write is durable, or its sync failed: where it is read
@@ -147,15 +181,15 @@ impl Durable {
     /// [`PersistError::Engine`] where the sync failed, or no word of it came:
     /// what was written may be lost with the process, or with the machine.
     pub fn wait(&self) -> Result<(), PersistError> {
-        let fetch = self.0.fetch.locked().0.take();
+        let fetch = self.told.fetch.locked().0.take();
         if let Some(fetch) = fetch {
             // Told whatever the read comes to, so no other waiter waits on.
             let read = catch_unwind(AssertUnwindSafe(fetch));
             self.tell(read.unwrap_or_else(|_| Err("its read panicked".to_string())));
         }
-        let told = self.0.told.locked();
+        let told = self.told.told.locked();
         let told = self
-            .0
+            .told
             .woken
             .wait_while(told, |told| told.is_none())
             .unwrap_or_else(PoisonError::into_inner);
@@ -169,7 +203,7 @@ impl Durable {
     /// where it is read from afar, until a wait has read it.
     #[must_use]
     pub fn told(&self) -> Option<bool> {
-        let told = self.0.told.locked();
+        let told = self.told.told.locked();
         told.as_ref().map(Result::is_ok)
     }
 }
@@ -195,6 +229,21 @@ mod tests {
         let failed = waiter.join().expect("the waiter ends");
         assert!(failed.is_err_and(|why| why.to_string().contains("the disk is full")));
         assert_eq!(durable.told(), Some(false), "the first word stands");
+    }
+
+    #[test]
+    fn one_beside_another_is_told_with_it_and_keeps_figures_of_its_own() {
+        let latest = Durable::pending();
+        latest.worked_by(Duration::from_micros(300), 3);
+        let beside = latest.beside();
+        beside.worked_by(Duration::from_micros(7), 1);
+        assert_eq!(latest.worked(), Duration::from_micros(100));
+        assert_eq!(beside.worked(), Duration::from_micros(7), "its own");
+        assert_eq!(beside.told(), None);
+        latest.synced_each(Duration::from_micros(50));
+        latest.tell(Ok(()));
+        assert!(beside.wait().is_ok(), "told with the latest");
+        assert_eq!(beside.synced(), Duration::ZERO, "its batch synced nothing");
     }
 
     /// Counts its drop: what a read held — a connection — let go of.

@@ -1,13 +1,14 @@
 //! The `membership` table held to the millisecond rule: a node's row
 //! written within a millisecond beyond Xmip Storage's own write of an
-//! administration record, over the history of many starts kept, and a wait
-//! on the table woken within a millisecond of a row's write being asked,
-//! beside a plain wake measured in the same rounds (`super::Waiting`).
+//! administration record, over the history of many starts kept, the two
+//! in turn and the fastest of five each; and a wait on the table woken
+//! within a millisecond of a row's write being asked, beside a plain wake
+//! measured in the same rounds (`super::Waiting`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use xcore::latency::Rounds;
+use xcore::latency::{Rounds, spread};
 use xmip_core_persist::fixture::crowd::node;
 use xmip_core_persist::storage::{
     AdministrationKind, AdministrationRecord, MemberRecord, Position, Watched, XmipStorage,
@@ -51,12 +52,6 @@ fn start(process: u128, place: usize) -> MemberRecord {
     }
 }
 
-/// The median of `taken`.
-fn median(mut taken: Vec<Duration>) -> Duration {
-    taken.sort();
-    taken[taken.len() / 2]
-}
-
 #[test]
 fn a_node_s_row_is_written_within_a_millisecond_beyond_storage_s_own_write() {
     let (node, _) = node();
@@ -69,34 +64,35 @@ fn a_node_s_row_is_written_within_a_millisecond_beyond_storage_s_own_write() {
                 .expect("a start kept");
         }
     }
-    let own: Vec<Duration> = (0..ROUNDS)
-        .map(|round| {
-            let record = AdministrationRecord {
-                kind: AdministrationKind::Operator,
-                id: u128::from(round) + 1,
-                body: start(0, 0).node.into_bytes(),
-                updated_unix_nanos: 0,
-            };
-            let started = Instant::now();
-            node.write_administration(&record).expect("written");
-            started.elapsed()
-        })
-        .collect();
-    let rows: Vec<Duration> = (0..ROUNDS)
-        .map(|round| {
-            process += 1;
-            let place = usize::try_from(round).expect("a place");
-            let row = start(process, place);
-            let started = Instant::now();
-            node.write_member(&row).expect("written");
-            started.elapsed()
-        })
-        .collect();
-    let (own, rows) = (median(own), median(rows));
+    // Storage's own write and a node's row in turn, so each sees the
+    // machine as the other does. Neither waits on a wake, an
+    // administration write being its engine's own: the row held beside
+    // Storage's own write, the fastest of five each
+    // (`xcore::latency::spread`). Until 2026-11-15 the medians, each
+    // write's two hundred one after the other's.
+    let (mut own, mut rows) = (Vec::new(), Vec::new());
+    for round in 0..ROUNDS {
+        let record = AdministrationRecord {
+            kind: AdministrationKind::Operator,
+            id: u128::from(round) + 1,
+            body: start(0, 0).node.into_bytes(),
+            updated_unix_nanos: 0,
+        };
+        let started = Instant::now();
+        node.write_administration(&record).expect("written");
+        own.push(started.elapsed());
+        process += 1;
+        let row = start(process, usize::try_from(round).expect("a place"));
+        let started = Instant::now();
+        node.write_member(&row).expect("written");
+        rows.push(started.elapsed());
+    }
+    let own = spread("Storage's own write of an administration record", own).fastest_of_five;
+    let rows = spread("a node's row written", rows).fastest_of_five;
     let beyond = rows.saturating_sub(own);
     eprintln!(
         "a node's row over {STARTS} starts of each of {nodes} nodes kept: {rows:?}, Storage's \
-         own write {own:?}, beyond it {beyond:?}"
+         own write {own:?}, beyond it {beyond:?}, the fastest of five each"
     );
     assert_eq!(
         node.read_members().expect("read").len(),

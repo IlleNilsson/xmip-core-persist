@@ -27,8 +27,8 @@ fn writer(memory: &Arc<Memory>, hooks: &Arc<Hooks>, keys: &Keys) -> (Committer, 
     let columns = Arc::new(Columns::of(Database::Runtime));
     let epoch = Arc::new(AtomicU64::new(1));
     let watch = Arc::default();
-    let due = Arc::new(AtomicUsize::new(crate::storage::DUE_QUEUES));
-    let committer = Committer::start(Arc::clone(&store), (clock, columns, epoch, watch), due)
+    let kept = Arc::new(AtomicUsize::new(crate::storage::WRITER_KEPT));
+    let committer = Committer::start(Arc::clone(&store), (clock, columns, epoch, watch), kept)
         .expect("the writer");
     (committer, store)
 }
@@ -66,6 +66,29 @@ fn a_request_asked_again_while_its_sync_is_held_is_not_answered_durable_before_i
     hooks.release_syncs();
     first.wait().expect("durable");
     repeated.wait().expect("durable with it");
+}
+
+#[test]
+fn a_publication_asked_again_says_what_its_own_batch_worked_and_is_durable_with_the_first() {
+    let (memory, hooks, keys) = (Arc::default(), Arc::default(), keys());
+    let (committer, _) = writer(&memory, &hooks, &keys);
+    let many = || Op::Publish(Box::new(crate::fixture::crowd::publication(1..257)));
+    hooks.hold_syncs();
+    let (_, first) = committer.ahead(many()).expect("published");
+    assert!(hooks.wait_held(Duration::from_secs(10)), "its sync is held");
+    // Asked again: found written, nothing of its own to write or sync.
+    let (_, again) = committer.ahead(many()).expect("found written");
+    assert!(again.worked() > Duration::ZERO, "its own batch's work");
+    assert!(
+        again.worked() < first.worked(),
+        "never the first batch's: {:?} for 256 Journeys written, {:?} found",
+        first.worked(),
+        again.worked()
+    );
+    assert_eq!(again.told(), None, "durable with the first, not before it");
+    hooks.release_syncs();
+    again.wait().expect("durable with it");
+    assert_eq!(again.synced(), Duration::ZERO, "it synced nothing");
 }
 
 #[test]
