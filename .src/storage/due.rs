@@ -445,7 +445,7 @@ mod tests {
             .expect("read");
         assert_eq!(read.retrying, 2);
         assert_eq!(read.next_due_in(), Some(Duration::from_nanos(10)));
-        clock.pass(10);
+        clock.pass(Duration::from_nanos(10));
         assert_eq!(messages(&node, DuePart::Due), [5, 6, 3], "then the retry");
         let read = node
             .read_due(QUEUE, DuePart::Due, (0, 0), 64)

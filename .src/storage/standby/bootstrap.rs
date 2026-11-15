@@ -1,7 +1,14 @@
-//! How far a standby's bootstrap by a whole copy is (ADR-0056, amendment
-//! 2026-11-12): **copying**, its primary's pages coming in; **catching
-//! up**, every page in and the writes its primary took while it scanned
-//! being replayed; **ready**, holding one state of its primary's Ledger.
+//! How far a standby's bootstrap by a whole copy is (ADR-0056, amendments
+//! 2026-11-12 and 2026-11-15): **copying**, its primary's pages due or
+//! coming in; **catching up**, every page in and the writes its primary took
+//! while it scanned being replayed; **ready**, holding one state of its
+//! primary's Ledger.
+//!
+//! A standby holding no history's writes — started empty, or a former
+//! primary, which gave up its positions — is copying from when it stands by
+//! a primary, before it keeps that primary's epoch (`super::finding`): until
+//! its first whole copy is in, it holds nothing of that epoch's Ledger, so
+//! it is never ready, never promoted, and never ranked as holding it.
 //!
 //! A primary scans each database page by page while it goes on writing
 //! (`super::ship`), so the pages alone can reflect a write in part — what it
@@ -30,11 +37,12 @@ pub(crate) const BOOTSTRAP: &[u8] = b"\0xmip-core-persist/bootstrap\0";
 /// How far a Storage node's bootstrap by a whole copy is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bootstrap {
-    /// It holds one state of its primary's Ledger, or never took a whole
-    /// copy: it may be promoted.
+    /// It holds one state of its primary's Ledger, or never stood by a
+    /// primary: it may be promoted.
     Ready,
-    /// A whole copy into it is under way, or was cut short: it holds part
-    /// of a Ledger.
+    /// A whole copy into it is due, under way, or was cut short: from when
+    /// it stands by a primary holding no history's writes until its copy's
+    /// last page is in, it holds none, or part, of a Ledger.
     Copying,
     /// Every page of a whole copy is in, and the writes its primary took
     /// while it scanned are being replayed: one state of the primary's once

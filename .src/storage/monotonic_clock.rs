@@ -48,31 +48,21 @@ impl Clock for MonotonicClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// A clock whose wall and monotonic readings a test sets apart.
-    struct Stepped(Mutex<(i128, i128)>);
-
-    impl Clock for Stepped {
-        fn unix_timestamp_nanos(&self) -> i128 {
-            self.0.lock().expect("clock").0
-        }
-
-        fn monotonic_nanos(&self) -> i128 {
-            self.0.lock().expect("clock").1
-        }
-    }
+    use std::time::Duration;
+    use xcore::clock::Stepped;
 
     #[test]
     fn a_wall_clock_stepped_back_or_forward_moves_no_lease() {
-        let stepped = Arc::new(Stepped(Mutex::new((1_000_000, 50))));
+        let stepped = Arc::new(Stepped::at(1_000_000));
         let clock = MonotonicClock::new(Arc::clone(&stepped) as Arc<dyn Clock>);
         assert_eq!(clock.unix_timestamp_nanos(), 1_000_000);
         // An hour back on the wall, ten nanoseconds on: ten on.
-        *stepped.0.lock().expect("clock") = (1_000_000 - 3_600_000_000_000, 60);
+        stepped.pass(Duration::from_nanos(10));
+        stepped.set_wall(1_000_000 - 3_600_000_000_000);
         assert_eq!(clock.unix_timestamp_nanos(), 1_000_010);
         // A day forward on the wall, five more on: five more on.
-        *stepped.0.lock().expect("clock") = (86_400_000_000_000, 65);
+        stepped.pass(Duration::from_nanos(5));
+        stepped.set_wall(86_400_000_000_000);
         assert_eq!(clock.unix_timestamp_nanos(), 1_000_015);
         // Based again, as a promotion opens it: the wall clock of then.
         let rebased = MonotonicClock::new(Arc::clone(&stepped) as Arc<dyn Clock>);

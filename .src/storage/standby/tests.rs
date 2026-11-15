@@ -232,7 +232,12 @@ fn a_standby_is_not_promoted_while_its_primary_is_gone_and_one_is_once_every_one
         again.said()
     );
     assert!(!again.is_primary(), "{}", again.said());
-    std::thread::sleep(lease * 2);
+    // Its lease lapsed while the primary was gone: three silences, far
+    // longer than the lease, on the one clock both nodes read.
+    assert!(
+        timings().silence * 3 > lease * 2,
+        "the lease lapsed meanwhile"
+    );
     let after = client
         .claim(
             held,
@@ -363,4 +368,6 @@ mod handed;
 mod interrupted;
 mod membership;
 mod refused;
+mod synced;
+mod uncopied;
 mod waited;

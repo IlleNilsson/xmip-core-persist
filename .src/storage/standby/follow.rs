@@ -2,10 +2,13 @@
 //! primary's writes from where it is, and takes them in order — first the
 //! whole of each database where it cannot take them on from there, then
 //! the writes taken meanwhile until it is caught up (`super::bootstrap`) —
-//! until the primary goes silent, declines or the node stops.
-use std::time::{Duration, Instant};
+//! until the primary goes silent, declines or the node stops. What it took
+//! is synced on each beat, and once [`SYNC`] has passed on the node's clock
+//! since it last synced.
+use std::time::Duration;
 
 use secret::DataKey;
+use xcore::clock::between;
 
 use super::super::wire::{self, Request};
 use super::bootstrap::{BOOTSTRAP, Bootstrap};
@@ -17,7 +20,7 @@ use crate::{Change, PersistError};
 
 /// How long a standby writes copies before it syncs them: a copy counts
 /// on a standby once synced, as a write does on its primary.
-const SYNC: Duration = Duration::from_millis(10);
+pub(super) const SYNC: Duration = Duration::from_millis(10);
 
 /// The most entries a page of a whole copy's wipe removes at once.
 const PAGE: usize = 1024;
@@ -43,16 +46,17 @@ struct Whole {
 pub(super) struct Taking {
     /// Each database written since its last sync.
     dirty: [bool; DATABASES],
-    synced: Instant,
+    /// When it last synced, on the node's monotonic reading.
+    synced: i128,
     whole: Option<Whole>,
 }
 
 impl Taking {
-    /// Before the first frame: nothing written, nothing copied.
-    pub(super) fn new() -> Self {
+    /// Before the first frame, at `now`: nothing written, nothing copied.
+    pub(super) fn new(now: i128) -> Self {
         Self {
             dirty: [false; DATABASES],
-            synced: Instant::now(),
+            synced: now,
             whole: None,
         }
     }
@@ -74,7 +78,7 @@ impl StorageNode {
         let mut connection = self.connect(address, self.timings.silence)?;
         let asked = self.asked();
         wire::send(&mut connection, &Request::Follow(asked)).map_err(|e| e.to_string())?;
-        let mut taking = Taking::new();
+        let mut taking = Taking::new(self.clock.monotonic_nanos());
         while !self.stopping() {
             let frame = wire::receive::<Shipped>(&mut connection)
                 .map_err(|e| format!("heard nothing for {:?}: {e}", self.timings.silence))?
@@ -114,7 +118,7 @@ impl StorageNode {
             Shipped::Beat(epoch) => {
                 self.keep_epoch(epoch).map_err(failed)?;
                 self.synced(&mut taking.dirty).map_err(failed)?;
-                taking.synced = Instant::now();
+                taking.synced = self.clock.monotonic_nanos();
             }
             Shipped::Copy(database, number, changes) => {
                 let at = usize::from(database);
@@ -159,9 +163,10 @@ impl StorageNode {
             }
             Shipped::Declined(reason) => return Err(format!("declined: {reason}")),
         }
-        if taking.synced.elapsed() >= SYNC {
+        let now = self.clock.monotonic_nanos();
+        if between(taking.synced, now) >= SYNC {
             self.synced(&mut taking.dirty).map_err(failed)?;
-            taking.synced = Instant::now();
+            taking.synced = now;
         }
         Ok(())
     }

@@ -61,7 +61,7 @@ impl StorageClient {
             if waiter.is_stopped() {
                 return Ok(Vec::new());
             }
-            node.answered(&asked, self.pass_over);
+            node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
             match asked {
                 Ok(answer) => {
                     return expected(answer, |answer| match answer {
