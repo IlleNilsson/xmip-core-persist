@@ -28,7 +28,7 @@ use super::dead::{self, DeadEntry, DeadQueue, Replay, Replayed};
 use super::due::{self, DuePart, DueQueue};
 use super::durable::Durable;
 use super::hand_on::HandOn;
-use super::hold::{self, HeldQueue};
+use super::hold::{Head, HeldQueue};
 use super::instance::{InstanceRecord, Turn};
 use super::kept_audit::KeptAudit;
 use super::publication::Publication;
@@ -47,6 +47,7 @@ use xcore::SecretName;
 mod acts;
 mod administration;
 mod epoch;
+mod held;
 mod keeper;
 mod membership;
 mod opened;
@@ -193,12 +194,11 @@ impl<R: Engine + 'static, A: Engine> XmipStorage for Embedded<R, A> {
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
-        hold::read(
-            &self.runtime,
-            queue,
-            (from, most),
-            self.clock.unix_timestamp_nanos(),
-        )
+        self.places(queue, (from, most))
+    }
+
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+        self.head(queue, most)
     }
 
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {

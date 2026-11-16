@@ -81,7 +81,7 @@ fn writer(hooks: &Arc<Hooks>) -> Writer<Hooked<Memory>> {
     let columns = Arc::new(Columns::of(Database::Runtime));
     let told = (clock, columns, Arc::new(AtomicU64::new(1)), Arc::default());
     let most = Arc::new(AtomicUsize::new(crate::storage::WRITER_KEPT));
-    Writer::start(store, told, most).expect("the writer")
+    Writer::start(store, told, (most, Arc::default())).expect("the writer")
 }
 
 /// A claim on the Message of the Journey `number`.

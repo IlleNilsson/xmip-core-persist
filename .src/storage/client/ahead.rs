@@ -82,7 +82,7 @@ impl StorageClient {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::net::TcpListener;
     use std::sync::Arc;
     use std::time::Duration;
@@ -106,8 +106,12 @@ mod tests {
     }
 
     /// A Storage node whose runtime database's syncs `hooks` steer, served
-    /// on loopback, and a client of it whose reads are bounded by `timeout`.
-    fn served(timeout: Duration) -> (StorageServer, StorageClient, Arc<Hooks>) {
+    /// on loopback, and a client of it whose reads are bounded by `timeout`:
+    /// what the client's other tests of a sync held run too
+    /// (`super::super::held`).
+    pub(in crate::storage::client) fn served(
+        timeout: Duration,
+    ) -> (StorageServer, StorageClient, Arc<Hooks>) {
         let hooks = Arc::new(Hooks::default());
         let keys = Held::new(secret::fixture::Memory::default());
         let kek = KekName::new("storage").expect("a name");

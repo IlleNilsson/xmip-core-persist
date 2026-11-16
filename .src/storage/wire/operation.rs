@@ -28,6 +28,7 @@ impl Request {
             Self::RemoveAdministration(..) => ("write", "remove_administration"),
             Self::Publish(_) => ("write", "publish"),
             Self::ReadHeld(..) => ("read", "read_held"),
+            Self::ReadHead(..) => ("read", "read_head"),
             Self::ReadDead(..) => ("read", "read_dead"),
             Self::ReadDeadMessage(..) => ("read", "read_dead_message"),
             Self::Replay(_) => ("write", "replay"),

@@ -125,6 +125,12 @@ impl Durable {
         durable
     }
 
+    /// Whether `other` is told as this one is: the same write's, or one
+    /// beside it ([`Durable::beside`]).
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.told, &other.told)
+    }
+
     /// Told what the sync came to; told once, the first word stands.
     pub(crate) fn tell(&self, synced: Result<(), String>) {
         let mut told = self.told.told.locked();

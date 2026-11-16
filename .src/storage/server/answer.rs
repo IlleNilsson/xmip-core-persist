@@ -97,6 +97,13 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
         Request::ReadHeld(queue, from, most) => {
             storage.read_held(queue, from, most).map(Answer::Held)
         }
+        // Answered once the write that last moved the head is durable here:
+        // the client's caller lets its far end see the next on it.
+        Request::ReadHead(queue, most) => storage.read_head(queue, most).and_then(|head| {
+            head.moving
+                .map_or(Ok(()), |moving| moving.wait())
+                .map(|()| Answer::Held(head.held))
+        }),
         Request::ReadClaimed(queue, at, journey) => storage
             .read_claimed(queue, at, journey)
             .map(|claimed| Answer::Claimed(Box::new(claimed))),

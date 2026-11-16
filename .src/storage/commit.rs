@@ -25,6 +25,9 @@
 //! A batch that writes nothing — a request asked again, found written —
 //! is durable with the latest batch handed to the sync, which holds what
 //! it found, and says what it worked itself (`Durable::beside`;
+//! 2026-11-15). Each sequence's head a batch moves is known with the
+//! batch's [`Durable`] before the batch is readable ([`moving`]), so a read
+//! of the head says when what it read is durable (`XmipStorage::read_head`;
 //! 2026-11-15). **A failed sync stops the Storage node** (`EncryptedStore::sync`),
 //! as a batch that panics once in the engine does: nothing is read or
 //! written again until the node is opened anew over its log (fail-stop).
@@ -32,6 +35,7 @@
 mod batch;
 mod kept;
 mod kinds;
+mod moving;
 mod op;
 mod syncer;
 mod waiting;
@@ -45,6 +49,7 @@ pub(crate) use kinds::{
 pub(crate) use op::{Done, Op};
 
 use kept::Kept;
+use moving::Moving;
 use syncer::Syncer;
 use waiting::{Answer, Decides, Reply, Waiting};
 
@@ -72,6 +77,9 @@ const GROUP: usize = 1024;
 /// The one writer, and the writes waiting for its next batch.
 pub(crate) struct Committer {
     waiting: Waiting,
+    /// Each sequence's head a batch under way moved, with when it is
+    /// durable, shared with the writer.
+    moving: Arc<Moving>,
 }
 
 impl Committer {
@@ -89,9 +97,18 @@ impl Committer {
         told: (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>, Arc<Watch>),
         most: Arc<AtomicUsize>,
     ) -> Result<Self, PersistError> {
+        let moving = Arc::new(Moving::default());
+        let writer = Writer::start(store, told, (most, Arc::clone(&moving)))?;
         Ok(Self {
-            waiting: Waiting::new(Box::new(Writer::start(store, told, most)?)),
+            waiting: Waiting::new(Box::new(writer)),
+            moving,
         })
+    }
+
+    /// When the write that last moved the head of the sequence `queue` is
+    /// durable, where a batch under way moved it: none where none did.
+    pub(crate) fn moving(&self, queue: u128) -> Option<Durable> {
+        self.moving.head(queue)
     }
 
     /// `op` decided and written, durably, or refused.
@@ -145,6 +162,8 @@ struct Writer<R> {
     last: Durable,
     /// The batch in the engine and not yet handed to the sync.
     under_way: Option<Durable>,
+    /// Each sequence's head a batch under way moved ([`moving`]).
+    moving: Arc<Moving>,
 }
 
 impl<R: Engine> Decides for Writer<R> {
@@ -178,11 +197,11 @@ impl<R: Engine> Decides for Writer<R> {
 
 impl<R: Engine> Writer<R> {
     /// The writer over `store`, as [`Committer::start`] starts it, keeping
-    /// nothing yet.
+    /// nothing yet, telling `moving` of each head a batch moves.
     fn start(
         store: Arc<EncryptedStore<R>>,
         (clock, columns, epoch, watch): (Arc<dyn Clock>, Arc<Columns>, Arc<AtomicU64>, Arc<Watch>),
-        most: Arc<AtomicUsize>,
+        (most, moving): (Arc<AtomicUsize>, Arc<Moving>),
     ) -> Result<Self, PersistError>
     where
         R: 'static,
@@ -199,6 +218,7 @@ impl<R: Engine> Writer<R> {
             most,
             last: Durable::kept(),
             under_way: None,
+            moving,
         })
     }
 
@@ -254,7 +274,12 @@ impl<R: Engine> Writer<R> {
         let written = match settled {
             _ if empty => Ok(Vec::new()),
             Err(failed) => Err(failed),
-            Ok(()) => self.written(&mut batch, now, &durable),
+            Ok(()) => {
+                // Each head it moves known before it is readable: a read
+                // that finds one moved finds this batch (`moving`).
+                self.moving.entered(&moved, &durable);
+                self.written(&mut batch, now, &durable)
+            }
         };
         self.kept = batch.lent();
         let written = match written {
@@ -267,7 +292,9 @@ impl<R: Engine> Writer<R> {
                 Ok(())
             }
             Err(refused) => {
-                // Refused whole: nothing of it is in the engine.
+                // Refused whole: nothing of it is in the engine, and no
+                // head it was to move waits for it.
+                self.moving.refused(&durable);
                 self.next = before;
                 self.under_way = None;
                 Err(refused)

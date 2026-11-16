@@ -109,9 +109,9 @@ impl Request {
         }
     }
 
-    /// The operations numbered from 41 on, on the administration
-    /// database's operator acts and membership, written as `write_late`
-    /// writes the rest.
+    /// The operations numbered from 41 on — the administration database's
+    /// operator acts and membership, then a sequence's head read — written
+    /// as `write_late` writes the rest.
     fn write_administered(&self, out: &mut Vec<u8>) {
         match self {
             Self::AskAct(act) => {
@@ -137,6 +137,11 @@ impl Request {
             }
             Self::ReadMembers => {
                 out.byte(45);
+            }
+            Self::ReadHead(queue, most) => {
+                out.byte(46);
+                out.u128_be(*queue);
+                out.u32_be(*most);
             }
             _ => {}
         }
