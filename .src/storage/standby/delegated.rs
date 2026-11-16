@@ -12,7 +12,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 use crate::PersistError;
 use crate::storage::{
     ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed,
-    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue,
+    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, Head, HeldQueue,
     InstanceRecord, JourneyRecord, KeptAudit, MessageRecord, Moved, Position, Publication, Query,
     Replay, Replayed, StreamChunk, StreamRecord, Turn, Waiter, XmipStorage,
 };
@@ -87,6 +87,10 @@ impl XmipStorage for Delegated {
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         self.now()?.storage.read_held(queue, from, most)
+    }
+
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+        self.now()?.storage.read_head(queue, most)
     }
 
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {

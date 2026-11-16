@@ -74,6 +74,13 @@ and 9).
   for; read
   a queue — a Subscription's, a Send Port's — oldest first (`read_held`),
   each place marked where its Message failed there (`Held::failed`); read a
+  sequence's head with when the write that last moved it is durable, where
+  it is not yet (`read_head`, `Head`): the one writer knows each head a
+  batch moves before the batch is readable and forgets it once synced
+  (`storage/commit/moving.rs`), a Storage node answers the read over the
+  wire once that write is durable there, and a node sends the next of a
+  sequence only then (the owner, 2026-11-15: *Wait for the disk*; ADR-0018,
+  amendment 2026-11-15); read a
   Send Port queue's index of failed Messages (`read_failed`, a page at a
   time, in the order they failed, its count one read of its places,
   `FailedQueue`; the `failed_message` and `failed_message_places` tables;

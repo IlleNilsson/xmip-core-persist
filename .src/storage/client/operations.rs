@@ -15,7 +15,7 @@ use super::super::due::{DuePart, DueQueue};
 use super::super::durable::Durable;
 use super::super::failed::FailedQueue;
 use super::super::hand_on::HandOn;
-use super::super::hold::HeldQueue;
+use super::super::hold::{Head, HeldQueue};
 use super::super::instance::{InstanceRecord, Turn};
 use super::super::kept_audit::KeptAudit;
 use super::super::membership::MemberRecord;
@@ -99,13 +99,11 @@ impl XmipStorage for StorageClient {
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
-        expected(
-            self.ask(&Request::ReadHeld(queue, from, most))?,
-            |answer| match answer {
-                Answer::Held(queue) => Ok(queue),
-                other => Err(other),
-            },
-        )
+        self.places(queue, (from, most))
+    }
+
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+        self.head(queue, most)
     }
 
     fn read_claimed(&self, q: u128, at: u64, j: JourneyId) -> Result<Claimed, PersistError> {

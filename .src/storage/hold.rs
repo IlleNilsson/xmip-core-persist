@@ -92,6 +92,15 @@ pub struct HeldQueue {
     pub read_unix_nanos: i128,
 }
 
+/// A sequence's head as read (`super::XmipStorage::read_head`): its first
+/// places, and when the write that last moved its head is durable, where
+/// it is not yet — `None` where no write under way moved it.
+#[derive(Clone, Debug)]
+pub struct Head {
+    pub held: HeldQueue,
+    pub moving: Option<super::Durable>,
+}
+
 impl HeldQueue {
     /// How long `held`, one of those read, still waits for its due time as
     /// this read found it — a duration, so no two clocks are compared — or

@@ -63,6 +63,7 @@ use crate::PersistError;
 mod ahead;
 mod claimed;
 mod expected;
+mod held;
 mod node;
 mod operations;
 mod statement;
@@ -370,8 +371,8 @@ mod tests {
     use crate::fixture::Memory;
     use crate::storage::{
         AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, Durable,
-        Embedded, FailedQueue, HandOn, HeldQueue, Hold, JourneyRecord, MessageRecord, Publication,
-        Replay, Replayed, StorageServer, StreamChunk, XmipStorage,
+        Embedded, FailedQueue, HandOn, Head, HeldQueue, Hold, JourneyRecord, MessageRecord,
+        Publication, Replay, Replayed, StorageServer, StreamChunk, XmipStorage,
     };
 
     use crate::storage::authority::Authority;
@@ -595,6 +596,10 @@ mod tests {
 
         fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
             self.beneath.read_held(queue, from, most)
+        }
+
+        fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+            self.beneath.read_head(queue, most)
         }
 
         fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {

@@ -8,7 +8,8 @@
 //!   Message and a Journey; write a Publication — a Message, its Journeys,
 //!   those held and queued, its node's claims, its Dead Message Queue entry,
 //!   its audit record — as one; read a queue oldest first, or what is due in
-//!   it; wait on queues until a write puts a Message in one, answered with
+//!   it, or a sequence's head with when the write that moved it is durable;
+//!   wait on queues until a write puts a Message in one, answered with
 //!   what is due there, and on a sequence's head, an Instance or a key until
 //!   a write moves it (`watch`);
 //!   read and replay a node's Dead Message Queue; claim, renew and release
@@ -89,7 +90,7 @@ pub use embedded::{Embedded, WRITER_KEPT};
 pub use facts::{AuditFacts, JourneyFacts, MessageFacts};
 pub use failed::{Failed, FailedQueue, Failure};
 pub use hand_on::{HandOn, Wait};
-pub use hold::{Held, HeldQueue, Hold, named};
+pub use hold::{Head, Held, HeldQueue, Hold, named};
 pub use instance::{InstanceKey, InstanceRecord, InstanceWrite, Turn};
 pub use kept_audit::KeptAudit;
 pub use membership::MemberRecord;
@@ -213,6 +214,22 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag: the caller tries again,
     /// and takes nothing past what it could not read.
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError>;
+
+    /// The sequence `queue`'s first `most` places, as
+    /// [`XmipStorage::read_held`] reads them from its first, and when the
+    /// write that last moved its head is durable, where it is not yet: a
+    /// place let go of is readable before its sync, and the next of a
+    /// sequence lets its far end see nothing before the write that let it
+    /// head is durable, wherever that write was asked, so the order survives
+    /// any crash (the owner, 2026-11-15: *Wait for the disk*; ADR-0018,
+    /// amendment 2026-11-15). `None` where no write under way moved it, as
+    /// is common: nothing more is read or waited for. Where nothing answers
+    /// it sooner, it is answered once that write is durable, `None` then.
+    ///
+    /// # Errors
+    ///
+    /// As [`XmipStorage::read_held`].
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError>;
 
     /// `queue`'s index of failed Messages ([`Failed`]), read as `read_held` reads a queue.
     ///

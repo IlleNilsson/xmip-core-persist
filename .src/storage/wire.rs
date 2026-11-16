@@ -118,6 +118,9 @@ pub(crate) enum Request {
     WriteMember(Box<MemberRecord>),
     /// The members now: each node's latest row.
     ReadMembers,
+    /// A sequence's first places, answered once the write that last moved
+    /// its head is durable on the Storage node (`super::Head`).
+    ReadHead(u128, u32),
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -322,6 +325,7 @@ impl Form for Request {
             }
             44 => Self::WriteMember(Box::new(MemberRecord::read(cursor)?)),
             45 => Self::ReadMembers,
+            46 => Self::ReadHead(cursor.u128_be()?, cursor.u32_be()?),
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }
@@ -417,6 +421,7 @@ mod tests {
             Request::ReadChunk(StreamId::new(1), 2),
             Request::KeepAudit(64, 4096),
             Request::ReadHeld(7, 2, 64),
+            Request::ReadHead(7, 2),
             Request::ReadFailed(7, 2, 64),
             Request::ReadDue(7, crate::storage::DuePart::Waiting, (3, 2), 64),
             Request::HandOn(delivered(&claim)),
