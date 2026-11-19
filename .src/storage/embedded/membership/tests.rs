@@ -110,6 +110,54 @@ fn each_node_s_latest_row_is_a_member_and_the_rows_before_it_are_kept() {
     assert_eq!(storage.members_written().expect("counted"), 6);
 }
 
+/// A node started again while its earlier start still runs, then that
+/// earlier start stopped in order: its stop is written to its own row
+/// alone, and the later start stays its node's member. Until 2026-11-19
+/// every write made its row the latest, so the earlier start's stop took
+/// the node from its successor.
+#[test]
+#[expect(non_snake_case, reason = "A and B name the starts")]
+fn register_A_register_B_stop_A_leaves_B_the_member() {
+    let (storage, _) = node();
+    let at = scope(0);
+    let (a, b) = (1, 2);
+    storage.write_member(&start(a, &at, false)).expect("A");
+    storage.write_member(&start(b, &at, false)).expect("B");
+    let registered = storage.member(b).expect("read").expect("B's row");
+    storage.write_member(&start(a, &at, true)).expect("A stops");
+
+    let members = storage.read_members().expect("read");
+    assert_eq!(processes(&members), [b], "B is the member");
+    assert_eq!(members[0], registered, "B's row untouched");
+    let stopped = storage.member(a).expect("read").expect("kept");
+    assert!(!stopped.latest, "A is no longer its node's latest");
+    assert!(!stopped.runs(), "A's stop written to its own row");
+    // Two rows written, one replaced as the latest, one stop: four writes.
+    assert_eq!(storage.members_written().expect("counted"), 4);
+}
+
+/// A row names one node: a process writing its row again as another is
+/// refused, and nothing is written.
+#[test]
+fn a_process_rewriting_its_row_as_another_node_is_refused() {
+    let (storage, _) = node();
+    let (first, second) = (scope(0), scope(1));
+    storage.write_member(&start(1, &first, false)).expect("A");
+    let own = storage.member(1).expect("read").expect("A's row");
+
+    let refused = storage.write_member(&start(1, &second, false));
+    let Err(PersistError::Failed { reason }) = refused else {
+        panic!("refused, not {refused:?}");
+    };
+    assert!(
+        reason.contains(&first) && reason.contains(&second),
+        "{reason}"
+    );
+    assert_eq!(storage.member(1).expect("read"), Some(own), "kept");
+    assert_eq!(processes(&storage.read_members().expect("read")), [1]);
+    assert_eq!(storage.members_written().expect("counted"), 1);
+}
+
 #[test]
 fn a_wait_on_the_membership_is_told_as_a_row_is_written_and_answered_at_once_when_behind() {
     let (storage, _) = node();

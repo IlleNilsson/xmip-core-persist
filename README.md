@@ -217,9 +217,13 @@ and 9).
   among the Storage nodes, the save and serial of the slice it runs — and
   Xmip Storage's own: when it started and stopped in order, the table's
   write count at its last write, and whether it is its node's latest row;
-  written by `write_member`, which makes the row its node's latest and the
-  one before it no longer so, in one write, and stamps a stop the row says
-  with Xmip Storage's time; the members now read by `read_members`, each
+  written by `write_member`, which, for a process with no row, registers
+  it, making its row its node's latest and the one before it no longer so,
+  in one write, and for a process with a row updates that row alone, its
+  latest kept and no other row touched, so an earlier start's stop leaves
+  its successor the member, and refuses a process writing its row as
+  another node (ADR-0056, amendment 2026-11-19), and stamps a stop the row
+  says with Xmip Storage's time; the members now read by `read_members`, each
   node's latest row by one range of the index holding only those
   (`membership_latest`), so the rows kept, never deleted (ADR-0040,
   amendment 2026-11-13), cost a read nothing; persist reads no word of a

@@ -14,6 +14,13 @@
 //! writes the table had taken at its last write, and whether it is its
 //! node's latest row are Xmip Storage's to set, on its clock.
 //!
+//! **Registered once, then its own** (ADR-0056, amendment 2026-11-19): a
+//! process's first write registers it, its row its node's latest; every
+//! write after it updates that row alone, whether it is the latest kept and
+//! no other row touched, so an earlier start's stop leaves its successor
+//! the member. A row names one node: a process writing its row as another
+//! is refused.
+//!
 //! **Kept, never deleted** (ADR-0040): a node started again writes a row of
 //! its own, and its row before stays, no longer its node's latest. The
 //! members now are each node's latest row, found by one range of an index
