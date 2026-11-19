@@ -61,8 +61,12 @@ pub fn queue<'c>(counted: &'c Counted, kept: &[u64], next: u64) -> EncryptedStor
     };
     let entries = kept
         .iter()
-        .map(|&at| (KINDS.entry, entry_key(QUEUE, at), Some(held(at))));
-    let places = (KINDS.places, places_key(QUEUE), Some(places.bytes()));
+        .map(|&at| (KINDS.entry, entry_key(QUEUE, at).to_vec(), Some(held(at))));
+    let places = (
+        KINDS.places,
+        places_key(QUEUE).to_vec(),
+        Some(places.bytes()),
+    );
     written(&store, entries.chain([places]).collect());
     counted.read();
     store
@@ -76,8 +80,8 @@ pub fn taken_out(store: &EncryptedStore<&Counted>, sequence: u64) -> Laid {
     take_out(store, &mut batch, KINDS, QUEUE, sequence).expect("taken");
     let left = places(store, &batch, KINDS, QUEUE).expect("places");
     let changes = vec![
-        (KINDS.entry, entry_key(QUEUE, sequence), None),
-        (KINDS.places, places_key(QUEUE), Some(left.bytes())),
+        (KINDS.entry, entry_key(QUEUE, sequence).to_vec(), None),
+        (KINDS.places, places_key(QUEUE).to_vec(), Some(left.bytes())),
     ];
     let columns = Columns::of(Database::Runtime);
     let laid = columns.written(store, changes, 0).expect("laid out");

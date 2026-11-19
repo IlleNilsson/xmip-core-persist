@@ -190,7 +190,7 @@ impl<R: Engine> Decides for Writer<R> {
     #[cfg(test)]
     fn kept(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         let each = self.kept.each();
-        each.map(|(at, value)| (at.clone(), value.clone()))
+        each.map(|(at, value)| (at.to_vec(), value.clone()))
             .collect()
     }
 }

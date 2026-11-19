@@ -35,11 +35,15 @@ use super::columns::Columns;
 use super::commit::Batch;
 use super::row::{Columned, Value};
 use super::schema::Database;
-use crate::{EncryptedStore, Engine, IndexScan, PersistError};
+use crate::{EncryptedStore, Engine, IndexScan, PersistError, Viewed};
 
 /// A queue with a gap of a million places, and what it costs: for tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod gap;
+
+/// A head read where it is, held to what the range reads.
+#[cfg(test)]
+mod head;
 
 /// Where one kind of queue keeps what it keeps: its entries by queue and
 /// place, its index by queue and what an entry is about, its places by
@@ -75,27 +79,26 @@ impl Places {
     }
 }
 
-/// Where an entry is kept: its queue and its place.
-pub(crate) fn entry_key(queue: u128, sequence: u64) -> Vec<u8> {
-    [
-        queue.to_be_bytes().as_slice(),
-        sequence.to_be_bytes().as_slice(),
-    ]
-    .concat()
+/// Where an entry is kept: its queue and its place. Made on the stack, so a
+/// read by it takes nothing from the heap (2026-11-17).
+pub(crate) fn entry_key(queue: u128, sequence: u64) -> [u8; 24] {
+    let mut key = [0; 24];
+    key[..16].copy_from_slice(&queue.to_be_bytes());
+    key[16..].copy_from_slice(&sequence.to_be_bytes());
+    key
 }
 
 /// Where a queue's places are kept: under the queue.
-pub(crate) fn places_key(queue: u128) -> Vec<u8> {
-    queue.to_be_bytes().to_vec()
+pub(crate) const fn places_key(queue: u128) -> [u8; 16] {
+    queue.to_be_bytes()
 }
 
 /// Where the index keeps an entry's place: its queue and what it is about.
-pub(crate) fn by_key(queue: u128, about: u128) -> Vec<u8> {
-    [
-        queue.to_be_bytes().as_slice(),
-        about.to_be_bytes().as_slice(),
-    ]
-    .concat()
+pub(crate) fn by_key(queue: u128, about: u128) -> [u8; 32] {
+    let mut key = [0; 32];
+    key[..16].copy_from_slice(&queue.to_be_bytes());
+    key[16..].copy_from_slice(&about.to_be_bytes());
+    key
 }
 
 /// A queue's places in `store`, as `batch` has left them.
@@ -131,11 +134,19 @@ pub(crate) fn place<R: Engine, T: Columned>(
     let mut places = places(store, batch, kinds, queue)?;
     let sequence = places.next;
     // Its next place holds nothing: no entry is ever kept past it.
-    batch.created(kinds.entry, entry_key(queue, sequence), entry(sequence))?;
-    batch.put(kinds.by, by, Some(sequence.to_be_bytes().to_vec()));
+    batch.created(
+        kinds.entry,
+        entry_key(queue, sequence).to_vec(),
+        entry(sequence),
+    )?;
+    batch.put(kinds.by, by.to_vec(), Some(sequence.to_be_bytes().to_vec()));
     places.next += 1;
     places.count += 1;
-    batch.put(kinds.places, places_key(queue), Some(places.bytes()));
+    batch.put(
+        kinds.places,
+        places_key(queue).to_vec(),
+        Some(places.bytes()),
+    );
     Ok(true)
 }
 
@@ -183,7 +194,7 @@ pub(crate) fn take_out<R: Engine>(
     let Some(bytes) = batch.read(store, kinds.entry, &entry_key(queue, sequence))? else {
         return Ok(None);
     };
-    batch.put(kinds.entry, entry_key(queue, sequence), None);
+    batch.put(kinds.entry, entry_key(queue, sequence).to_vec(), None);
     let mut places = places(store, batch, kinds, queue)?;
     places.count = places.count.saturating_sub(1);
     if places.count == 0 {
@@ -191,20 +202,24 @@ pub(crate) fn take_out<R: Engine>(
         // place none is held before, and a read finds the first.
         places.first = places.next;
     }
-    batch.put(kinds.places, places_key(queue), Some(places.bytes()));
+    batch.put(
+        kinds.places,
+        places_key(queue).to_vec(),
+        Some(places.bytes()),
+    );
     Ok(Some(bytes))
 }
 
 /// The index of `about` in `queue` forgotten: placed again, it takes a new
 /// place.
 pub(crate) fn forget(batch: &mut Batch<'_>, kinds: Kinds, (queue, about): (u128, u128)) {
-    batch.put(kinds.by, by_key(queue, about), None);
+    batch.put(kinds.by, by_key(queue, about).to_vec(), None);
 }
 
 /// The index of `about` in `queue` kept as taken out: placed again, it is
 /// not ([`place`]), and [`placed`] says so.
 pub(crate) fn remember(batch: &mut Batch<'_>, kinds: Kinds, (queue, about): (u128, u128)) {
-    batch.put(kinds.by, by_key(queue, about), Some(Vec::new()));
+    batch.put(kinds.by, by_key(queue, about).to_vec(), Some(Vec::new()));
 }
 
 /// `queue` as `store` keeps it: its places, its first as this read finds
@@ -213,6 +228,12 @@ pub(crate) fn remember(batch: &mut Batch<'_>, kinds: Kinds, (queue, about): (u12
 /// each entry the range finds. A place taken out is in no index, so a gap
 /// is never read. The first is the first the range finds where the read
 /// starts at the kept first; past it, a range of one from there finds it.
+///
+/// **A head is read where it is** (2026-11-17). One entry asked for from
+/// the kept first — a sequence's head (`XmipStorage::read_head`) — is read
+/// at that place first: no entry is held before it, so one held there is
+/// the first, and no range is read. Only where none is held there, a place
+/// taken out ahead of the rest, is the range read.
 pub(crate) fn page<R: Engine>(
     store: &EncryptedStore<R>,
     kinds: Kinds,
@@ -224,22 +245,39 @@ pub(crate) fn page<R: Engine>(
     // the entries it finds, so the page never comes back short of what is
     // held (corrected 2026-10-27; a sequence's head read empty under load).
     let view = store.viewed()?;
-    let mut places = view
+    let places = view
         .get(kinds.places, &places_key(queue))?
         .map_or(Ok(Places::default()), |bytes| Places::from_bytes(&bytes))?;
     if places.count == 0 {
         return Ok((places, Vec::new()));
     }
     let at = from.max(places.first);
+    if most == 1
+        && at == places.first
+        && let Some(head) = view.get(kinds.entry, &entry_key(queue, at))?
+    {
+        return Ok((places, vec![head]));
+    }
+    scanned(&view, (kinds, queue), places, (at, most))
+}
+
+/// `queue`'s page as one ordered range of its index from `at` finds it, up
+/// to `most`, over `places` read in `view` ([`page`]).
+fn scanned<R: Engine>(
+    view: &Viewed<'_, R>,
+    (kinds, queue): (Kinds, u128),
+    mut places: Places,
+    (at, most): (u64, u32),
+) -> Result<(Places, Vec<Vec<u8>>), PersistError> {
     let most = usize::try_from(most).unwrap_or(usize::MAX);
     let found = if most == 0 {
         Vec::new()
     } else {
-        placed_from(&view, kinds, queue, at, most)?
+        placed_from(view, kinds, queue, at, most)?
     };
     let first = match found.first() {
         Some(&(sequence, _)) if at == places.first => Some(sequence),
-        _ => placed_from(&view, kinds, queue, places.first, 1)?
+        _ => placed_from(view, kinds, queue, places.first, 1)?
             .first()
             .map(|&(sequence, _)| sequence),
     };

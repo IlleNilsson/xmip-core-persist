@@ -39,6 +39,14 @@ impl AuditEntry {
 }
 
 impl Form for AuditEntry {
+    fn capacity(&self) -> usize {
+        let audited = self
+            .audited
+            .as_ref()
+            .map_or(0, |audited| audited.message.len() + 64);
+        self.body.len() + audited + codec::form::CAPACITY
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u128_be(self.id.value());
         write_body(out, &self.body, self.audited.as_ref());

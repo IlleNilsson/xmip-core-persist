@@ -164,6 +164,10 @@ pub(crate) fn malformed(reason: impl Into<String>) -> PersistError {
 }
 
 impl Form for StreamChunk {
+    fn capacity(&self) -> usize {
+        self.bytes.len() + 32
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u128_be(self.stream.value()).u32_be(self.index);
         field::counted(out, &self.bytes);
@@ -179,6 +183,10 @@ impl Form for StreamChunk {
 }
 
 impl Form for MessageRecord {
+    fn capacity(&self) -> usize {
+        self.body.len() + codec::form::CAPACITY
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u128_be(self.message.value());
         field::counted(out, &self.body);
@@ -195,6 +203,10 @@ impl Form for MessageRecord {
 }
 
 impl Form for JourneyRecord {
+    fn capacity(&self) -> usize {
+        self.body.len() + codec::form::CAPACITY
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u128_be(self.journey.value());
         field::counted(out, &self.body);
