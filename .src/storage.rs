@@ -537,15 +537,20 @@ pub trait XmipStorage: Send + Sync {
     /// When it cannot be read, or fails its tag.
     fn list_secrets(&self) -> Result<Vec<SecretEntry>, PersistError>;
 
-    /// Write a node's row of the `membership` table, keyed by its process,
-    /// as its node's latest, the row of its node before it no longer the
-    /// latest, in one write; when it started, and where the row says it
-    /// stopped when it did, are Xmip Storage's to set (`membership`). Every
-    /// waiter on the table is told ([`Watched::Membership`]).
+    /// Write a node's row of the `membership` table, keyed by its process.
+    /// A process with no row registers: its row written as its node's
+    /// latest, the row of its node before it no longer the latest, in one
+    /// write. A process with a row updates that row alone, whether it is
+    /// its node's latest kept and no other row touched, so an earlier
+    /// start's stop never takes its successor's place. When it started, and
+    /// where the row says it stopped when it did, are Xmip Storage's to set
+    /// (`membership`). Every waiter on the table is told
+    /// ([`Watched::Membership`]).
     ///
     /// # Errors
     ///
-    /// When it cannot be read or written.
+    /// When it cannot be read or written; and, nothing written, where the
+    /// process's row names another node.
     fn write_member(&self, member: &MemberRecord) -> Result<(), PersistError>;
 
     /// The members now: each node's latest row, by its node, running or
