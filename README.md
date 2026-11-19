@@ -95,7 +95,10 @@ and 9).
   the table's primary key), written and taken out with each entry: a page
   is one ordered range from its place, a gap never read, and the queue's
   first place is found by the read that asks for it, never by the writer
-  walking a gap (open problem 40; ADR-0013, amendment 2026-10-19; an
+  walking a gap — a sequence's head, one entry from the kept first, is
+  read at that place and the range only where none is held there
+  (`queue::page`; ADR-0018, amendment 2026-11-17) (open problem 40;
+  ADR-0013, amendment 2026-10-19; an
   embedded store made before it lacks the index, and nothing migrates it
   before the first release); read a Send Port's queue by when each is due
   (`read_due`, `DuePart`, `DueQueue`; `storage/due.rs`): what is due now,
@@ -109,7 +112,12 @@ and 9).
   2026-10-21) — none where the batch leaves the queue holding none — and
   keeps each queue's places as it left them, with every record it decides
   a condition on (`commit::kept`; ADR-0018, amendments 2026-11-14 and
-  2026-11-15), so no batch reads or decrypts them again; a Message marked
+  2026-11-15), so no batch reads or decrypts them again — each by its
+  place kept inline in the map and hashed a word at a time
+  (`encrypted_store::place::PlaceMap`), a batch settling each queue's
+  first due from every entry's standing alone, never copying its body,
+  and each record written in the room its form says (`Form::capacity`;
+  ADR-0018, amendment 2026-11-17); a Message marked
   failed waits for no retry, its due time
   taken out with the mark; wait on queues (`wait_queues`, `Position`,
   `Watched`, `Moved`, `Waiter`; `storage/watch.rs`; open problem 46,
@@ -311,6 +319,8 @@ and 9).
   none of what its Publication wrote. The writer's copy is trusted, not
   authenticated against the store again; every other read is. At most the
   Storage node's `[tuning] storage_writer_kept` bytes, `WRITER_KEPT`,
+  each record counted as memory holds it — its place inline twice and the
+  room its value was written in (2026-11-17) —
   sixteen mebibytes, by default (`Embedded::keep_written`,
   `standby::Timings::writer_kept`), the first kept let go of first; a node
   opened anew or a standby promoted keeps none, and a writer that panicked

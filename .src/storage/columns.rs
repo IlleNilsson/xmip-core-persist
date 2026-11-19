@@ -27,11 +27,9 @@
 mod ordered;
 mod searched;
 
-use std::collections::HashMap;
-
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
-use crate::encrypted_store::place::place;
+use crate::encrypted_store::place::{PlaceMap, place};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 use searched::{Searched, lay};
 
@@ -53,7 +51,7 @@ pub(crate) fn table(database: Database, name: &str) -> Option<&'static Table> {
 /// The changes to the index entries of each record a batch laid out as it
 /// made it — new, or over the record it replaces — by its place, as the
 /// store seals it for (`super::commit::Batch`).
-pub(crate) type Laid = HashMap<Vec<u8>, Vec<IndexEntry>>;
+pub(crate) type Laid = PlaceMap<Vec<IndexEntry>>;
 
 /// One database's laid-out tables, as its records are written and its
 /// indexes read.
@@ -124,7 +122,7 @@ impl Columns {
         now: u64,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
         let kept = |kind: &'a str, key: &[u8]| store.get(kind, key);
-        self.written_over((changes, HashMap::new()), now, kept)
+        self.written_over((changes, Laid::default()), now, kept)
     }
 
     /// As [`Columns::written`], each record a change replaces as `kept`
@@ -146,7 +144,7 @@ impl Columns {
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
         let mut entries = Vec::new();
         // Where in `written` each searchable place was last written.
-        let mut latest: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut latest: PlaceMap<usize> = PlaceMap::default();
         let mut written: Vec<RecordChange<'a>> = Vec::with_capacity(changes.len());
         for (kind, key, value) in changes {
             let Some(searched) = Searched::of(self.database, kind) else {
@@ -154,10 +152,11 @@ impl Columns {
                 continue;
             };
             let at = place(kind, &key);
-            let last = latest.insert(at.to_vec(), written.len());
+            let made = laid.remove(&*at);
+            let last = latest.insert(at, written.len());
             let before = match last {
                 Some(last) => written[last].2.clone(),
-                None => match laid.remove(&*at) {
+                None => match made {
                     Some(made) => {
                         entries.extend(made);
                         written.push((kind, key, value));
@@ -191,21 +190,23 @@ impl Columns {
         let table = self::table(self.database, table)
             .ok_or_else(|| super::record::malformed(format!("no table '{table}'")))?;
         let tag = id.to_be_bytes();
-        let mut keys = Vec::new();
+        let mut keys = Vec::with_capacity(table.indexes.len());
         'indexes: for index in table.indexes {
             if let Some(flag) = index.only
                 && value(row, flag) != Some(&Value::Flag(true))
             {
                 continue;
             }
-            let mut key = vec![index.number];
+            // Each key written once, in room for what it holds.
+            let mut key = Vec::with_capacity(ENTRY);
+            key.push(index.number);
             for column in index.columns {
                 let Some(value) = value(row, column) else {
                     continue 'indexes;
                 };
-                key.extend(encoded(value));
+                encode(value, &mut key);
             }
-            key.extend(tag);
+            key.extend_from_slice(&tag);
             keys.push(key);
         }
         Ok(keys)
@@ -248,9 +249,10 @@ impl Columns {
             .iter()
             .find(|candidate| candidate.name == index)
             .ok_or_else(missing)?;
-        let mut prefix = vec![index.number];
+        let mut prefix = Vec::with_capacity(ENTRY);
+        prefix.push(index.number);
         for value in equal.iter().take(index.columns.len()) {
-            prefix.extend(encoded(value));
+            encode(value, &mut prefix);
         }
         Ok((index, prefix))
     }
@@ -281,24 +283,30 @@ impl Columns {
 /// The first and last keys of a range of an index's entries, both included.
 type Range = (Vec<u8>, Vec<u8>);
 
-/// `value` as an entry's key keeps it, in the clear: an identifier as
-/// its sixteen bytes, words as their length and their UTF-8, bytes as their
-/// length and themselves, and a time, a count or a flag big-endian, so it
-/// sorts.
-fn encoded(value: &Value) -> Vec<u8> {
+/// The room an entry's key is made in: its index's number, an identifier
+/// and a time or two, and its record's identifier, without growing.
+const ENTRY: usize = 64;
+
+/// `value` written after `key`, as an entry's key keeps it, in the clear:
+/// an identifier as its sixteen bytes, words as their length and their
+/// UTF-8, bytes as their length and themselves, and a time, a count or a
+/// flag big-endian, so it sorts.
+fn encode(value: &Value, key: &mut Vec<u8>) {
     match value {
-        Value::Time(time) | Value::Count(time) => time.to_be_bytes().to_vec(),
-        Value::Flag(flag) => vec![u8::from(*flag)],
-        Value::Text(text) => counted(text.as_bytes()),
-        Value::Bytes(bytes) => counted(bytes),
-        Value::Id(id) => id.to_be_bytes().to_vec(),
+        Value::Time(time) | Value::Count(time) => key.extend_from_slice(&time.to_be_bytes()),
+        Value::Flag(flag) => key.push(u8::from(*flag)),
+        Value::Text(text) => counted(text.as_bytes(), key),
+        Value::Bytes(bytes) => counted(bytes, key),
+        Value::Id(id) => key.extend_from_slice(&id.to_be_bytes()),
     }
 }
 
-/// `bytes` after their length, so what follows them sorts after them.
-fn counted(bytes: &[u8]) -> Vec<u8> {
+/// `bytes` written after `key` after their length, so what follows them
+/// sorts after them.
+fn counted(bytes: &[u8], key: &mut Vec<u8>) {
     let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    [length.to_be_bytes().as_slice(), bytes].concat()
+    key.extend_from_slice(&length.to_be_bytes());
+    key.extend_from_slice(bytes);
 }
 
 /// The value `row` holds in `column`, where it holds one.

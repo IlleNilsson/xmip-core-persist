@@ -54,7 +54,8 @@ pub(crate) fn moved<R: Engine>(store: &EncryptedStore<R>, batch: &Batch<'_>) -> 
 /// in it, its head where one was taken out.
 fn queues<R: Engine>(store: &EncryptedStore<R>, batch: &Batch<'_>) -> Vec<Change> {
     let places = |bytes: Option<&[u8]>| bytes.map_or(Some(Places::default()), read_places);
-    let holders = holders(batch);
+    // Read only where a tail moved: a batch that takes out alone needs none.
+    let mut holders = None;
     let mut changes = Vec::new();
     for (key, after) in batch.written_of(PLACES) {
         let Some(queue) = key.try_into().ok().map(u128::from_be_bytes) else {
@@ -69,10 +70,11 @@ fn queues<R: Engine>(store: &EncryptedStore<R>, batch: &Batch<'_>) -> Vec<Change
             continue;
         };
         if after.next != before.next {
+            let holders = holders.get_or_insert_with(|| holders_of(batch));
             changes.push(Change {
                 watched: Watched::Queue(queue),
                 at: Some(after.next),
-                own: own(batch, &holders, (queue, before.next)),
+                own: own(batch, holders, (queue, before.next)),
             });
         }
         if after.taken() != before.taken() {
@@ -127,7 +129,7 @@ fn counted<R: Engine>(
 }
 
 /// By Journey, the holder of each claim `batch` takes or keeps held.
-fn holders(batch: &Batch<'_>) -> HashMap<u128, String> {
+fn holders_of(batch: &Batch<'_>) -> HashMap<u128, String> {
     batch
         .written_of(CLAIM)
         .filter_map(|(key, value)| {
@@ -155,8 +157,8 @@ fn own(
         if at != queue || place < from {
             continue;
         }
-        let held = Held::from_bytes(value?).ok()?;
-        let holder = holders.get(&held.hold.journey.value())?;
+        let journey = Held::journey_of(value?).ok()?;
+        let holder = holders.get(&journey.value())?;
         if own.is_some_and(|own| own != holder) {
             return None;
         }

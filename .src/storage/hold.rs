@@ -32,15 +32,14 @@
 //! the URI naming the Subscription, so the operator state that pauses it in
 //! the administration database is found under the same.
 
-use codec::cursor::Cursor;
-use codec::field;
 use codec::form::Form;
-use codec::writer::ByteWriter;
 use xcore::JourneyId;
 
 use super::commit::{Batch, HELD, HELD_JOURNEY, PLACES};
 use super::queue::{self, Kinds};
 use crate::{EncryptedStore, Engine, PersistError};
+
+mod form;
 
 /// A Message to hold: which queue, which Journey, and what the holder
 /// needs to pick it up, in its own form.
@@ -127,8 +126,13 @@ impl Held {
     /// the epoch — where it is due since it was held.
     #[must_use]
     pub fn due_at(&self) -> u64 {
-        self.due_unix_nanos
-            .map_or(0, |due| super::row::nanos(due).max(1))
+        Self::due_at_of(self.due_unix_nanos)
+    }
+
+    /// When one whose retry is due at `due` is due, as [`Held::due_at`]
+    /// says it: the one rule.
+    pub(crate) fn due_at_of(due: Option<i128>) -> u64 {
+        due.map_or(0, |due| super::row::nanos(due).max(1))
     }
 }
 
@@ -206,7 +210,7 @@ pub(crate) fn wait<R: Engine>(
         due_unix_nanos: Some(due),
         ..before.clone()
     };
-    batch.replaced(KINDS.entry, key, held, Some(&before))
+    batch.replaced(KINDS.entry, key.to_vec(), held, Some(&before))
 }
 
 /// The Message held at `sequence` in `queue` marked `failed`, or not, in
@@ -233,7 +237,7 @@ pub(crate) fn mark<R: Engine>(
         due_unix_nanos: before.due_unix_nanos.filter(|_| !failed),
         ..before.clone()
     };
-    batch.replaced(KINDS.entry, key, held, Some(&before))
+    batch.replaced(KINDS.entry, key.to_vec(), held, Some(&before))
 }
 
 /// The Message held at `sequence` in `queue` let go of, in `batch`: its
@@ -311,67 +315,6 @@ pub(crate) fn read<R: Engine>(
             .collect::<Result<_, _>>()?,
         read_unix_nanos: now,
     })
-}
-
-impl Form for Hold {
-    fn write(&self, out: &mut Vec<u8>) {
-        out.u128_be(self.queue);
-        out.u128_be(self.journey.value());
-        field::counted(out, &self.body);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        Ok(Self {
-            queue: cursor.u128_be()?,
-            journey: JourneyId::new(cursor.u128_be()?),
-            body: field::read_counted(cursor)?.to_vec(),
-        })
-    }
-}
-
-impl Form for Held {
-    fn write(&self, out: &mut Vec<u8>) {
-        out.u64_be(self.sequence);
-        self.hold.write(out);
-        out.u64_be(self.held_unix_nanos);
-        out.byte(u8::from(self.failed));
-        out.byte(u8::from(self.due_unix_nanos.is_some()));
-        out.i128_be(self.due_unix_nanos.unwrap_or_default());
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        Ok(Self {
-            sequence: cursor.u64_be()?,
-            hold: Hold::read(cursor)?,
-            held_unix_nanos: cursor.u64_be()?,
-            failed: cursor.byte()? != 0,
-            due_unix_nanos: {
-                let waits = cursor.byte()? != 0;
-                let due = cursor.i128_be()?;
-                waits.then_some(due)
-            },
-        })
-    }
-}
-
-impl Form for HeldQueue {
-    fn write(&self, out: &mut Vec<u8>) {
-        out.u64_be(self.first);
-        out.u64_be(self.next);
-        out.u64_be(self.count);
-        self.held.write(out);
-        out.i128_be(self.read_unix_nanos);
-    }
-
-    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
-        Ok(Self {
-            first: cursor.u64_be()?,
-            next: cursor.u64_be()?,
-            count: cursor.u64_be()?,
-            held: Vec::read(cursor)?,
-            read_unix_nanos: cursor.i128_be()?,
-        })
-    }
 }
 
 #[cfg(test)]

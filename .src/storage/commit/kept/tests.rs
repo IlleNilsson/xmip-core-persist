@@ -27,7 +27,7 @@ fn written(kind: &'static str, key: u8, value: Option<u8>) -> RecordChange<'stat
 
 #[test]
 fn past_the_most_its_node_says_the_first_kept_is_let_go_of_and_one_kept_is_replaced() {
-    let one = cost(&place(CLAIM, &[0]), Some([0; 4].as_slice()));
+    let one = cost(&place(CLAIM, &[0]), Some(&vec![0; 4]));
     let mut kept = Kept::default();
     let four = (0..4).map(|key| written(CLAIM, key, Some(key)));
     kept.written(four.collect(), 3 * one);

@@ -19,7 +19,7 @@
 //! index entries the two differ in written.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
 use codec::form::Form;
 
@@ -27,7 +27,7 @@ use super::super::columns::{Columns, Laid};
 use super::super::row::Columned;
 use super::super::schema::Database;
 use super::kept::Kept;
-use crate::encrypted_store::place::place;
+use crate::encrypted_store::place::{Place, PlaceMap, place};
 use crate::{EncryptedStore, Engine, PersistError, RecordChange};
 
 /// One batch being decided: what it has written so far, by place — or one
@@ -44,7 +44,7 @@ pub(crate) struct Batch<'a> {
     pub(super) below: Option<&'a Batch<'a>>,
     /// Where in `changes` the last write of each place this batch wrote is,
     /// by its place.
-    pub(super) written: HashMap<Vec<u8>, usize>,
+    pub(super) written: PlaceMap<usize>,
     pub(super) changes: Vec<RecordChange<'static>>,
     /// The changes to the index entries of each record the batch laid out
     /// as it made it ([`Batch::replaced`]), by its place.
@@ -62,7 +62,12 @@ pub(crate) struct Batch<'a> {
 }
 
 /// Each record's value by its place: `None` where there is none.
-type ByPlace = HashMap<Vec<u8>, Option<Vec<u8>>>;
+type ByPlace = PlaceMap<Option<Vec<u8>>>;
+
+/// The room a batch and each operation's stage over it are made with for
+/// what they write: a Publication's records and a hand-on's, without
+/// growing (2026-11-17).
+const ROOM: usize = 32;
 
 impl Batch<'_> {
     /// A batch with nothing in it yet, over what is written, decided at
@@ -77,9 +82,9 @@ impl Batch<'_> {
     pub(super) fn over(now: u64, writer: Kept) -> Batch<'static> {
         Batch {
             below: None,
-            written: HashMap::new(),
-            changes: Vec::new(),
-            laid: HashMap::new(),
+            written: PlaceMap::with_capacity_and_hasher(ROOM, BuildHasherDefault::default()),
+            changes: Vec::with_capacity(ROOM),
+            laid: PlaceMap::default(),
             now,
             kept: RefCell::default(),
             writer,
@@ -95,9 +100,9 @@ impl Batch<'_> {
     pub(super) fn staged(&self) -> Batch<'_> {
         Batch {
             below: Some(self),
-            written: HashMap::new(),
-            changes: Vec::new(),
-            laid: HashMap::new(),
+            written: PlaceMap::with_capacity_and_hasher(ROOM, BuildHasherDefault::default()),
+            changes: Vec::with_capacity(ROOM),
+            laid: PlaceMap::default(),
             now: self.now,
             kept: RefCell::default(),
             writer: Kept::default(),
@@ -114,7 +119,7 @@ impl Batch<'_> {
         let at = place(kind, key);
         let mut kept = self.kept.borrow_mut();
         if !kept.contains_key(&*at) {
-            kept.insert(at.to_vec(), None);
+            kept.insert(at, None);
         }
     }
 
@@ -171,7 +176,7 @@ impl Batch<'_> {
         }
         let columns = Columns::of(Database::Runtime);
         let (bytes, entries) = columns.laid(kind, &mut record, before, self.now)?;
-        self.laid.insert(at.to_vec(), entries);
+        self.laid.insert(at, entries);
         self.put(kind, key, Some(bytes));
         Ok(())
     }
@@ -192,13 +197,13 @@ impl Batch<'_> {
         &self,
         store: &EncryptedStore<R>,
         (kind, key): (&'static str, &[u8]),
-        at: &[u8],
+        at: &Place,
     ) -> Result<Option<Vec<u8>>, PersistError> {
         // A stage that wrote nothing yet is not asked.
         let written = if self.written.is_empty() {
             None
         } else {
-            self.written.get(at)
+            self.written.get(&**at)
         };
         match (written, self.below) {
             (Some(&change), _) => Ok(self.changes[change].2.clone()),
@@ -225,19 +230,19 @@ impl Batch<'_> {
         &self,
         store: &EncryptedStore<R>,
         (kind, key): (&'static str, &[u8]),
-        at: &[u8],
+        at: &Place,
     ) -> Result<Option<Vec<u8>>, PersistError> {
         if let Some(below) = self.below {
             return below.before_at(store, (kind, key), at);
         }
-        if let Some(kept) = self.kept.borrow().get(at) {
+        if let Some(kept) = self.kept.borrow().get(&**at) {
             return Ok(kept.clone());
         }
         if let Some(kept) = self.writer.get(at) {
             return Ok(kept.clone());
         }
         let kept = store.get(kind, key)?;
-        self.kept.borrow_mut().insert(at.to_vec(), kept.clone());
+        self.kept.borrow_mut().insert(at.clone(), kept.clone());
         Ok(kept)
     }
 
@@ -260,7 +265,7 @@ impl Batch<'_> {
         match self.written.get_mut(&*at) {
             Some(last) => *last = change,
             None => {
-                self.written.insert(at.to_vec(), change);
+                self.written.insert(at, change);
             }
         }
         self.changes.push((kind, key, value));
@@ -273,7 +278,7 @@ impl Batch<'_> {
     /// among them.
     pub(super) fn taken(
         &mut self,
-        (written, changes, laid): (HashMap<Vec<u8>, usize>, Vec<RecordChange<'static>>, Laid),
+        (written, changes, laid): (PlaceMap<usize>, Vec<RecordChange<'static>>, Laid),
     ) {
         let first = self.changes.len();
         self.changes.extend(changes);

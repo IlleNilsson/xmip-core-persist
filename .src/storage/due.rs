@@ -24,7 +24,7 @@
 //! (`super::commit::kept`; 2026-11-14, and 2026-11-15), so no batch reads
 //! them from the store again.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use codec::CodecError;
@@ -182,21 +182,27 @@ pub(crate) fn settle<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
 ) -> Result<(), PersistError> {
-    let mut queues: BTreeMap<u128, Vec<Written>> = BTreeMap::new();
+    // Each queue's places written, read where the batch keeps them: the
+    // standing of each, never its body (2026-11-17).
+    let mut queues: Vec<(u128, Vec<Written>)> = Vec::new();
     for (key, value) in batch.written_of(HELD) {
         let (Some(queue), Some(place)) = (key.get(..16), key.get(16..24)) else {
             continue;
         };
         let queue = u128::from_be_bytes(queue.try_into().unwrap_or_default());
         let place = u64::from_be_bytes(place.try_into().unwrap_or_default());
-        let value = value.map(<[u8]>::to_vec);
-        queues.entry(queue).or_default().push((place, value));
+        let standing = value.map(Held::standing).transpose()?;
+        match queues.iter_mut().find(|(each, _)| *each == queue) {
+            Some((_, written)) => written.push((place, standing)),
+            None => queues.push((queue, vec![(place, standing)])),
+        }
     }
+    queues.sort_unstable_by_key(|(queue, _)| *queue);
     for (queue, written) in queues {
         let before = said(batch.before(store, DUE_PLACES, &places_key(queue))?)?;
         let places = settled_one(store, batch, (queue, before), written)?;
         if places != before {
-            batch.put(DUE_PLACES, places_key(queue), Some(places.bytes()));
+            batch.put(DUE_PLACES, places_key(queue).to_vec(), Some(places.bytes()));
         }
     }
     Ok(())
@@ -211,17 +217,18 @@ fn settled_one<R: Engine>(
     written: Vec<Written>,
 ) -> Result<DuePlaces, PersistError> {
     let mut places = before;
-    let mut touched = HashSet::new();
+    let mut touched = HashSet::with_capacity(written.len());
     let (mut fresh, mut retry) = (None, None);
-    for (place, value) in written {
+    for (place, new) in written {
         // A place the batch made new was found empty (`Batch::absent`).
         let old = batch.before(store, HELD, &entry_key(queue, place))?;
-        let old = old.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
-        let new = value.map(|bytes| Held::from_bytes(&bytes)).transpose()?;
-        places.retrying =
-            (places.retrying + retries(new.as_ref())).saturating_sub(retries(old.as_ref()));
+        let old = old.map(|bytes| Held::standing(&bytes)).transpose()?;
+        places.retrying = (places.retrying + retries(new)).saturating_sub(retries(old));
         touched.insert(place);
-        match new.filter(|new| !new.failed).map(|new| new.due_at()) {
+        match new
+            .filter(|(failed, _)| !failed)
+            .map(|(_, due)| Held::due_at_of(due))
+        {
             Some(0) => fresh = Some(fresh.map_or(place, |first: u64| first.min(place))),
             Some(due) => {
                 let at = (due, place);
@@ -270,12 +277,13 @@ fn settled_one<R: Engine>(
     Ok(places)
 }
 
-/// A held Message's place a batch wrote, and what it left there.
-type Written = (u64, Option<Vec<u8>>);
+/// A held Message's place a batch wrote, and the standing it left there
+/// (`Held::standing`): whether it failed and when it is due.
+type Written = (u64, Option<(bool, Option<i128>)>);
 
 /// One where it keeps a retry's due time and did not fail.
-fn retries(held: Option<&Held>) -> u64 {
-    u64::from(held.is_some_and(|held| held.due_unix_nanos.is_some() && !held.failed))
+fn retries(standing: Option<(bool, Option<i128>)>) -> u64 {
+    u64::from(standing.is_some_and(|(failed, due)| due.is_some() && !failed))
 }
 
 /// The first entry of `queue` not failed, from the due time and place

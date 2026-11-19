@@ -27,7 +27,7 @@
 //! queue's places by when each is due, which the writer kept alone until
 //! 2026-11-15, by the queue (`super::super::due`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use super::super::{failed, instance, origin};
 use super::{
@@ -35,19 +35,19 @@ use super::{
     SEQUENCE,
 };
 use crate::RecordChange;
-use crate::encrypted_store::place::place;
+use crate::encrypted_store::place::{Place, PlaceMap, place};
 
-/// What one place kept costs beside its bytes and its value: its slot in
-/// the map and in the order, and their lengths, about.
-const OVERHEAD: usize = 96;
+/// What one place kept costs beside the place and its value: its value's
+/// own header and its slot's share of the map's spare room, about.
+const OVERHEAD: usize = 48;
 
 /// The records the writer keeps, by place — its bytes, as the store seals
 /// it for — and the order it first kept them in.
 #[derive(Debug, Default)]
 pub(crate) struct Kept {
-    places: HashMap<Vec<u8>, Option<Vec<u8>>>,
+    places: PlaceMap<Option<Vec<u8>>>,
     /// Each place kept, the first kept first: what is let go of first.
-    order: VecDeque<Vec<u8>>,
+    order: VecDeque<Place>,
     /// What it keeps, in bytes, as [`OVERHEAD`] counts.
     bytes: usize,
 }
@@ -71,7 +71,7 @@ impl Kept {
         }
         for (kind, key, value) in changes {
             if keeps(kind) {
-                self.keep(place(kind, &key).to_vec(), value);
+                self.keep(place(kind, &key), value);
             }
         }
         while self.bytes > most {
@@ -79,7 +79,7 @@ impl Kept {
                 break;
             };
             if let Some(value) = self.places.remove(&first) {
-                self.bytes -= cost(&first, value.as_deref());
+                self.bytes -= cost(&first, value.as_ref());
             }
         }
     }
@@ -99,14 +99,14 @@ impl Kept {
 
     /// Each place it keeps, and what it keeps there.
     #[cfg(test)]
-    pub(crate) fn each(&self) -> impl Iterator<Item = (&Vec<u8>, &Option<Vec<u8>>)> {
+    pub(crate) fn each(&self) -> impl Iterator<Item = (&Place, &Option<Vec<u8>>)> {
         self.places.iter()
     }
 
-    fn keep(&mut self, place: Vec<u8>, value: Option<Vec<u8>>) {
-        let added = cost(&place, value.as_deref());
+    fn keep(&mut self, place: Place, value: Option<Vec<u8>>) {
+        let added = cost(&place, value.as_ref());
         if let Some(kept) = self.places.get_mut(&place) {
-            self.bytes = self.bytes - cost(&place, kept.as_deref()) + added;
+            self.bytes = self.bytes - cost(&place, kept.as_ref()) + added;
             *kept = value;
             return;
         }
@@ -141,9 +141,15 @@ fn keeps(kind: &str) -> bool {
 }
 
 /// What keeping `value` at `place` costs, in bytes: the place twice, in
-/// the map and in the order, its value and [`OVERHEAD`].
-fn cost(place: &[u8], value: Option<&[u8]>) -> usize {
-    2 * place.len() + value.map_or(0, <[u8]>::len) + OVERHEAD
+/// the map and in the order, as each holds it inline, with what a long one
+/// spills to the heap; the room its value was written in, which may be
+/// more than it holds (`Form::capacity`); and [`OVERHEAD`] (2026-11-17).
+fn cost(place: &Place, value: Option<&Vec<u8>>) -> usize {
+    let spilled = match place {
+        Place::Short { .. } => 0,
+        Place::Long(bytes) => bytes.capacity(),
+    };
+    2 * (core::mem::size_of::<Place>() + spilled) + value.map_or(0, Vec::capacity) + OVERHEAD
 }
 
 #[cfg(test)]
