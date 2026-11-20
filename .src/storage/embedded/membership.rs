@@ -1,9 +1,10 @@
 //! The embedded Storage node's `membership` table
-//! (`super::super::membership`): a process's first row written with its
-//! node's row before it, no longer the latest, in one write, and each write
-//! after it to its own row alone, each numbered by the table's writes, and
-//! every waiter on the table told; the members now read by one range of the
-//! index of latest rows.
+//! (`super::super::membership`): a process's first row written, where its
+//! start is above its node's latest, with its node's row before it, no
+//! longer the latest, in one write, and each write after it to its own row
+//! alone, each numbered by the table's writes, and every waiter on the
+//! table told; the members now read by one range of the index of latest
+//! rows.
 use codec::form::Form;
 use xcore::lock::Locked;
 
@@ -21,51 +22,52 @@ const WRITTEN: (&str, &str) = (MEMBERSHIP, "membership_written");
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
     /// `member` written to its process's row: `write_member`. A process
-    /// with no row registers, its row written as its node's latest and the
-    /// row of its node it replaces as the latest written no longer the
-    /// latest, in one write; a process with a row updates that row alone,
-    /// whether it is the latest kept and no other row touched, so an
-    /// earlier start's stop leaves its successor the member. Every waiter
-    /// on the table is told once it is written.
+    /// with no row registers, where its start is above its node's latest:
+    /// its row written as its node's latest and the row of its node it
+    /// replaces as the latest written no longer the latest, in one write. A
+    /// process with a row updates that row alone, whether it is the latest
+    /// kept and no other row touched, so an earlier start's stop leaves its
+    /// successor the member. Every waiter on the table is told once it is
+    /// written.
     ///
     /// # Errors
     ///
-    /// Where the process's row names another node, nothing written; and
-    /// where the table cannot be read or written.
+    /// [`PersistError::Superseded`] where a process with no row is no later
+    /// a start than its node's latest (ADR-0056, amendment 2026-11-20);
+    /// where the process's row names another node or another start; nothing
+    /// written then. And where the table cannot be read or written.
     pub(super) fn member_written(&self, member: &MemberRecord) -> Result<(), PersistError> {
         let _one = self.administering.locked();
         let own = self.member(member.process)?;
-        if let Some(own) = &own
-            && own.node != member.node
-        {
-            return Err(PersistError::Failed {
-                reason: format!(
-                    "the process {:032x} wrote its row as {}; a row names one node, so its \
-                     row as {} is not written",
-                    member.process, own.node, member.node
-                ),
-            });
+        if let Some(own) = &own {
+            rewritten(own, member)?;
+        }
+        // Registering: its node's latest before it, which holds the highest
+        // start ever registered for it, since only a later one registers.
+        let mut before = Vec::new();
+        if own.is_none() {
+            for process in self.latest_of(&member.node)? {
+                before.extend(self.member(process)?);
+            }
+            if let Some(later) = before.iter().find(|row| row.start >= member.start) {
+                return Err(superseded(member, later));
+            }
         }
         let mut written = self.members_written()?;
         let mut changes = Vec::new();
         // Its own row alone: whether it is its node's latest kept.
-        let latest = if let Some(own) = own {
-            own.latest
-        } else {
-            // Registered: the node's latest before it no longer so.
-            for process in self.latest_of(&member.node)? {
-                if let Some(earlier) = self.member(process)? {
-                    written += 1;
-                    let earlier = MemberRecord {
-                        latest: false,
-                        written,
-                        ..earlier
-                    };
-                    changes.push((MEMBERSHIP, key(process), Some(earlier.bytes())));
-                }
-            }
-            true
-        };
+        let latest = own.is_none_or(|own| own.latest);
+        // Registered: the node's latest before it no longer so.
+        for earlier in before {
+            written += 1;
+            let process = earlier.process;
+            let earlier = MemberRecord {
+                latest: false,
+                written,
+                ..earlier
+            };
+            changes.push((MEMBERSHIP, key(process), Some(earlier.bytes())));
+        }
         written += 1;
         let row = MemberRecord {
             written,
@@ -139,6 +141,49 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
 
 fn key(process: u128) -> Vec<u8> {
     process.to_be_bytes().to_vec()
+}
+
+/// Whether `member` may be written over its process's row `own`: a row
+/// names one node, and one start.
+fn rewritten(own: &MemberRecord, member: &MemberRecord) -> Result<(), PersistError> {
+    let process = member.process;
+    let reason = if own.node != member.node {
+        format!(
+            "the process {process:032x} wrote its row as {}; a row names one node, so its row \
+             as {} is not written",
+            own.node, member.node
+        )
+    } else if own.start != member.start {
+        format!(
+            "the process {process:032x} wrote its row as start {} of {}; a row's start never \
+             changes, so its row as start {} is not written",
+            own.start, own.node, member.start
+        )
+    } else {
+        return Ok(());
+    };
+    Err(PersistError::Failed { reason })
+}
+
+/// The refusal of `member`, a start no later than `later`, its node's latest
+/// row: superseded, saying the later start's number (ADR-0056, amendment
+/// 2026-11-20).
+fn superseded(member: &MemberRecord, later: &MemberRecord) -> PersistError {
+    let at = codec::civil::CivilTime::from_unix_nanos(i128::from(later.started_unix_nanos));
+    PersistError::Superseded {
+        latest: later.start,
+        reason: format!(
+            "start {} of {}, process {:032x}, is not above start {}, which process {:032x} \
+             registered at {}: a later start of this node is its member, so this start is not \
+             registered",
+            member.start,
+            member.node,
+            member.process,
+            later.start,
+            later.process,
+            at.rfc3339()
+        ),
+    }
 }
 
 #[cfg(test)]

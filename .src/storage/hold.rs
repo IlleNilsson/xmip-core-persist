@@ -171,16 +171,17 @@ pub(crate) const KINDS: Kinds = Kinds {
 
 /// `kept` kept at the end of its queue, in `batch`: the place it takes is
 /// the queue's next. A Message its queue holds already keeps the place it
-/// has, so a Publication asked again holds it once.
+/// has, so a Publication asked again holds it once. Taken, and kept as it
+/// came, its body never copied (2026-11-20).
 pub(crate) fn keep<R: Engine>(
     store: &EncryptedStore<R>,
     batch: &mut Batch<'_>,
-    kept: &Hold,
+    kept: Hold,
 ) -> Result<(), PersistError> {
     let about = (kept.queue, kept.journey.value());
     queue::place(store, batch, KINDS, about, |sequence| Held {
         sequence,
-        hold: kept.clone(),
+        hold: kept,
         held_unix_nanos: 0,
         failed: false,
         due_unix_nanos: None,
@@ -292,7 +293,7 @@ pub(crate) fn to_the_end<R: Engine>(
     };
     let held = Held::from_bytes(&bytes)?;
     queue::forget(batch, KINDS, (queue, journey.value()));
-    keep(store, batch, &held.hold)
+    keep(store, batch, held.hold)
 }
 
 /// `queue` as `store` holds it: its places, and up to `most` it holds from

@@ -29,6 +29,8 @@ mod searched;
 
 use super::row::{Columned, Row, Value};
 use super::schema::{Database, Index, TABLES, Table};
+use std::hash::BuildHasherDefault;
+
 use crate::encrypted_store::place::{PlaceMap, place};
 use crate::{EncryptedStore, Engine, IndexEntry, PersistError, RecordChange};
 use searched::{Searched, lay};
@@ -94,16 +96,20 @@ impl Columns {
         };
         let (bytes, row, id) = lay(record, before, now);
         let kept = self.entries(table, &row, id)?;
-        let mut entries: Vec<IndexEntry> = gone
-            .iter()
-            .filter(|key| !kept.contains(key))
-            .map(|key| (key.clone(), None))
-            .collect();
-        entries.extend(
-            kept.into_iter()
-                .filter(|key| !gone.contains(key))
-                .map(|key| (key, Some(id))),
-        );
+        // Each key taken as it was made, never copied: those taken out
+        // first, then those put in, none both have.
+        let mut entries: Vec<IndexEntry> = Vec::with_capacity(gone.len() + kept.len());
+        entries.extend(gone.into_iter().map(|key| (key, None)));
+        let mut taken_out = entries.len();
+        for key in kept {
+            match entries[..taken_out].iter().position(|(was, _)| *was == key) {
+                Some(both) => {
+                    entries.remove(both);
+                    taken_out -= 1;
+                }
+                None => entries.push((key, Some(id))),
+            }
+        }
         Ok((bytes, entries))
     }
 
@@ -131,38 +137,42 @@ impl Columns {
     /// the index entries of — one the batch laid out as it made it, new or
     /// over the record it replaces (`super::commit::Batch::created`,
     /// `super::commit::Batch::replaced`) — kept as it is: its first change
-    /// reads nothing it replaces and is not stamped again.
+    /// reads nothing it replaces and is not stamped again. Each record
+    /// stamped where it is among `changes`, and the entries made in room
+    /// for those laid out and a few more, never moved to another list nor
+    /// grown one at a time (2026-11-20).
     ///
     /// # Errors
     ///
     /// As [`Columns::written`].
     pub(crate) fn written_over<'a>(
         &self,
-        (changes, mut laid): (Vec<RecordChange<'a>>, Laid),
+        (mut changes, mut laid): (Vec<RecordChange<'a>>, Laid),
         now: u64,
         kept: impl Fn(&'a str, &[u8]) -> Result<Option<Vec<u8>>, PersistError>,
     ) -> Result<(Vec<RecordChange<'a>>, Vec<IndexEntry>), PersistError> {
-        let mut entries = Vec::new();
-        // Where in `written` each searchable place was last written.
-        let mut latest: PlaceMap<usize> = PlaceMap::default();
-        let mut written: Vec<RecordChange<'a>> = Vec::with_capacity(changes.len());
-        for (kind, key, value) in changes {
+        let made: usize = laid.values().map(Vec::len).sum();
+        let mut entries = Vec::with_capacity(made + MORE);
+        // Where among `changes` each searchable place was last written.
+        let mut latest: PlaceMap<usize> =
+            PlaceMap::with_capacity_and_hasher(changes.len(), BuildHasherDefault::default());
+        for change in 0..changes.len() {
+            let (kind, key, _) = &changes[change];
+            let kind = *kind;
             let Some(searched) = Searched::of(self.database, kind) else {
-                written.push((kind, key, value));
                 continue;
             };
-            let at = place(kind, &key);
+            let at = place(kind, key);
             let made = laid.remove(&*at);
-            let last = latest.insert(at, written.len());
+            let last = latest.insert(at, change);
             let before = match last {
-                Some(last) => written[last].2.clone(),
+                Some(last) => changes[last].2.clone(),
                 None => match made {
                     Some(made) => {
                         entries.extend(made);
-                        written.push((kind, key, value));
                         continue;
                     }
-                    None => kept(kind, &key)?,
+                    None => kept(kind, &changes[change].1)?,
                 },
             };
             if let Some(before) = &before {
@@ -170,18 +180,14 @@ impl Columns {
                 let gone = self.entries(searched.table(), &row, id)?;
                 entries.extend(gone.into_iter().map(|key| (key, None)));
             }
-            let value = match value {
-                Some(bytes) => {
-                    let (bytes, row, id) = searched.stamped(&bytes, before.as_deref(), now)?;
-                    let kept = self.entries(searched.table(), &row, id)?;
-                    entries.extend(kept.into_iter().map(|key| (key, Some(id))));
-                    Some(bytes)
-                }
-                None => None,
-            };
-            written.push((kind, key, value));
+            if let Some(bytes) = &changes[change].2 {
+                let (bytes, row, id) = searched.stamped(bytes, before.as_deref(), now)?;
+                let kept = self.entries(searched.table(), &row, id)?;
+                entries.extend(kept.into_iter().map(|key| (key, Some(id))));
+                changes[change].2 = Some(bytes);
+            }
         }
-        Ok((written, entries))
+        Ok((changes, entries))
     }
 
     /// The key of each entry of `table`'s indexes `row` belongs in: none
@@ -191,19 +197,24 @@ impl Columns {
             .ok_or_else(|| super::record::malformed(format!("no table '{table}'")))?;
         let tag = id.to_be_bytes();
         let mut keys = Vec::with_capacity(table.indexes.len());
-        'indexes: for index in table.indexes {
+        for index in table.indexes {
             if let Some(flag) = index.only
                 && value(row, flag) != Some(&Value::Flag(true))
+            {
+                continue;
+            }
+            // None made for an index whose column it lacks (2026-11-20).
+            if index
+                .columns
+                .iter()
+                .any(|column| value(row, column).is_none())
             {
                 continue;
             }
             // Each key written once, in room for what it holds.
             let mut key = Vec::with_capacity(ENTRY);
             key.push(index.number);
-            for column in index.columns {
-                let Some(value) = value(row, column) else {
-                    continue 'indexes;
-                };
+            for value in index.columns.iter().filter_map(|column| value(row, column)) {
                 encode(value, &mut key);
             }
             key.extend_from_slice(&tag);
@@ -286,6 +297,11 @@ type Range = (Vec<u8>, Vec<u8>);
 /// The room an entry's key is made in: its index's number, an identifier
 /// and a time or two, and its record's identifier, without growing.
 const ENTRY: usize = 64;
+
+/// The room a batch's index entries are made with beyond those it laid out
+/// as it made them: a record taken out or written over, laid out after,
+/// takes a few (`Columns::written_over`).
+const MORE: usize = 8;
 
 /// `value` written after `key`, as an entry's key keeps it, in the clear:
 /// an identifier as its sixteen bytes, words as their length and their
@@ -405,6 +421,7 @@ mod tests {
     fn member() -> MemberRecord {
         MemberRecord {
             process: 6,
+            start: 5,
             node: "a node".to_string(),
             roles: "storage".to_string(),
             evidence: "declares storage; offline".to_string(),

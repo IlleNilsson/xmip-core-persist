@@ -207,7 +207,7 @@ pub(crate) fn replay<R: Engine>(
         batch.record(JOURNEY, journey.journey.value(), journey);
     }
     for held in &replay.held {
-        hold::keep(store, batch, held)?;
+        hold::keep(store, batch, held.clone())?;
     }
     Ok(Replayed::Now)
 }

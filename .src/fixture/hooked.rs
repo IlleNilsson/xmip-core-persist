@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::{Change, Engine, Entry, PersistError, Reads};
+use crate::{BorrowedChange, Change, Engine, Entry, PersistError, Reads};
 
 /// What a test runs between two pages of a scan.
 type Between = Box<dyn FnOnce() + Send>;
@@ -107,11 +107,11 @@ impl Hooks {
         Ok(())
     }
 
-    fn deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         let refused = self.refused.lock().unwrap_or_else(PoisonError::into_inner);
         if refused
             .as_ref()
-            .is_some_and(|change| batch.contains(change))
+            .is_some_and(|(key, value)| batch.contains(&(key.as_slice(), value.as_deref())))
         {
             return Err(PersistError::engine(
                 "hooked",
@@ -181,12 +181,12 @@ impl<E: Engine> Engine for Hooked<E> {
         self.engine.remove(key)
     }
 
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         self.hooks.write()?;
         self.engine.apply(batch)
     }
 
-    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply_deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         self.hooks.deferred(batch)?;
         self.engine.apply_deferred(batch)?;
         assert!(

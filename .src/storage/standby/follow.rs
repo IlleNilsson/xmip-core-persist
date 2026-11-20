@@ -16,7 +16,7 @@ use super::copies::DATABASES;
 use super::position::position;
 use super::{EPOCH, Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
-use crate::{Change, PersistError};
+use crate::{Change, PersistError, borrowed};
 
 /// How long a standby writes copies before it syncs them: a copy counts
 /// on a standby once synced, as a write does on its primary.
@@ -147,6 +147,7 @@ impl StorageNode {
                     .map(|(key, value)| (key, Some(value)))
                     .collect();
                 let at = usize::from(database);
+                let changes = borrowed(&changes);
                 self.engines[at].apply_deferred(&changes).map_err(failed)?;
                 taking.dirty[at] = true;
             }
@@ -208,7 +209,7 @@ impl StorageNode {
                 if gone.is_empty() {
                     break;
                 }
-                engine.apply_deferred(&gone)?;
+                engine.apply_deferred(&borrowed(&gone))?;
             }
             let wrapped = self.keys.wrap(&self.kek, &DataKey::taken(key)?)?;
             engine.write(DATA_KEY, &wrapped)?;
@@ -227,7 +228,7 @@ impl StorageNode {
             .said
             .map(|said| said.map_or(1, |(_, through)| through));
         for (engine, from) in self.engines.iter().zip(from).skip(1) {
-            engine.apply(&[position(whole.history, from)])?;
+            engine.apply(&borrowed(&[position(whole.history, from)]))?;
         }
         let catching_up = Bootstrap::CatchingUp {
             epoch: whole.epoch,

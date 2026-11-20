@@ -28,6 +28,7 @@
 //! 2026-11-15, by the queue (`super::super::due`).
 
 use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 
 use super::super::{failed, instance, origin};
 use super::{
@@ -103,16 +104,20 @@ impl Kept {
         self.places.iter()
     }
 
+    /// `value` kept at `place`, found in the map once (2026-11-20).
     fn keep(&mut self, place: Place, value: Option<Vec<u8>>) {
         let added = cost(&place, value.as_ref());
-        if let Some(kept) = self.places.get_mut(&place) {
-            self.bytes = self.bytes - cost(&place, kept.as_ref()) + added;
-            *kept = value;
-            return;
+        match self.places.entry(place) {
+            Entry::Occupied(mut kept) => {
+                self.bytes = self.bytes - cost(kept.key(), kept.get().as_ref()) + added;
+                kept.insert(value);
+            }
+            Entry::Vacant(vacant) => {
+                self.bytes += added;
+                self.order.push_back(vacant.key().clone());
+                vacant.insert(value);
+            }
         }
-        self.bytes += added;
-        self.order.push_back(place.clone());
-        self.places.insert(place, value);
     }
 }
 

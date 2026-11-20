@@ -57,7 +57,7 @@ pub trait Engine: Send + Sync {
     ///
     /// [`PersistError::Engine`] when the engine cannot write; nothing of
     /// the batch is written then.
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError>;
+    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError>;
 
     /// Every change of `batch` as one write, all or none, in order with
     /// every other write and **not synced on return**: it is durable once
@@ -79,7 +79,7 @@ pub trait Engine: Send + Sync {
     ///
     /// [`PersistError::Engine`] when the engine cannot write; nothing of
     /// the batch is written then.
-    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply_deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         self.apply(batch)
     }
 
@@ -153,8 +153,34 @@ pub trait Reads {
     ) -> Result<Vec<Entry>, PersistError>;
 }
 
-/// One change of a batch: a key and its new value, `None` removing it.
+/// One change of a batch, kept: a key and its new value, `None` removing
+/// it — what a standby is shipped and copies.
 pub type Change = (Vec<u8>, Option<Vec<u8>>);
+
+/// One change of a batch as an engine is handed it ([`Engine::apply`]): a
+/// key and its new value, `None` removing it, each where its writer keeps
+/// it — a store's batch sealed into one buffer (`EncryptedStore`), never
+/// one allocation a change (2026-11-20).
+pub type BorrowedChange<'a> = (&'a [u8], Option<&'a [u8]>);
+
+/// `changes`, kept, as an engine is handed them.
+#[must_use]
+pub fn borrowed(changes: &[Change]) -> Vec<BorrowedChange<'_>> {
+    changes
+        .iter()
+        .map(|(key, value)| (key.as_slice(), value.as_deref()))
+        .collect()
+}
+
+/// `changes`, as an engine is handed them, owned: what a write is kept
+/// as for its standbys.
+#[must_use]
+pub fn owned(changes: &[BorrowedChange<'_>]) -> Vec<Change> {
+    changes
+        .iter()
+        .map(|(key, value)| (key.to_vec(), value.map(<[u8]>::to_vec)))
+        .collect()
+}
 
 /// One key and its value, as a range read finds them.
 pub type Entry = (Vec<u8>, Vec<u8>);
@@ -188,11 +214,11 @@ macro_rules! beneath {
                 (**self).remove(key)
             }
 
-            fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+            fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
                 (**self).apply(batch)
             }
 
-            fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+            fn apply_deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
                 (**self).apply_deferred(batch)
             }
 

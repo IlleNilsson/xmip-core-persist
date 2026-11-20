@@ -27,7 +27,7 @@ use xcore::wake::Revision;
 
 use super::position::position;
 use crate::encrypted_store::OWN;
-use crate::{Change, Engine, Entry, PersistError};
+use crate::{BorrowedChange, Change, Engine, Entry, PersistError, borrowed, owned};
 
 /// The databases a Storage node keeps, in every list here: the runtime,
 /// the administration and the audit database.
@@ -225,8 +225,9 @@ impl Copies {
                 ),
             });
         }
-        let mut batch: Vec<Change> = changes.to_vec();
-        batch.push(position(self.history(), number + 1));
+        let (key, value) = position(self.history(), number + 1);
+        let mut batch = borrowed(&changes);
+        batch.push((&key, value.as_deref()));
         engine.apply_deferred(&batch)?;
         kept.keep(changes, self.most);
         drop(kept);
@@ -355,14 +356,14 @@ impl<E: Engine> Engine for Copied<E> {
             .map(drop)
     }
 
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         let write = || self.engine.apply(batch).map(|()| true);
-        self.written(true, write, || batch.to_vec()).map(drop)
+        self.written(true, write, || owned(batch)).map(drop)
     }
 
-    fn apply_deferred(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply_deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         let write = || self.engine.apply_deferred(batch).map(|()| true);
-        self.written(false, write, || batch.to_vec()).map(drop)
+        self.written(false, write, || owned(batch)).map(drop)
     }
 
     fn sync(&self) -> Result<(), PersistError> {
@@ -402,7 +403,7 @@ mod tests {
         );
         assert!(!engine.write_new(b"a", b"2").expect("taken"));
         engine
-            .apply_deferred(&[(b"b".to_vec(), Some(b"2".to_vec()))])
+            .apply_deferred(&[(b"b", Some(b"2"))])
             .expect("applied");
         engine.remove(b"a").expect("removed");
 
@@ -424,7 +425,7 @@ mod tests {
             let kept = copies.since(0, from, usize::MAX).expect("kept");
             kept.iter().map(|(number, _)| *number).collect()
         };
-        let change = |key: &[u8]| vec![(key.to_vec(), Some(b"v".to_vec()))];
+        let change = |key: &'static [u8]| [(key, Some(b"v".as_slice()))];
         engine.apply_deferred(&change(b"a")).expect("written");
         engine.apply_deferred(&change(b"b")).expect("written");
         assert_eq!(numbers(1), [0_u64; 0], "nothing unsynced is handed on");

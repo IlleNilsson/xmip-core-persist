@@ -6,13 +6,13 @@
 
 use super::viewed::Now;
 use super::{EncryptedStore, IndexEntry, RecordChange};
-use crate::{Change, Engine, PersistError, Reads};
+use crate::{Engine, PersistError, Reads};
 use xcore::spent::on_io;
 
 /// What every index entry's engine key opens with, so the entries sort
 /// together, apart from the records: a keyed hash begins with these seven
 /// bytes once in 2^56, and is refused by its tag if a range ever meets one.
-const INDEX: &[u8] = b"\0index\0";
+pub(super) const INDEX: &[u8] = b"\0index\0";
 
 impl<E: Engine> EncryptedStore<E> {
     /// Every change of `changes` and every index entry of `entries` as one
@@ -30,8 +30,9 @@ impl<E: Engine> EncryptedStore<E> {
         changes: &[RecordChange<'_>],
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
-        let indexed = self.indexed(changes, entries)?;
-        on_io(|| self.engine.apply(&indexed))
+        let sealed = self.sealed(changes, entries)?;
+        let changes = sealed.changes();
+        on_io(|| self.engine.apply(&changes))
     }
 
     /// As [`EncryptedStore::apply_indexed`], through the engine's
@@ -46,26 +47,9 @@ impl<E: Engine> EncryptedStore<E> {
         changes: &[RecordChange<'_>],
         entries: &[IndexEntry],
     ) -> Result<(), PersistError> {
-        let indexed = self.indexed(changes, entries)?;
-        on_io(|| self.engine.apply_deferred(&indexed))
-    }
-
-    /// `changes` sealed, and every index entry of `entries` sealed with
-    /// its whole key as associated data: one batch for the engine.
-    fn indexed(
-        &self,
-        changes: &[RecordChange<'_>],
-        entries: &[IndexEntry],
-    ) -> Result<Vec<Change>, PersistError> {
-        let mut batch = self.sealed(changes)?;
-        for (key, record) in entries {
-            let key = [INDEX, key.as_slice()].concat();
-            let sealed = record
-                .map(|record| self.seal(&key, &record.to_be_bytes()))
-                .transpose()?;
-            batch.push((key, sealed));
-        }
-        Ok(batch)
+        let sealed = self.sealed(changes, entries)?;
+        let changes = sealed.changes();
+        on_io(|| self.engine.apply_deferred(&changes))
     }
 
     /// The records the index entries from `first` to `last` find, both

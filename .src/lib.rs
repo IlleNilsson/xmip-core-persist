@@ -28,5 +28,5 @@ pub mod fixture;
 pub mod storage;
 
 pub use encrypted_store::{EncryptedStore, IndexEntry, IndexScan, RecordChange, Viewed};
-pub use engine::{Change, Engine, Entry, Reads};
+pub use engine::{BorrowedChange, Change, Engine, Entry, Reads, borrowed, owned};
 pub use error::PersistError;

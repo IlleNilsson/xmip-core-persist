@@ -9,7 +9,7 @@ use super::*;
 use crate::encrypted_store::OWN;
 use crate::storage::standby::Copied;
 use crate::storage::standby::bootstrap::kept;
-use crate::{Change, Entry};
+use crate::{Change, Entry, borrowed};
 
 /// The write's first key, the first the runtime database keeps, on the
 /// copy's first page.
@@ -59,10 +59,11 @@ fn a_write_a_whole_copy_reflects_in_part_never_becomes_the_ledger_across_a_resta
         let [high, low] = number.to_be_bytes();
         filled.push(change(&[0x10, high, low], b"filler"));
     }
-    written.apply(&filled).expect("written");
+    written.apply(&borrowed(&filled)).expect("written");
     let between = Arc::clone(&written);
     paged.between_pages(move || {
         let both = [change(FIRST, b"after"), change(LATER, b"after")];
+        let both = borrowed(&both);
         between.apply(&both).expect("written between the pages");
     });
 

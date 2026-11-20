@@ -171,7 +171,36 @@ fn read_id_maybe(cursor: &mut Cursor<'_>) -> codec::Result<Option<u128>> {
     }
 }
 
+/// The most room `text` takes as [`field::text`] writes it: its length
+/// at its longest, then itself. With [`word_maybe`] and [`ID_MAYBE`], what
+/// each form's [`Form::capacity`] adds up, so its record is written in one
+/// allocation, never grown from too little (2026-11-20).
+pub(crate) fn word(text: &str) -> usize {
+    codec::varint::MAX_LENGTH + text.len()
+}
+
+/// The most room `text` takes as `write_text_maybe` writes it.
+pub(crate) fn word_maybe(text: Option<&String>) -> usize {
+    1 + text.map_or(0, |text| word(text))
+}
+
+/// The room an identifier that may be absent takes (`write_id_maybe`).
+const ID_MAYBE: usize = 17;
+
 impl Form for JourneyFacts {
+    fn capacity(&self) -> usize {
+        // Its four identifiers, three counts, two flags and two times.
+        let fixed = 4 * ID_MAYBE + 3 * 4 + 2 + 2 * 8;
+        let words = [
+            &self.subscription,
+            &self.cause_work_process,
+            &self.work_process,
+            &self.send_port,
+        ];
+        let maybe: usize = words.iter().map(|text| word_maybe(text.as_ref())).sum();
+        fixed + word(&self.state) + maybe
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         field::text(out, &self.state);
         write_id_maybe(out, self.previous_journey);
@@ -214,6 +243,21 @@ impl Form for JourneyFacts {
 }
 
 impl Form for MessageFacts {
+    fn capacity(&self) -> usize {
+        // Its two identifiers, its generation, its size and its time.
+        let fixed = 2 * ID_MAYBE + 4 + 2 * 8;
+        let words = [
+            &self.created_by,
+            &self.priority,
+            &self.execution_profile,
+            &self.durability,
+        ];
+        fixed
+            + words.iter().map(|text| word(text)).sum::<usize>()
+            + word_maybe(self.party.as_ref())
+            + word_maybe(self.contract.as_ref())
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         write_id_maybe(out, self.previous_message);
         out.u32_be(self.generation);
@@ -250,6 +294,35 @@ impl Form for MessageFacts {
 }
 
 impl Form for AuditFacts {
+    fn capacity(&self) -> usize {
+        // Its four times and numbers, its count of chunks and its process,
+        // its two flags, three identifiers and three digests.
+        let fixed = 4 * 8 + 2 * 4 + 2 + 3 * ID_MAYBE + 3 * DIGEST;
+        let words = [
+            &self.action,
+            &self.phase,
+            &self.severity,
+            &self.program,
+            &self.host,
+            &self.writer,
+        ];
+        let maybe = [
+            &self.text,
+            &self.location,
+            &self.artifact_kind,
+            &self.artifact_name,
+            &self.artifact_version,
+            &self.node,
+            &self.cluster,
+        ];
+        fixed
+            + words.iter().map(|text| word(text)).sum::<usize>()
+            + maybe
+                .iter()
+                .map(|text| word_maybe(text.as_ref()))
+                .sum::<usize>()
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u64_be(self.occurred_unix_nanos);
         for text in [&self.action, &self.phase, &self.severity] {

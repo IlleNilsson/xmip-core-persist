@@ -28,7 +28,7 @@ use xcore::lock::Locked;
 
 use super::StorageNode;
 use super::copies::DATABASES;
-use crate::{Change, Engine, PersistError};
+use crate::{Change, Engine, PersistError, borrowed};
 
 /// Where a Storage node keeps, in its runtime database, how far its
 /// bootstrap is: nothing while it is ready.
@@ -158,8 +158,9 @@ impl StorageNode {
         bootstrap: Bootstrap,
         with: &[Change],
     ) -> Result<(), PersistError> {
-        let mut batch = with.to_vec();
-        batch.push(bootstrap.record());
+        let (key, value) = bootstrap.record();
+        let mut batch = borrowed(with);
+        batch.push((&key, value.as_deref()));
         self.engines[0].apply(&batch)?;
         *self.bootstrap.locked() = bootstrap;
         Ok(())
@@ -203,7 +204,8 @@ mod tests {
             through: [12, 3, 7],
         };
         for bootstrap in [Bootstrap::Copying, catching_up, Bootstrap::Ready] {
-            engine.apply(&[bootstrap.record()]).expect("written");
+            let (key, value) = bootstrap.record();
+            engine.apply(&[(&key, value.as_deref())]).expect("written");
             assert_eq!(kept(&engine).expect("read"), bootstrap);
             assert_eq!(
                 Bootstrap::from_bytes(&bootstrap.bytes()).expect("read"),
