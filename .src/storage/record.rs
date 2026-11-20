@@ -183,8 +183,10 @@ impl Form for StreamChunk {
 }
 
 impl Form for MessageRecord {
+    /// Its identifier, its body counted and its facts at their longest
+    /// (2026-11-20; until then 64 bytes for the facts, so it grew).
     fn capacity(&self) -> usize {
-        self.body.len() + codec::form::CAPACITY
+        16 + codec::varint::MAX_LENGTH + self.body.len() + self.facts.capacity()
     }
 
     fn write(&self, out: &mut Vec<u8>) {
@@ -203,8 +205,9 @@ impl Form for MessageRecord {
 }
 
 impl Form for JourneyRecord {
+    /// As a Message's record's (2026-11-20).
     fn capacity(&self) -> usize {
-        self.body.len() + codec::form::CAPACITY
+        16 + codec::varint::MAX_LENGTH + self.body.len() + self.facts.capacity()
     }
 
     fn write(&self, out: &mut Vec<u8>) {
@@ -223,6 +226,12 @@ impl Form for JourneyRecord {
 }
 
 impl Form for Claim {
+    /// Its Journey, its holder, its token, its lease and its fence
+    /// (2026-11-20).
+    fn capacity(&self) -> usize {
+        16 + super::facts::word(&self.holder) + 16 + 16 + 8
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.u128_be(self.journey.value());
         field::text(out, &self.holder);
@@ -313,6 +322,79 @@ mod tests {
                 AdministrationRecord::from_bytes(&record.bytes()).expect("record"),
                 record
             );
+        }
+    }
+
+    /// Each record a Message's batches write, written in the room its form
+    /// says and never grown: a `Vec` made with room keeps that room while
+    /// what is written fits, so more room than the form said is a record
+    /// grown from too little (2026-11-20: a Message's, a Journey's and an
+    /// audit record's each grew once or more, a claim's four times).
+    #[test]
+    fn each_record_of_a_message_is_written_in_the_room_its_form_says() {
+        use super::super::audit_entry::AuditEntry;
+        use super::super::audited::Audited;
+        use super::super::claim::{Standing, Stored};
+        use super::super::facts::AuditFacts;
+        use xcore::AuditId;
+        let words = |word: &str| word.repeat(3);
+        let message = MessageRecord {
+            message: MessageId::new(1),
+            body: vec![7; 300],
+            facts: MessageFacts {
+                created_by: words("Receive"),
+                priority: words("Normal"),
+                execution_profile: words("Business"),
+                durability: words("Recoverable"),
+                party: Some(words("partner-x")),
+                stream: Some(4),
+                ..MessageFacts::default()
+            },
+        };
+        let journey = JourneyRecord {
+            journey: JourneyId::new(2),
+            body: vec![8; 200],
+            facts: JourneyFacts {
+                state: words("Queued"),
+                subscription: Some(words("billing")),
+                send_port: Some(words("Billing")),
+                message: Some(1),
+                origin: Some(3),
+                ..JourneyFacts::default()
+            },
+        };
+        let audit = Box::new(AuditEntry {
+            id: AuditId::new(5),
+            body: vec![9; 400],
+            audited: Some(Audited {
+                message: vec![1; 600],
+                streams: vec![StreamId::new(4), StreamId::new(6)],
+            }),
+            facts: AuditFacts {
+                action: words("publish"),
+                program: words("xmip-service"),
+                writer: configure::fixture::test_cluster().node_scope(0),
+                node: Some(words("a node")),
+                ..AuditFacts::default()
+            },
+        });
+        let stored = Stored {
+            claim: claim(),
+            standing: Standing::Held,
+        };
+        let written = [
+            (message.bytes(), message.capacity()),
+            (journey.bytes(), journey.capacity()),
+            (audit.bytes(), Form::capacity(&audit)),
+            (stored.bytes(), 1 + claim().capacity()),
+        ];
+        for (at, (bytes, room)) in written.into_iter().enumerate() {
+            assert!(
+                bytes.len() <= room,
+                "record {at}: {} in {room}",
+                bytes.len()
+            );
+            assert_eq!(bytes.capacity(), room, "record {at} grew");
         }
     }
 

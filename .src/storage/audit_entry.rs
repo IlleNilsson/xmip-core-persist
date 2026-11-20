@@ -39,12 +39,15 @@ impl AuditEntry {
 }
 
 impl Form for AuditEntry {
+    /// Its identifier, its body counted, the Message it carries with its
+    /// Streams, and its facts at their longest (2026-11-20; until then 64
+    /// bytes for the facts and for the Streams, so it grew twice).
     fn capacity(&self) -> usize {
-        let audited = self
-            .audited
-            .as_ref()
-            .map_or(0, |audited| audited.message.len() + 64);
-        self.body.len() + audited + codec::form::CAPACITY
+        let counted = codec::varint::MAX_LENGTH;
+        let audited = self.audited.as_ref().map_or(0, |audited| {
+            counted + audited.message.len() + 4 + 16 * audited.streams.len()
+        });
+        16 + counted + self.body.len() + 1 + audited + self.facts.capacity()
     }
 
     fn write(&self, out: &mut Vec<u8>) {

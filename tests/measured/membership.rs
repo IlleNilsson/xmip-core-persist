@@ -31,10 +31,12 @@ fn nodes() -> usize {
     configure::fixture::test_cluster().nodes.len()
 }
 
-/// The start `process` of the node at `place`, as its node writes it.
+/// The start `process` of the node at `place`, as its node writes it: a
+/// later process is a later start.
 fn start(process: u128, place: usize) -> MemberRecord {
     MemberRecord {
         process,
+        start: u64::try_from(process).expect("a start"),
         node: scope(place),
         roles: "receiving".to_string(),
         evidence: "declares receiving; offline; authentication and runtime capability are not \

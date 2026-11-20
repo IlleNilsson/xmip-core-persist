@@ -133,7 +133,7 @@ pub(crate) fn decide<R: Engine>(
         let at = journey.journey.value().to_be_bytes().to_vec();
         batch.created(JOURNEY, at, journey)?;
     }
-    for kept in &holds {
+    for kept in holds {
         hold::keep(store, batch, kept)?;
     }
     if let Some(entry) = &dead {
@@ -156,7 +156,21 @@ pub(crate) fn decide<R: Engine>(
 /// draws a new audit record and new claim tokens. Until 2026-11-14 the whole
 /// Publication was written out again, its bodies with it, and hashed.
 fn identity(publication: &Publication) -> Vec<u8> {
-    let mut out = Vec::with_capacity(128);
+    // Written in the room it takes, never grown (2026-11-20).
+    let claims: usize = (publication.claims.iter())
+        .map(|asked| 32 + super::facts::word(&asked.holder))
+        .sum();
+    let room = 16
+        + 4
+        + 16 * publication.journeys.len()
+        + 4
+        + 32 * publication.held.len()
+        + 17
+        + 16
+        + 4
+        + claims
+        + 8;
+    let mut out = Vec::with_capacity(room);
     out.u128_be(publication.message.message.value());
     out.u32_be(count(publication.journeys.len()));
     for journey in &publication.journeys {

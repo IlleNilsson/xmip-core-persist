@@ -14,6 +14,7 @@ pub(super) fn expected<T>(
     match answer {
         Answer::Refused(scope, reason) => Err(PersistError::Refused { scope, reason }),
         Answer::Failed(reason) => Err(PersistError::Failed { reason }),
+        Answer::Superseded(latest, reason) => Err(PersistError::Superseded { latest, reason }),
         other => take(other).map_err(|other| PersistError::Record {
             reason: format!("a Storage node answered {other:?}"),
         }),

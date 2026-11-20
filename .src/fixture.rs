@@ -6,7 +6,7 @@
 //! `test-support` feature, which an engine enables from its dev-dependencies
 //! alone.
 
-use crate::{Change, EncryptedStore, Engine, Entry, IndexEntry, PersistError, Reads};
+use crate::{BorrowedChange, EncryptedStore, Engine, Entry, IndexEntry, PersistError, Reads};
 use secret::{DataKey, Held, KekName, KeyStore, SecretError};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -70,12 +70,12 @@ impl Engine for Memory {
         Ok(())
     }
 
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         let mut records = self.records();
         for (key, value) in batch {
             match value {
-                Some(value) => records.insert(key.clone(), value.clone()),
-                None => records.remove(key),
+                Some(value) => records.insert(key.to_vec(), value.to_vec()),
+                None => records.remove(*key),
             };
         }
         Ok(())
@@ -148,7 +148,7 @@ impl Engine for Counted {
         self.memory.remove(key)
     }
 
-    fn apply(&self, batch: &[Change]) -> Result<(), PersistError> {
+    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
         self.memory.apply(batch)
     }
 

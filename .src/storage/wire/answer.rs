@@ -82,6 +82,9 @@ pub(crate) enum Answer {
     Acts(Vec<ActRecord>),
     /// The members now (`super::super::membership`).
     Members(Vec<MemberRecord>),
+    /// A start not registered: a later start of its node, numbered so, is
+    /// its member (`super::super::membership`), in words.
+    Superseded(u64, String),
 }
 
 impl Answer {
@@ -132,6 +135,11 @@ impl Answer {
             Self::Members(members) => {
                 out.byte(31);
                 members.write(out);
+            }
+            Self::Superseded(latest, reason) => {
+                out.byte(32);
+                out.u64_be(*latest);
+                field::text(out, reason);
             }
             _ => {}
         }
@@ -295,6 +303,7 @@ impl Form for Answer {
             29 => Self::Act(Box::new(ActRecord::read(cursor)?)),
             30 => Self::Acts(Vec::read(cursor)?),
             31 => Self::Members(Vec::read(cursor)?),
+            32 => Self::Superseded(cursor.u64_be()?, field::read_text(cursor)?),
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

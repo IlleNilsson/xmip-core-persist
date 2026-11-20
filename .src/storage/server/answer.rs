@@ -181,11 +181,12 @@ fn administered(storage: &dyn XmipStorage, request: Request) -> Result<Answer, P
 }
 
 /// What an operation that failed answers: a record that failed its tag,
-/// a standby's refusal, or the failure in words.
+/// a standby's refusal, a start superseded, or the failure in words.
 fn refused(error: PersistError) -> Answer {
     match error {
         PersistError::Refused { scope, reason } => Answer::Refused(scope, reason),
         PersistError::Standby { reason } => Answer::Standby(reason),
+        PersistError::Superseded { latest, reason } => Answer::Superseded(latest, reason),
         other => Answer::Failed(other.to_string()),
     }
 }

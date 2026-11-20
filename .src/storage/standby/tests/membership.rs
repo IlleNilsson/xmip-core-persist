@@ -14,6 +14,7 @@ use super::*;
 fn row(place: usize, storage: Option<usize>) -> MemberRecord {
     MemberRecord {
         process: u128::try_from(place).expect("a process") + 1,
+        start: u64::try_from(place).expect("a start") + 1,
         node: configure::fixture::test_cluster().node_scope(place),
         roles: "storage".to_string(),
         evidence: "declares storage; offline".to_string(),
@@ -58,6 +59,38 @@ fn a_standby_refuses_the_membership_and_its_own_row_reaches_the_primary_with_its
     two.reaching().write_member(&own).expect("its own row");
     let members = one.served().read_members().expect("read at the primary");
     assert_eq!(members.first().and_then(|m| m.storage_place), Some(1));
+    two.stop();
+    two_server.stop();
+    one.stop();
+    one_server.stop();
+}
+
+/// A standby writing its rows through its primary hands back the primary's
+/// refusal of a start superseded as it was answered, the later start's
+/// number with it (ADR-0056, amendment 2026-11-20).
+#[test]
+fn a_standby_hands_back_its_primary_s_refusal_of_a_late_start() {
+    let authority = Authority::new();
+    let (bound, listed) = listeners(2);
+    let (first, second) = (Own::new(), Own::new());
+    let [(one, one_server), (two, two_server)] =
+        both_started([&first, &second], (bound, &listed), &authority);
+
+    let later = MemberRecord {
+        process: 9,
+        start: 9,
+        ..row(1, two.place())
+    };
+    two.reaching()
+        .write_member(&later)
+        .expect("the later start");
+    let refused = two.reaching().write_member(&row(1, two.place()));
+    assert!(
+        matches!(refused, Err(PersistError::Superseded { latest: 9, .. })),
+        "{refused:?}"
+    );
+    let members = one.served().read_members().expect("read at the primary");
+    assert_eq!(members.iter().map(|m| m.process).collect::<Vec<_>>(), [9]);
     two.stop();
     two_server.stop();
     one.stop();

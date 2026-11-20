@@ -300,11 +300,13 @@ pub(super) const OPERATOR_ACT_INDEXES: &[Index] = &[
 ];
 
 /// A node's start, kept, never deleted (ADR-0040): everything its node says
-/// of itself as it reaches Xmip Storage, and when it started and stopped,
-/// the table's write count at its last write and whether it is its node's
-/// latest row, Xmip Storage's (`super::super::membership`).
+/// of itself as it reaches Xmip Storage, which start of its node it is
+/// among them, and when it started and stopped, the table's write count at
+/// its last write and whether it is its node's latest row, Xmip Storage's
+/// (`super::super::membership`).
 pub(super) const MEMBERSHIP: &[Column] = &[
     column("process", Kind::Identifier),
+    column("start", Kind::Number),
     column("node", Kind::Text),
     column("roles", Kind::Text),
     column("evidence", Kind::LongText),

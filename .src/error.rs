@@ -33,6 +33,11 @@ pub enum PersistError {
     /// A Storage node that is a standby serves no operation: it copies its
     /// primary's writes, and a node asks the primary (`storage::standby`).
     Standby { reason: String },
+    /// A start that is not its node's latest was not registered: a later
+    /// start of the node, numbered `latest`, registered before its first
+    /// write landed (`storage::membership`; ADR-0056, amendment
+    /// 2026-11-20). Final: asked again, it is refused again.
+    Superseded { latest: u64, reason: String },
 }
 
 impl PersistError {
@@ -70,7 +75,9 @@ impl fmt::Display for PersistError {
             Self::Record { reason } => write!(f, "record: {reason}"),
             Self::Failed { reason } => write!(f, "a Storage node: {reason}"),
             Self::Unreachable { reason } => write!(f, "Xmip Storage: {reason}"),
-            Self::Schema { reason } | Self::Standby { reason } => f.write_str(reason),
+            Self::Schema { reason }
+            | Self::Standby { reason }
+            | Self::Superseded { reason, .. } => f.write_str(reason),
         }
     }
 }

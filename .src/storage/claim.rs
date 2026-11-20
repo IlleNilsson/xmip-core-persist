@@ -34,14 +34,7 @@ pub(crate) struct Stored {
 
 impl Stored {
     pub(crate) fn bytes(&self) -> Vec<u8> {
-        let standing = match self.standing {
-            Standing::Held => 0,
-            Standing::Released => 1,
-            Standing::HandedOn => 2,
-        };
-        let mut out = vec![standing];
-        self.claim.write(&mut out);
-        out
+        stored_bytes(&self.claim, self.standing)
     }
 
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, PersistError> {
@@ -108,15 +101,27 @@ pub(crate) fn take<R: Engine>(
     Ok(Some(hold(batch, claim, until)))
 }
 
-/// `claim` held until `until`, written in `batch`.
+/// `claim` held until `until`, written in `batch`: written from it, never
+/// copied to be written (2026-11-20).
 pub(crate) fn hold(batch: &mut Batch<'_>, mut claim: Claim, until: i128) -> Claim {
     claim.until_unix_nanos = until;
-    let stored = Stored {
-        claim: claim.clone(),
-        standing: Standing::Held,
-    };
-    batch.put(CLAIM, key(&claim), Some(stored.bytes()));
+    let bytes = stored_bytes(&claim, Standing::Held);
+    batch.put(CLAIM, key(&claim), Some(bytes));
     claim
+}
+
+/// `claim` as it is stored, standing as `standing` says ([`Stored`]): in
+/// the room it takes, never grown from one byte (2026-11-20).
+fn stored_bytes(claim: &Claim, standing: Standing) -> Vec<u8> {
+    let standing = match standing {
+        Standing::Held => 0,
+        Standing::Released => 1,
+        Standing::HandedOn => 2,
+    };
+    let mut out = Vec::with_capacity(1 + claim.capacity());
+    out.push(standing);
+    claim.write(&mut out);
+    out
 }
 
 /// `claim` ended as `standing` says, its token kept, written in `batch`.
@@ -180,7 +185,7 @@ pub(crate) fn hand_on<R: Engine>(
     for queue in &hand_on.leaves {
         hold::let_go_of(store, batch, *queue, journey)?;
     }
-    for kept in &hand_on.queued {
+    for kept in hand_on.queued {
         hold::keep(store, batch, kept)?;
     }
     for queue in &hand_on.requeued {

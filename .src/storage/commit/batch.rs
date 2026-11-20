@@ -18,7 +18,7 @@
 //! what the batch read of it ([`Batch::replaced`]): stamped, and only the
 //! index entries the two differ in written.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::hash::BuildHasherDefault;
 
 use codec::form::Form;
@@ -64,9 +64,9 @@ pub(crate) struct Batch<'a> {
 /// Each record's value by its place: `None` where there is none.
 type ByPlace = PlaceMap<Option<Vec<u8>>>;
 
-/// The room a batch and each operation's stage over it are made with for
-/// what they write: a Publication's records and a hand-on's, without
-/// growing (2026-11-17).
+/// The room each operation's stage over a batch is made with for what it
+/// writes: a Publication's records and a hand-on's, without growing
+/// (2026-11-17).
 const ROOM: usize = 32;
 
 impl Batch<'_> {
@@ -78,12 +78,14 @@ impl Batch<'_> {
     }
 
     /// As [`Batch::empty`], each record `writer` keeps read from it
-    /// ([`super::kept`]), lent until [`Batch::lent`] gives it back.
+    /// ([`super::kept`]), lent until [`Batch::lent`] gives it back. Made
+    /// with no room of its own: its first operation's stage, made with
+    /// room, becomes what it writes ([`Batch::taken`]).
     pub(super) fn over(now: u64, writer: Kept) -> Batch<'static> {
         Batch {
             below: None,
-            written: PlaceMap::with_capacity_and_hasher(ROOM, BuildHasherDefault::default()),
-            changes: Vec::with_capacity(ROOM),
+            written: PlaceMap::default(),
+            changes: Vec::new(),
             laid: PlaceMap::default(),
             now,
             kept: RefCell::default(),
@@ -116,11 +118,18 @@ impl Batch<'_> {
         if let Some(below) = self.below {
             return below.absent(kind, key);
         }
-        let at = place(kind, key);
+        self.reads().entry(place(kind, key)).or_insert(None);
+    }
+
+    /// What the batch read, as it found it: made with room for a
+    /// Publication's reads at the first, never grown a step at a time
+    /// (2026-11-20).
+    fn reads(&self) -> RefMut<'_, ByPlace> {
         let mut kept = self.kept.borrow_mut();
-        if !kept.contains_key(&*at) {
-            kept.insert(at, None);
+        if kept.capacity() == 0 {
+            kept.reserve(ROOM / 2);
         }
+        kept
     }
 
     /// Whether this batch, or one below it, has written the place `at`.
@@ -176,6 +185,10 @@ impl Batch<'_> {
         }
         let columns = Columns::of(Database::Runtime);
         let (bytes, entries) = columns.laid(kind, &mut record, before, self.now)?;
+        // Made with room for a Publication's at the first (2026-11-20).
+        if self.laid.capacity() == 0 {
+            self.laid.reserve(ROOM / 4);
+        }
         self.laid.insert(at, entries);
         self.put(kind, key, Some(bytes));
         Ok(())
@@ -242,7 +255,7 @@ impl Batch<'_> {
             return Ok(kept.clone());
         }
         let kept = store.get(kind, key)?;
-        self.kept.borrow_mut().insert(at.clone(), kept.clone());
+        self.reads().insert(at.clone(), kept.clone());
         Ok(kept)
     }
 
@@ -275,11 +288,19 @@ impl Batch<'_> {
     /// `changes` each place's last write is, the changes, and what it laid
     /// out — taken into it once the operation is decided whole: its changes
     /// after this batch's, in their order, each place found where it is
-    /// among them.
+    /// among them. Into a batch that has written nothing, a lone write's
+    /// most of all, they are taken as they are, never moved one by one
+    /// (2026-11-20).
     pub(super) fn taken(
         &mut self,
         (written, changes, laid): (PlaceMap<usize>, Vec<RecordChange<'static>>, Laid),
     ) {
+        // Nothing written, nothing laid out: every place it laid out it
+        // wrote too.
+        if self.changes.is_empty() {
+            (self.written, self.changes, self.laid) = (written, changes, laid);
+            return;
+        }
         let first = self.changes.len();
         self.changes.extend(changes);
         let moved = written.into_iter().map(|(at, change)| (at, first + change));
@@ -357,5 +378,53 @@ mod tests {
             "and what was there before it"
         );
         assert_eq!(staged.before(&store, "journey", b"8").expect("read"), None);
+    }
+
+    /// What one stage wrote, taken into it, as `committed` takes it.
+    fn take(batch: &mut Batch<'_>, writes: &[(&'static str, &[u8], &[u8])]) -> *const u8 {
+        let mut staged = batch.staged();
+        for (kind, key, value) in writes {
+            staged.put(kind, key.to_vec(), Some(value.to_vec()));
+        }
+        let Batch {
+            written,
+            changes,
+            laid,
+            ..
+        } = staged;
+        let at = changes.as_ptr().cast::<u8>();
+        batch.taken((written, changes, laid));
+        at
+    }
+
+    #[test]
+    fn a_first_stage_is_taken_whole_and_the_next_after_it() {
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        let kek = secret::KekName::new("runtime").expect("a name");
+        let store = EncryptedStore::open(Memory::default(), &keys, &kek).expect("open");
+        let mut batch = Batch::empty(0);
+        let first = take(&mut batch, &[("journey", b"7", b"one")]);
+        assert_eq!(
+            batch.changes.as_ptr().cast::<u8>(),
+            first,
+            "a batch that wrote nothing takes its first stage's writes as they are"
+        );
+        take(
+            &mut batch,
+            &[("journey", b"7", b"two"), ("journey", b"8", b"three")],
+        );
+        let keys: Vec<_> = batch
+            .changes
+            .iter()
+            .map(|(_, key, _)| key.clone())
+            .collect();
+        assert_eq!(
+            keys,
+            [b"7".to_vec(), b"7".to_vec(), b"8".to_vec()],
+            "in order"
+        );
+        let read = |key: &[u8]| batch.read(&store, "journey", key).expect("read");
+        assert_eq!(read(b"7"), Some(b"two".to_vec()), "its last write");
+        assert_eq!(read(b"8"), Some(b"three".to_vec()));
     }
 }

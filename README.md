@@ -21,7 +21,9 @@ layer that encrypts everything Xmip stores of its own (ADR-0063 clause 2).
 - **`RuntimeStore`** — what the runtime writes and recovers them through.
   Every error is a `PersistError`.
 - **`Engine`** — bytes under bytes: `read`, `write` (durable on return),
-  `write_new` (one step, `false` when taken), `remove`, `apply` a batch whole,
+  `write_new` (one step, `false` when taken), `remove`, `apply` a batch whole
+  — each change handed borrowed where its writer keeps it
+  (`BorrowedChange`; 2026-11-20) —
   and `scan` a range of keys in their byte order or the reverse, and `view`:
   one consistent view (`Reads`) every read through which sees the records as
   they stood — a `RocksDB` snapshot, `SQLite`'s one connection held, the
@@ -212,7 +214,9 @@ and 9).
   the cluster's membership, in a table of its own, `membership`
   (`storage::membership`; ADR-0056, amendment 2026-11-13): a row for each
   start of each node, keyed by the process it runs in, drawn new at each
-  start, its every value in a column of its own — the node, its roles and
+  start, its every value in a column of its own — which start of its node
+  it is (`start`, the number its node took above its last and never below
+  its clock, kept before its first write), the node, its roles and
   its capability's evidence, its operate and sync addresses, its place
   among the Storage nodes, the save and serial of the slice it runs — and
   Xmip Storage's own: when it started and stopped in order, the table's
@@ -222,7 +226,12 @@ and 9).
   in one write, and for a process with a row updates that row alone, its
   latest kept and no other row touched, so an earlier start's stop leaves
   its successor the member, and refuses a process writing its row as
-  another node (ADR-0056, amendment 2026-11-19), and stamps a stop the row
+  another node (ADR-0056, amendment 2026-11-19); a process registers only
+  above its node's latest start, so one whose first write lands after a
+  later start registered is refused, `PersistError::Superseded` carrying
+  the later start's number (answer 32 over the wire), nothing written, and
+  a process writing its row under another start is refused too (ADR-0056,
+  amendment 2026-11-20); and stamps a stop the row
   says with Xmip Storage's time; the members now read by `read_members`, each
   node's latest row by one range of the index holding only those
   (`membership_latest`), so the rows kept, never deleted (ADR-0040,
@@ -347,7 +356,20 @@ and 9).
   previous Message's hand-on sync before it was decided (ADR-0018,
   amendment 2026-10-21).
   Each operation is decided on a stage of its own over the batch, and the
-  batch takes the stage only once the whole operation has been decided.
+  batch takes the stage only once the whole operation has been decided —
+  a batch that wrote nothing yet, a lone write's, takes its first stage's
+  writes as they are, never moved one by one (ADR-0018, amendment
+  2026-11-20). **Nothing a Message's batches write is copied or grown to
+  be written** (the same amendment): each record in the room its form
+  says, its facts' words counted (`Form::capacity`; a boxed one's the
+  value's), each varint written from the stack (`codec::varint::encoded`),
+  a queue's hold kept as it came and a claim written from itself, no
+  index entry's key made for an index whose column the record lacks, the
+  records stamped where they are in the batch, and the batch sealed into
+  one buffer of engine keys and one of sealed values, each made once with
+  the room the batch takes (`encrypted_store::sealed`): an engine is
+  handed each change borrowed where it lies (`BorrowedChange`), and a
+  standby's copy of it owned (`Change`).
   A batch that writes nothing — a Publication, a hand-on or a claim asked
   again and found written — is durable with the latest batch handed to the
   sync, never before what it found is, and says what it worked itself,

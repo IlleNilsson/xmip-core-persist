@@ -26,11 +26,23 @@ fn scope(place: usize) -> String {
 }
 
 /// `node`'s start as process `process` writes it: Xmip Storage's own values
-/// unset, stopped where `stopped` says. Its evidence is a capability's, as
-/// the runtime writes it; persist reads no word of it.
+/// unset, stopped where `stopped` says, a later process a later start. Its
+/// evidence is a capability's, as the runtime writes it; persist reads no
+/// word of it.
 fn start(process: u128, node: &str, stopped: bool) -> MemberRecord {
+    numbered(
+        process,
+        u64::try_from(process).expect("a start"),
+        node,
+        stopped,
+    )
+}
+
+/// [`start`], numbered `start` whatever its process.
+fn numbered(process: u128, start: u64, node: &str, stopped: bool) -> MemberRecord {
     MemberRecord {
         process,
+        start,
         node: node.to_string(),
         roles: "receiving".to_string(),
         evidence: "declares receiving; offline".to_string(),
@@ -158,6 +170,79 @@ fn a_process_rewriting_its_row_as_another_node_is_refused() {
     assert_eq!(storage.members_written().expect("counted"), 1);
 }
 
+/// A start whose first write lands only after a later start of its node
+/// registered — its earlier tries unanswered, or their answers lost — is
+/// refused as superseded, saying the later start's number, and nothing is
+/// written: the later start stays the member. Until 2026-11-20 it
+/// registered then, and took its node from its successor.
+#[test]
+#[expect(non_snake_case, reason = "A and B name the starts")]
+fn register_B_then_A_s_late_first_write_is_refused_and_B_stays_the_member() {
+    let (storage, _) = node();
+    let at = scope(0);
+    let (a, b) = (1, 2);
+    storage.write_member(&start(b, &at, false)).expect("B");
+    let registered = storage.member(b).expect("read").expect("B's row");
+
+    let refused = storage.write_member(&start(a, &at, false));
+    let Err(PersistError::Superseded { latest, reason }) = refused else {
+        panic!("superseded, not {refused:?}");
+    };
+    assert_eq!(latest, 2, "B's start");
+    for said in ["start 1", "start 2", &at, &format!("{b:032x}")] {
+        assert!(reason.contains(said), "{said} in {reason}");
+    }
+    assert_eq!(storage.member(a).expect("read"), None, "A has no row");
+    let members = storage.read_members().expect("read");
+    assert_eq!(processes(&members), [b], "B is the member");
+    assert_eq!(members[0], registered, "B's row untouched");
+    assert_eq!(storage.members_written().expect("counted"), 1, "none more");
+}
+
+/// Starts are ordered strictly: a start numbered as its node's latest is
+/// no later than it, and is refused as one before it is.
+#[test]
+fn a_start_equal_to_its_node_s_latest_is_refused() {
+    let (storage, _) = node();
+    let at = scope(0);
+    storage
+        .write_member(&numbered(1, 5, &at, false))
+        .expect("the first");
+    let refused = storage.write_member(&numbered(2, 5, &at, false));
+    assert!(
+        matches!(refused, Err(PersistError::Superseded { latest: 5, .. })),
+        "{refused:?}"
+    );
+    assert_eq!(processes(&storage.read_members().expect("read")), [1]);
+    storage
+        .write_member(&numbered(3, 6, &at, false))
+        .expect("a later start registers");
+    assert_eq!(processes(&storage.read_members().expect("read")), [3]);
+}
+
+/// A row's start never changes: a process writing its row again under
+/// another start is refused, and nothing is written.
+#[test]
+fn a_process_rewriting_its_row_under_another_start_is_refused() {
+    let (storage, _) = node();
+    let at = scope(0);
+    storage
+        .write_member(&numbered(1, 1, &at, false))
+        .expect("A");
+    let own = storage.member(1).expect("read").expect("A's row");
+
+    let refused = storage.write_member(&numbered(1, 3, &at, true));
+    let Err(PersistError::Failed { reason }) = refused else {
+        panic!("refused, not {refused:?}");
+    };
+    assert!(
+        reason.contains("start 1") && reason.contains("start 3"),
+        "{reason}"
+    );
+    assert_eq!(storage.member(1).expect("read"), Some(own), "kept");
+    assert_eq!(storage.members_written().expect("counted"), 1);
+}
+
 #[test]
 fn a_wait_on_the_membership_is_told_as_a_row_is_written_and_answered_at_once_when_behind() {
     let (storage, _) = node();
@@ -242,5 +327,23 @@ fn a_node_writes_and_waits_on_the_membership_over_the_wire_and_a_person_writes_n
     let (server, person) = served(|authority| authority.issue_person(authority));
     let refused = person.write_member(&start(2, &scope(1), false));
     assert!(refused.is_err(), "a person's connection writes no row");
+    server.stop();
+}
+
+/// The refusal of a start superseded crosses the wire as itself, the later
+/// start's number with it, so the node it reaches stops trying.
+#[test]
+fn a_late_first_write_is_refused_over_the_wire_as_superseded() {
+    let (server, client) = served(|authority| authority.issue(authority));
+    let at = scope(0);
+    client.write_member(&start(2, &at, false)).expect("B");
+    let refused = client.write_member(&start(1, &at, false));
+    let Err(PersistError::Superseded { latest, reason }) = refused else {
+        panic!("superseded over the wire, not {refused:?}");
+    };
+    assert_eq!(latest, 2);
+    assert!(reason.contains("start 1"), "{reason}");
+    let members = client.read_members().expect("read over the wire");
+    assert_eq!(processes(&members), [2]);
     server.stop();
 }

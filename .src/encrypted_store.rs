@@ -3,13 +3,16 @@
 
 mod index;
 pub(crate) mod place;
+mod sealed;
 mod stopped;
 mod viewed;
 
+use index::INDEX;
 use place::place;
+use sealed::{Seal, Sealed};
 use stopped::Stopped;
 
-use crate::{Change, Engine, PersistError, Reads};
+use crate::{Engine, PersistError, Reads};
 use secret::{DataKey, KekName, KeyStore, SecretError};
 use viewed::Now;
 pub use viewed::{IndexScan, Viewed};
@@ -227,8 +230,9 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// As [`EncryptedStore::put`]; nothing is written then.
     pub fn apply(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
-        let sealed = self.sealed(changes)?;
-        on_io(|| self.engine.apply(&sealed))
+        let sealed = self.sealed(changes, &[])?;
+        let changes = sealed.changes();
+        on_io(|| self.engine.apply(&changes))
     }
 
     /// Every write before now durable, as the engine syncs
@@ -257,25 +261,40 @@ impl<E: Engine> EncryptedStore<E> {
     ///
     /// As [`EncryptedStore::apply`].
     pub fn apply_deferred(&self, changes: &[RecordChange<'_>]) -> Result<(), PersistError> {
-        let sealed = self.sealed(changes)?;
-        on_io(|| self.engine.apply_deferred(&sealed))
+        let sealed = self.sealed(changes, &[])?;
+        let changes = sealed.changes();
+        on_io(|| self.engine.apply_deferred(&changes))
     }
 
-    /// `changes` as the engine keeps them: each place a keyed hash, each
-    /// value sealed.
-    fn sealed(&self, changes: &[RecordChange<'_>]) -> Result<Vec<Change>, PersistError> {
+    /// `changes`, and the index `entries` of the same write, as the engine
+    /// keeps them, sealed into one buffer of keys and one of values
+    /// ([`Sealed`]; 2026-11-20): each record's place a keyed hash and its
+    /// value sealed for that place; each entry's key its key after the
+    /// index mark, and the record it finds sealed with that whole key as
+    /// associated data.
+    fn sealed(
+        &self,
+        changes: &[RecordChange<'_>],
+        entries: &[IndexEntry],
+    ) -> Result<Sealed, PersistError> {
         self.alive()?;
-        changes
-            .iter()
-            .map(|(kind, key, value)| {
-                let place = place(kind, key);
-                let sealed = value
-                    .as_ref()
-                    .map(|value| self.seal(&place, value))
-                    .transpose()?;
-                Ok((self.lookup.keyed_hash(&place).to_vec(), sealed))
-            })
-            .collect()
+        let mut sealed = Sealed::with_room(changes, entries);
+        for (kind, key, value) in changes {
+            let place = place(kind, key);
+            let hashed = self.lookup.keyed_hash(&place);
+            let seal = value
+                .as_ref()
+                .map(|value| |_: &[u8], out: &mut Vec<u8>| self.seal_into(out, &place, value));
+            sealed.push(&[&hashed], seal.as_ref().map(|seal| seal as Seal<'_>))?;
+        }
+        for (key, record) in entries {
+            let record = record.map(u128::to_be_bytes);
+            let seal = record.map(|record| {
+                move |key: &[u8], out: &mut Vec<u8>| self.seal_into(out, key, &record)
+            });
+            sealed.push(&[INDEX, key], seal.as_ref().map(|seal| seal as Seal<'_>))?;
+        }
+        Ok(sealed)
     }
 
     /// The engine beneath, as it is: what it holds is ciphertext.
@@ -294,6 +313,13 @@ impl<E: Engine> EncryptedStore<E> {
     fn seal(&self, place: &[u8], value: &[u8]) -> Result<Vec<u8>, PersistError> {
         self.alive()?;
         Ok(self.record.seal_after(&[LAYOUT], place, value)?)
+    }
+
+    /// [`EncryptedStore::seal`], after what `out` holds: a batch's values
+    /// sealed one after the other ([`Sealed`]).
+    fn seal_into(&self, out: &mut Vec<u8>, place: &[u8], value: &[u8]) -> Result<(), PersistError> {
+        self.alive()?;
+        Ok(self.record.seal_into(out, &[LAYOUT], place, value)?)
     }
 }
 
@@ -352,6 +378,39 @@ mod tests {
             Some(b"next".to_vec())
         );
         assert_eq!(store.get("claim", b"7").expect("get"), None);
+    }
+
+    /// A batch's records and index entries sealed into one buffer of keys
+    /// and one of values, each made once with the room the batch takes,
+    /// and handed to the engine where they lie (2026-11-20).
+    #[test]
+    fn a_batch_is_sealed_into_room_made_for_it_once() {
+        let keys = Held::new(secret::fixture::Memory::default());
+        let store = EncryptedStore::open(Memory::default(), &keys, &kek()).expect("open");
+        let changes = [
+            ("journey", b"7".to_vec(), Some(vec![1; 300])),
+            ("claim", b"7".to_vec(), None),
+        ];
+        let entries = [(b"a1".to_vec(), Some(7)), (b"a3".to_vec(), None)];
+        let sealed = store.sealed(&changes, &entries).expect("sealed");
+        assert!(sealed.filled(), "sized right, never grown");
+        let lent = sealed.changes();
+        let keys: Vec<&[u8]> = lent.iter().map(|(key, _)| *key).collect();
+        let journey = store.lookup_key("journey", b"7");
+        let claim = store.lookup_key("claim", b"7");
+        let (a1, a3) = ([INDEX, b"a1"].concat(), [INDEX, b"a3"].concat());
+        assert_eq!(keys, [&journey[..], &claim, &a1, &a3]);
+        let opened = |at: usize, place: &[u8]| {
+            let value = lent[at].1.expect("sealed");
+            store.opened(place, value, &String::new).expect("opened")
+        };
+        assert_eq!(opened(0, &place("journey", b"7")), vec![1; 300]);
+        assert_eq!(opened(2, &a1), 7_u128.to_be_bytes());
+        assert_eq!(
+            (lent[1].1, lent[3].1),
+            (None, None),
+            "removals seal nothing"
+        );
     }
 
     #[test]

@@ -9,8 +9,8 @@
 //! reaches Xmip Storage, and again as it stops in order: its scope, the
 //! roles it declares and its capability's evidence, where its operate and
 //! sync listeners answer, its place in `[storage] nodes` where it is a
-//! Storage node, the signed save it runs, and its process, drawn new at
-//! each start, which keys the row. When it started and stopped, how many
+//! Storage node, the signed save it runs, its process, drawn new at each
+//! start, which keys the row, and which start of its node it is. When it started and stopped, how many
 //! writes the table had taken at its last write, and whether it is its
 //! node's latest row are Xmip Storage's to set, on its clock.
 //!
@@ -20,6 +20,14 @@
 //! no other row touched, so an earlier start's stop leaves its successor
 //! the member. A row names one node: a process writing its row as another
 //! is refused.
+//!
+//! **Ordered by the node, checked by Xmip Storage** (ADR-0056, amendment
+//! 2026-11-20): each row carries its start, a number its node takes above
+//! its last and never below its clock, kept before the start's first
+//! write. A process registers only above its node's latest start: one whose
+//! first write lands after a later start registered is refused as
+//! superseded (`PersistError::Superseded`), saying the latest's number, and
+//! its node's member stays the later start. A row's start never changes.
 //!
 //! **Kept, never deleted** (ADR-0040): a node started again writes a row of
 //! its own, and its row before stays, no longer its node's latest. The
@@ -47,6 +55,11 @@ pub struct MemberRecord {
     /// The process it runs in, drawn at random as it starts and new at
     /// each start: the row's key.
     pub process: u128,
+    /// Which start of its node it is: a number the node itself takes above
+    /// its last, never below its clock, and keeps before its first write
+    /// (ADR-0056, amendment 2026-11-20), so its node's starts are ordered
+    /// as they happened, never as their writes arrive.
+    pub start: u64,
     /// The node: `xmip:///<cluster>/node/<name>`.
     pub node: String,
     /// The roles it declares, as `node::Capability::words` says them:
@@ -97,7 +110,7 @@ fn write_text(out: &mut Vec<u8>, text: Option<&str>) {
 
 impl Form for MemberRecord {
     fn write(&self, out: &mut Vec<u8>) {
-        out.u128_be(self.process);
+        out.u128_be(self.process).u64_be(self.start);
         field::text(out, &self.node);
         field::text(out, &self.roles);
         field::text(out, &self.evidence);
@@ -117,6 +130,7 @@ impl Form for MemberRecord {
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
         Ok(Self {
             process: cursor.u128_be()?,
+            start: cursor.u64_be()?,
             node: field::read_text(cursor)?,
             roles: field::read_text(cursor)?,
             evidence: field::read_text(cursor)?,
@@ -151,6 +165,7 @@ impl Columned for MemberRecord {
     fn row(&self) -> Row {
         let text = |text: &str| Some(Value::Text(text.to_string()));
         vec![
+            ("start", Some(Value::Count(self.start))),
             ("node", text(&self.node)),
             ("roles", text(&self.roles)),
             ("evidence", text(&self.evidence)),
@@ -179,6 +194,7 @@ mod tests {
     fn member(process: u128, node: &str) -> MemberRecord {
         MemberRecord {
             process,
+            start: u64::MAX - 2,
             node: node.to_string(),
             roles: "receiving".to_string(),
             evidence: "declares receiving; offline".to_string(),
