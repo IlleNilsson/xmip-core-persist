@@ -107,7 +107,7 @@ mod tests {
 
     fn drawn() -> String {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        format!("drawn-{:x}", now.map(|t| t.as_nanos()).unwrap_or_default())
+        format!("drawn-{:x}", now.map_or_default(|t| t.as_nanos()))
     }
 
     fn record(id: u128, name: &str, value: &str) -> SecretRecord {

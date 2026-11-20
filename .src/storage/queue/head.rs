@@ -21,8 +21,7 @@ fn ranged(store: &EncryptedStore<Box<Counted>>, from: u64) -> (Places, Vec<Vec<u
     let places = view
         .get(KINDS.places, &places_key(QUEUE))
         .expect("its places read")
-        .map(|bytes| Places::from_bytes(&bytes).expect("places"))
-        .unwrap_or_default();
+        .map_or_default(|bytes| Places::from_bytes(&bytes).expect("places"));
     if places.count == 0 {
         return (places, Vec::new());
     }

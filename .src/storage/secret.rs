@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn a_secret_comes_back_from_its_bytes_and_its_entry_holds_no_value() {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        let drawn = format!("drawn-{:x}", now.map(|t| t.as_nanos()).unwrap_or_default());
+        let drawn = format!("drawn-{:x}", now.map_or_default(|t| t.as_nanos()));
         let name = SecretName::new("partner-x").expect("a name");
         let secret = Secret::new(name, SecretKind::Password, drawn.clone().into()).expect("one");
         let record = SecretRecord {
