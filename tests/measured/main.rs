@@ -25,7 +25,13 @@
 //!   thousand starts of each node kept, beside it in the same rounds, the
 //!   fastest of five each; and a wait on the table is woken
 //!   within a millisecond of a row's write being asked (`membership`;
-//!   2026-11-13).
+//!   2026-11-13);
+//! - a standby stopped ends within a millisecond beyond the two threads its
+//!   stop wakes, following its primary and in the middle of a whole copy,
+//!   where the platform wakes a read blocked on a socket shut, Linux and
+//!   macOS; and a primary handing on a whole copy, stopped with its server,
+//!   within a millisecond beyond the six its stop wakes (`stopped`; open
+//!   problem 94, 2026-11-22).
 //!
 //! Each wake is held as every wait that works as it wakes is, beside a
 //! plain wake measured in the same rounds (`xcore::latency::Rounds`): its
@@ -38,7 +44,13 @@
 //! a quarter to half busy they failed alone, before the round of changes
 //! they were run for as much as after it.
 
+// The cluster's authority the crate's own tests issue identities from,
+// written once (`storage::authority`).
+#[allow(dead_code)]
+#[path = "../../.src/storage/authority.rs"]
+mod authority;
 mod membership;
+mod stopped;
 
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};

@@ -91,6 +91,7 @@ pub struct Embedded<R: Engine + 'static, A: Engine> {
     watch: Arc<Watch>,
     /// The most bytes of the records it wrote its writer keeps.
     kept: Arc<AtomicUsize>,
+    standbys: AtomicU64, // who follows it, its changes counted (`watched`)
 }
 
 impl<R: Engine + 'static, A: Engine> Embedded<R, A> {

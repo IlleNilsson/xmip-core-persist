@@ -3,7 +3,9 @@
 //! cannot take them on from there, then each write as it is kept, and a
 //! beat while there is none. A primary stopped in order hands on what it
 //! wrote before the connection ends. What it hands is counted against the
-//! standby as each frame is sent (`super::followers`).
+//! standby as each frame is sent (`super::followers`), and each standby that
+//! begins or ends following is told to every wait on the primary
+//! (`Watched::Standbys`).
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,11 +36,22 @@ impl StorageNode {
         asked: &Follow,
         (standby, server): ((Option<&str>, &str), &AtomicBool),
     ) {
-        let handed = self.followers.began(standby, asked.next);
+        let handed = self.followers.began(standby, (asked.next, asked.place));
+        self.standbys_moved();
         let shipped = self.shipping(connection, asked, (&handed, server));
         self.followers.ended(&handed);
+        self.standbys_moved();
         if let Err(reason) = shipped {
             let _ = wire::send(connection, &Shipped::Declined(reason));
+        }
+    }
+
+    /// Who follows it changed, told to every wait on its databases while it
+    /// is the primary: a node waiting reads its list again
+    /// ([`StorageNode::followers`]).
+    fn standbys_moved(&self) {
+        if let Some(primary) = self.primary() {
+            primary.standbys_moved();
         }
     }
 
@@ -63,7 +76,7 @@ impl StorageNode {
         } else {
             // Copied whole, it holds none of this history's writes yet.
             handed.reached([1; DATABASES]);
-            self.whole(connection, (epoch, handed))?
+            self.whole(connection, (epoch, handed, server))?
         };
         loop {
             // Its last writes are handed on once no operation is under way.
@@ -106,12 +119,20 @@ impl StorageNode {
     /// reaches before what the pages hold is one state of this node's
     /// (`super::bootstrap`; ADR-0056, amendment 2026-11-12). Each page's
     /// entries are counted against the standby, `handed`, as it is sent.
+    /// The node or its `server` stopping cuts it short before the next
+    /// page: the standby is copying still, never promoted, and copied whole
+    /// again by the primary it follows next. Until 2026-11-22 a primary's
+    /// stop lasted as long as the copy it was handing on.
     fn whole(
         &self,
         connection: &mut impl Write,
-        (epoch, handed): (u64, &Handed),
+        (epoch, handed, server): (u64, &Handed, &AtomicBool),
     ) -> Result<[u64; DATABASES], String> {
         let failed = |e: PersistError| e.to_string();
+        let stopped = || {
+            (self.stopping() || server.load(Ordering::SeqCst))
+                .then(|| "this Storage node is stopping: its whole copy is cut short".to_string())
+        };
         let mut keys = Vec::with_capacity(DATABASES);
         for engine in &self.engines {
             let wrapped = engine
@@ -132,6 +153,9 @@ impl StorageNode {
             from[database] = self.copies.next()[database];
             let mut first = Vec::new();
             loop {
+                if let Some(cut) = stopped() {
+                    return Err(cut);
+                }
                 let page = engine.scan(&first, &LAST, PAGE, false).map_err(failed)?;
                 let Some((last, _)) = page.last() else {
                     break;

@@ -26,6 +26,7 @@ impl StorageClient {
             clock: Arc::clone(&self.clock),
             epoch: Arc::clone(&self.epoch),
             pinned: Some(index),
+            standbys: Arc::clone(&self.standbys),
         }
     }
 }

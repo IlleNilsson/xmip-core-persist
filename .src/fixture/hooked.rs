@@ -1,9 +1,10 @@
 //! An engine a test steers: every call handed to the engine beneath, but a
-//! sync held until the test lets it go, a sync or a durable write failed,
-//! a panic once an unsynced write is in, one unsynced write refused, or a
-//! write let in between two pages of a scan, on demand. How a test stalls
-//! the Ledger between a write's answer and its sync, kills a process there,
-//! makes the disk refuse, or writes while a whole copy is read.
+//! sync held until the test lets it go, a sync, a durable write or a scan
+//! going on from a key failed, a panic once an unsynced write is in, one
+//! unsynced write refused, or a write let in between two pages of a scan,
+//! on demand. How a test stalls the Ledger between a write's answer and its
+//! sync, kills a process there or mid-way through a whole copy, makes the
+//! disk refuse, or writes while a whole copy is read.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -24,6 +25,7 @@ pub struct Hooks {
     held: AtomicUsize,
     failing_syncs: AtomicBool,
     failing_writes: AtomicBool,
+    failing_scans: AtomicBool,
     panicking: AtomicBool,
     /// The change an unsynced write carrying it is refused for.
     refused: Mutex<Option<Change>>,
@@ -52,6 +54,12 @@ impl Hooks {
     /// Every write durable on return fails from now on, or none does.
     pub fn fail_writes(&self, failing: bool) {
         self.failing_writes.store(failing, Ordering::SeqCst);
+    }
+
+    /// Every scan that goes on from a key fails from now on, or none does:
+    /// a whole copy read page by page cut short after its first page.
+    pub fn fail_scans(&self, failing: bool) {
+        self.failing_scans.store(failing, Ordering::SeqCst);
     }
 
     /// Every unsynced write from now on panics once it is in the engine,
@@ -121,9 +129,9 @@ impl Hooks {
         Ok(())
     }
 
-    fn scanned(&self, first: &[u8]) {
+    fn scanned(&self, first: &[u8]) -> Result<(), PersistError> {
         if first.is_empty() {
-            return;
+            return Ok(());
         }
         let then = self
             .between
@@ -133,6 +141,10 @@ impl Hooks {
         if let Some(then) = then {
             then();
         }
+        if self.failing_scans.load(Ordering::SeqCst) {
+            return Err(PersistError::engine("hooked", "the scan failed, as told"));
+        }
+        Ok(())
     }
 }
 
@@ -208,7 +220,7 @@ impl<E: Engine> Engine for Hooked<E> {
         most: usize,
         reverse: bool,
     ) -> Result<Vec<Entry>, PersistError> {
-        self.hooks.scanned(first);
+        self.hooks.scanned(first)?;
         self.engine.scan(first, last, most, reverse)
     }
 

@@ -138,6 +138,8 @@ pub struct StorageNode {
     /// passing over are counted on.
     clock: Arc<dyn Clock>,
     stopping: AtomicBool,
+    /// The socket it follows its primary on, which its stop shuts.
+    followed: follow::Followed,
     /// Each standby it hands writes to, by the node its certificate names,
     /// and what it handed each ([`followers`]).
     followers: followers::Followers,
@@ -232,6 +234,7 @@ impl StorageNode {
             timings,
             clock,
             stopping: AtomicBool::new(false),
+            followed: follow::Followed::default(),
             followers: followers::Followers::default(),
             finding: Mutex::new(None),
             last: Mutex::new(None),
@@ -272,9 +275,11 @@ impl StorageNode {
 
     /// Stop: serve no operation more, wait for each one under way, then let
     /// every standby it hands writes to have what it wrote — a primary
-    /// stopped in order has handed on everything — and stop settling.
+    /// stopped in order has handed on everything — and stop settling, a
+    /// standby's read of its primary's next frame ended at once.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.followed.shut();
         // No wait holds a loan: each one on its queues is ended now, so the
         // node waiting asks the next Storage node at once.
         if let Some(primary) = self.primary() {
@@ -295,6 +300,8 @@ impl StorageNode {
         self.drained.store(true, Ordering::SeqCst);
         self.settled.notify_all();
         drop(settling);
+        // Each standby's shipping hands on the last writes now, not a beat on.
+        self.copies.wake();
         if let Some(thread) = self.finding.locked().take() {
             let _ = thread.join();
         }

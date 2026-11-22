@@ -68,12 +68,15 @@ impl Form for Standing {
 }
 
 /// Where a standby asks to be followed from: the epoch it knows, the
-/// history it holds and the next write of each database.
+/// history it holds and the next write of each database; and its place
+/// among the Storage nodes listed, where it found itself among them, by
+/// which every node shows it from its primary's list (`super::followers`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Follow {
     pub epoch: u64,
     pub history: u128,
     pub next: [u64; DATABASES],
+    pub place: Option<u32>,
 }
 
 impl Form for Follow {
@@ -83,6 +86,9 @@ impl Form for Follow {
         for next in self.next {
             out.u64_be(next);
         }
+        field::optional(out, self.place, |out, place| {
+            out.u32_be(place);
+        });
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
@@ -90,6 +96,7 @@ impl Form for Follow {
             epoch: cursor.u64_be()?,
             history: cursor.u128_be()?,
             next: [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
+            place: field::read_optional(cursor, Cursor::u32_be)?,
         })
     }
 }

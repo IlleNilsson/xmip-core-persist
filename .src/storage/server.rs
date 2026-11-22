@@ -26,7 +26,7 @@ use xcore::lock::Locked;
 use authorize::plane;
 
 use super::XmipStorage;
-use super::standby::{Standing, StorageNode};
+use super::standby::{Follower, Standing, StorageNode};
 use super::wire::{self, Answer, Request};
 use crate::PersistError;
 use admitted::{RULES, caller};
@@ -49,8 +49,9 @@ const WAKE: Duration = Duration::from_secs(1);
 /// request wakes it at once; this bounds only how long a stop waits for an
 /// idle connection. A shutdown of the socket would not do it: Windows
 /// leaves a blocked receive waiting until the peer closes, and a node keeps
-/// its connections open.
-const WATCH: Duration = Duration::from_millis(50);
+/// its connections open. A standby waiting for its primary's next frame
+/// looks as often (`standby::follow`).
+pub(crate) const WATCH: Duration = Duration::from_millis(50);
 
 /// The most a write of an answer waits on a node that does not read it.
 const WRITE: Duration = Duration::from_secs(30);
@@ -233,6 +234,14 @@ impl Serving {
             |node| node.standing(),
         )
     }
+
+    /// Who follows it now: a primary of several's list; none for one alone
+    /// or a standby.
+    fn standbys(&self) -> Vec<Follower> {
+        self.node
+            .as_ref()
+            .map_or_else(Vec::new, |node| node.followers())
+    }
 }
 
 fn accept(
@@ -302,6 +311,7 @@ fn serve(
         let kind = Asked::of(&request);
         let (answer, durable) = match request {
             Request::Standing => (Answer::Standing(serving.standing()), None),
+            Request::Standbys => (Answer::Standbys(serving.standbys()), None),
             Request::Follow(asked) => {
                 if let Some(node) = &serving.node {
                     // The standby is the node its certificate names; where it

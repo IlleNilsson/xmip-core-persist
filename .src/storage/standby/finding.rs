@@ -1,7 +1,9 @@
 //! How the Storage nodes settle which is the primary (`super`): each asks
 //! every one listed what it is now, follows a primary that answers, and is
 //! promoted only where every one listed answered, none is a primary, and
-//! it is the one to be. A primary that does not answer is waited for.
+//! it is the one to be — and, the epoch it is promoted in kept, asked again,
+//! none holds that epoch or a later one. A primary that does not answer is
+//! waited for.
 
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
@@ -47,15 +49,67 @@ impl StorageNode {
                 }
                 continue;
             }
-            if self.promotes(&answered) {
-                let latest = answered.iter().map(|a| a.standing.epoch).max();
-                if let Err(problem) = self.promote(latest.unwrap_or(0).max(epoch) + 1) {
-                    self.told(&format!("could not be promoted: {problem}"));
-                }
+            if self.promoting(&answered, epoch) {
                 continue;
             }
             self.rest(self.timings.beat);
         }
+    }
+
+    /// Promoted where it is the one to be ([`StorageNode::promotes`]), in the
+    /// epoch after the latest of `epoch`, its own, and those `answered`: that
+    /// epoch kept first, durable, and the others asked again
+    /// ([`StorageNode::unrivalled`]). Whether it was the one, promoted or not;
+    /// one not promoted rests a beat, so two that each found the other in its
+    /// epoch do not ask on at once.
+    pub(super) fn promoting(&self, answered: &[Answered], epoch: u64) -> bool {
+        if !self.promotes(answered) {
+            return false;
+        }
+        let latest = answered.iter().map(|a| a.standing.epoch).max();
+        let next = latest.unwrap_or(0).max(epoch) + 1;
+        let promoted = self
+            .keep_epoch(next)
+            .and_then(|()| self.unrivalled(next))
+            .and_then(|()| self.promote(next));
+        if let Err(problem) = promoted {
+            self.told(&format!("could not be promoted: {problem}"));
+            self.rest(self.timings.beat);
+        }
+        true
+    }
+
+    /// Whether it is alone in `epoch`, which it kept: every Storage node
+    /// listed, asked again, answers, none is a primary and none other holds
+    /// `epoch` or a later one. Two may each be the one to promote by what
+    /// they saw — one asked while the other was not ready, the other once it
+    /// was — and each keeps the epoch before it asks again, so the one asking
+    /// second finds the other's kept: at most one is promoted in an epoch,
+    /// with no witness, as every one listed answers (ADR-0056, amendment
+    /// 2026-11-22).
+    ///
+    /// # Errors
+    ///
+    /// The Storage node in its way, or that one listed did not answer again.
+    fn unrivalled(&self, epoch: u64) -> Result<(), PersistError> {
+        let answered = self.standings();
+        let rival = answered.iter().find(|a| {
+            a.standing.process != self.process && (a.standing.primary || a.standing.epoch >= epoch)
+        });
+        let every = (0..self.listed.len()).all(|place| answered.iter().any(|a| a.place == place));
+        let reason = match rival {
+            Some(rival) if rival.standing.primary => format!(
+                "{} is the primary, epoch {}",
+                rival.address, rival.standing.epoch
+            ),
+            Some(rival) => format!(
+                "{} holds epoch {} already",
+                rival.address, rival.standing.epoch
+            ),
+            None if every => return Ok(()),
+            None => "not every Storage node listed answered again".to_string(),
+        };
+        Err(PersistError::Failed { reason })
     }
 
     /// A standby of the primary at `address` from now, in its `epoch`. One
@@ -153,6 +207,10 @@ impl StorageNode {
     /// where one is the primary of a later epoch.
     fn keep_primary(&self) {
         self.rest(self.timings.silence);
+        // Woken by its stop: it asks nobody, a stop never waits on another.
+        if self.stopping() {
+            return;
+        }
         let epoch = self.held().epoch;
         let later = self.standings().into_iter().any(|answer| {
             answer.standing.primary

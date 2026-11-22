@@ -55,6 +55,7 @@ impl Request {
             Self::ReadActs(..) => ("read", "read_acts"),
             Self::WriteMember(_) => ("write", "write_member"),
             Self::ReadMembers => ("read", "read_members"),
+            Self::Standbys => ("read", "standbys"),
         }
     }
 }

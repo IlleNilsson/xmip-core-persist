@@ -21,10 +21,13 @@
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
+use xcore::clock::between;
 
+use super::super::standby::Follower;
 use super::super::watch::{Ending, Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::expected::expected;
+use super::standbys::Standbys;
 use super::{Connection, StorageClient, exchange, unreachable};
 use crate::PersistError;
 
@@ -33,13 +36,53 @@ impl StorageClient {
     /// moved answered with up to `due` of what is due in it
     /// (`XmipStorage::wait_queues`): asked of the next Storage node, and of
     /// each after it in turn while none answers; none where `waiter` is
-    /// stopped or renewed.
+    /// stopped or renewed. Beside `seen`, each wait names where the
+    /// primary's count of who follows it stands (`super::standbys`): where
+    /// that moved, the list is read once of the Storage node that told it,
+    /// and where nothing else moved, the wait is asked again for what is
+    /// left of `bound`.
     pub(super) fn waited(
         &self,
         seen: &[Position],
         (bound, due): (Duration, u32),
         waiter: &Arc<Waiter>,
     ) -> Result<Vec<Moved>, PersistError> {
+        let began = self.clock.monotonic_nanos();
+        loop {
+            let left = bound.saturating_sub(between(began, self.clock.monotonic_nanos()));
+            let mut asked = seen.to_vec();
+            asked.push(self.standbys.position());
+            let (told, moved) = self.waited_once(&asked, (left, due), waiter)?;
+            let (moved, count) = Standbys::parted(moved);
+            let (Some(index), Some(at)) = (told, count) else {
+                return Ok(moved);
+            };
+            if self.standbys.moved_to(at) {
+                self.standbys.heard(at, self.standbys_of(index));
+            }
+            if !moved.is_empty() || left.is_zero() {
+                return Ok(moved);
+            }
+        }
+    }
+
+    /// Who follows the Storage node listed at `index`, as it says now, and
+    /// where it is listed.
+    fn standbys_of(&self, index: usize) -> Option<(usize, Vec<Follower>)> {
+        match self.ask_node(&self.nodes[index], &Request::Standbys) {
+            Ok(Answer::Standbys(followers)) => Some((index, followers)),
+            _ => None,
+        }
+    }
+
+    /// One wait, as [`StorageClient::waited`] asks it, and which Storage
+    /// node listed answered it; none where `waiter` is stopped or renewed.
+    fn waited_once(
+        &self,
+        seen: &[Position],
+        (bound, due): (Duration, u32),
+        waiter: &Arc<Waiter>,
+    ) -> Result<(Option<usize>, Vec<Moved>), PersistError> {
         let token = u128::from_be_bytes(codec::random::array());
         let request = Request::wait((token, waiter.holder()), seen, (bound, due));
         let within = bound.saturating_add(self.timeout);
@@ -53,21 +96,22 @@ impl StorageClient {
         let mut failures = Vec::new();
         for index in order {
             if !waiter.ending(self.ending(index, token)) {
-                return Ok(Vec::new());
+                return Ok((None, Vec::new()));
             }
             let node = &self.nodes[index];
             let asked = self.ask_node_by(node, &request, &read);
             waiter.ended();
             if waiter.is_stopped() {
-                return Ok(Vec::new());
+                return Ok((None, Vec::new()));
             }
             node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
             match asked {
                 Ok(answer) => {
-                    return expected(answer, |answer| match answer {
+                    let moved = expected(answer, |answer| match answer {
                         Answer::Moved(moved) => Ok(moved),
                         other => Err(other),
-                    });
+                    })?;
+                    return Ok((Some(index), moved));
                 }
                 Err(failure) => failures.push(format!("{}: {failure}", node.address)),
             }

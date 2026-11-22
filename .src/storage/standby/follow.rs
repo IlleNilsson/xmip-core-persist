@@ -5,11 +5,25 @@
 //! until the primary goes silent, declines or the node stops. What it took
 //! is synced on each beat, and once [`SYNC`] has passed on the node's clock
 //! since it last synced.
+//!
+//! **A stop ends it at once** (open problem 94): the stop shuts the socket
+//! it follows on ([`Followed`]), so a read waiting for the primary's next
+//! frame — a beat away, or its silence mid-copy — ends there, on Linux and
+//! macOS; Windows leaves such a read waiting, and the read looks at the stop
+//! each [`WATCH`] as the Storage server's connections do. A whole copy's
+//! wipe of its own databases looks at the stop between its pages. Until
+//! 2026-11-22 a stop waited out both, and a standby the service manager
+//! stopped while it was copied whole was killed 90 s later.
+use std::net::{Shutdown, TcpStream};
+use std::sync::Mutex;
 use std::time::Duration;
 
+use net::watched::Watched;
 use secret::DataKey;
 use xcore::clock::between;
+use xcore::lock::Locked;
 
+use super::super::server::WATCH;
 use super::super::wire::{self, Request};
 use super::bootstrap::{BOOTSTRAP, Bootstrap};
 use super::copies::DATABASES;
@@ -62,10 +76,30 @@ impl Taking {
     }
 }
 
+/// The socket a standby follows its primary on, while it does: what its
+/// stop shuts, which ends a read blocked on it at once.
+#[derive(Default)]
+pub(super) struct Followed(Mutex<Option<TcpStream>>);
+
+impl Followed {
+    /// `socket` the one followed on from now, or none.
+    fn hold(&self, socket: Option<TcpStream>) {
+        *self.0.locked() = socket;
+    }
+
+    /// The socket followed on shut, both ways, where there is one.
+    pub(super) fn shut(&self) {
+        if let Some(socket) = self.0.locked().take() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 impl StorageNode {
     /// Follow the primary at `address` until it is lost.
     pub(super) fn follow(&self, address: &str) {
         let followed = self.following(address);
+        self.followed.hold(None);
         if let Err(problem) = followed
             && !self.stopping()
         {
@@ -74,13 +108,35 @@ impl StorageNode {
         let _ = self.synced(&mut [true; DATABASES]);
     }
 
+    /// Its primary's frames taken until the primary falls silent for the
+    /// silence, on the node's clock, or the node stops: read through the
+    /// estate's watched connection (`net::watched`), which looks at the stop
+    /// each [`WATCH`] a read waits — Windows wakes a read blocked on a socket
+    /// shut from another thread only when its peer closes — and the socket
+    /// held for the stop to shut, which ends the read at once where the
+    /// platform wakes it, Linux and macOS.
     fn following(&self, address: &str) -> Result<(), String> {
         let mut connection = self.connect(address, self.timings.silence)?;
+        // Held before the stop is looked at, so a stop that shuts nothing
+        // yet is seen before the first read.
+        self.followed.hold(connection.sock.try_clone().ok());
         let asked = self.asked();
         wire::send(&mut connection, &Request::Follow(asked)).map_err(|e| e.to_string())?;
+        connection
+            .sock
+            .set_read_timeout(Some(WATCH))
+            .map_err(|e| e.to_string())?;
+        let mut watched = Watched {
+            silence: Some(self.timings.silence),
+            ..Watched::new(
+                &mut connection,
+                || self.stopping(),
+                || self.clock.monotonic_nanos(),
+            )
+        };
         let mut taking = Taking::new(self.clock.monotonic_nanos());
         while !self.stopping() {
-            let frame = wire::receive::<Shipped>(&mut connection)
+            let frame = wire::receive::<Shipped>(&mut watched)
                 .map_err(|e| format!("heard nothing for {:?}: {e}", self.timings.silence))?
                 .ok_or("the primary ended the connection")?;
             self.take(frame, &mut taking)?;
@@ -91,7 +147,9 @@ impl StorageNode {
     /// Where it asks to be followed from: where it is; or nowhere, so it is
     /// copied whole, while it is copying, or while it catches up on a copy
     /// from the primary of another epoch than the one it follows now, whose
-    /// writes from where it is need not be those its pages reflect.
+    /// writes from where it is need not be those its pages reflect. With
+    /// it, its place among the Storage nodes listed, which its primary's
+    /// list of who follows it says (`super::followers`).
     pub(super) fn asked(&self) -> Follow {
         let epoch = self.held().epoch;
         let goes_on = match self.bootstrap() {
@@ -103,6 +161,7 @@ impl StorageNode {
             epoch,
             history: if goes_on { self.copies.history() } else { 0 },
             next: self.copies.next(),
+            place: self.place().and_then(|place| u32::try_from(place).ok()),
         }
     }
 
@@ -188,7 +247,16 @@ impl StorageNode {
 
     /// Every database emptied, but for the node's own standing ([`STANDING`]),
     /// and given its primary's data key, wrapped under this node's own
-    /// key-encryption key, before a whole copy.
+    /// key-encryption key, before a whole copy: page by page, each scan on
+    /// from the last key the one before removed, the stop looked at before
+    /// each. Until 2026-11-22 each page was scanned from the first key, so
+    /// a log-structured engine walked every key removed before it again, a
+    /// tombstone each until compacted.
+    ///
+    /// # Errors
+    ///
+    /// Where an engine fails, or the node stops: it is copying still, and
+    /// copied whole again at its next start (`Bootstrap::Copying`).
     fn wiped(&self, keys: &[Vec<u8>]) -> Result<(), PersistError> {
         if keys.len() != DATABASES {
             return Err(PersistError::Failed {
@@ -196,20 +264,26 @@ impl StorageNode {
             });
         }
         for (engine, key) in self.engines.iter().zip(keys) {
+            let mut first = Vec::new();
             loop {
-                let page = engine.scan(&[], &LAST, PAGE, false)?;
-                if page.is_empty() {
-                    break;
+                if self.stopping() {
+                    return Err(PersistError::Failed {
+                        reason: "the wipe stopped: this Storage node is stopping".to_string(),
+                    });
                 }
+                let page = engine.scan(&first, &LAST, PAGE, false)?;
+                let Some((last, _)) = page.last() else {
+                    break;
+                };
+                first = [last.as_slice(), &[0]].concat();
                 let gone: Vec<Change> = page
                     .into_iter()
                     .filter(|(key, _)| !STANDING.contains(&key.as_slice()))
                     .map(|(key, _)| (key, None))
                     .collect();
-                if gone.is_empty() {
-                    break;
+                if !gone.is_empty() {
+                    engine.apply_deferred(&borrowed(&gone))?;
                 }
-                engine.apply_deferred(&borrowed(&gone))?;
             }
             let wrapped = self.keys.wrap(&self.kek, &DataKey::taken(key)?)?;
             engine.write(DATA_KEY, &wrapped)?;

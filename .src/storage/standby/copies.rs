@@ -297,6 +297,12 @@ impl Copies {
     pub fn wait(&self, seen: u64, most: Duration) {
         self.told.wait(seen, most);
     }
+
+    /// Every [`Copies::wait`] woken now: its Storage node stops, and hands
+    /// its standbys what it wrote without waiting out a beat first.
+    pub(super) fn wake(&self) {
+        self.tell();
+    }
 }
 
 /// An engine whose every write is numbered and kept in `copies` as it is

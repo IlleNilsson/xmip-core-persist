@@ -121,6 +121,9 @@ pub(crate) enum Request {
     /// A sequence's first places, answered once the write that last moved
     /// its head is durable on the Storage node (`super::Head`).
     ReadHead(u128, u32),
+    /// Who follows the Storage node now, as its primary counts each standby
+    /// (`super::standby::followers`): asked once a wait says it changed.
+    Standbys,
 }
 
 fn nanos(lease: Duration) -> u64 {
@@ -326,6 +329,7 @@ impl Form for Request {
             44 => Self::WriteMember(Box::new(MemberRecord::read(cursor)?)),
             45 => Self::ReadMembers,
             46 => Self::ReadHead(cursor.u128_be()?, cursor.u32_be()?),
+            47 => Self::Standbys,
             other => return Err(CodecError::new(format!("no operation is numbered {other}"))),
         })
     }

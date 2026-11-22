@@ -363,6 +363,7 @@ fn a_position_crosses_its_bytes_as_it_was() {
         Watched::Acts(4),
         Watched::Act(5),
         Watched::Membership,
+        Watched::Standbys,
     ] {
         let position = Position {
             watched,
@@ -373,5 +374,5 @@ fn a_position_crosses_its_bytes_as_it_was() {
             position
         );
     }
-    assert!(Watched::from_bytes(&[7; 17]).is_err(), "no eighth kind");
+    assert!(Watched::from_bytes(&[8; 17]).is_err(), "no ninth kind");
 }

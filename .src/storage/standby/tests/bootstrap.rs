@@ -107,6 +107,7 @@ fn a_whole_copy_is_copying_then_catching_up_then_ready_each_kept_across_a_restar
         epoch: EPOCH,
         history: HISTORY,
         next: [5, 1, 1],
+        place: again.place().and_then(|place| u32::try_from(place).ok()),
     };
     assert_eq!(again.asked(), asked);
     let said = again.said();

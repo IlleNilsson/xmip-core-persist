@@ -47,15 +47,25 @@ impl Own {
 /// A Storage node of `listed`, at `listener`, served, settling nothing yet.
 fn served(
     own: &Own,
+    at: (TcpListener, &[String]),
+    authority: &Authority,
+) -> (Arc<StorageNode>, StorageServer) {
+    served_by(own, at, authority, timings())
+}
+
+/// [`served`], bounded by `timings`.
+fn served_by(
+    own: &Own,
     (listener, listed): (TcpListener, &[String]),
     authority: &Authority,
+    timings: Timings,
 ) -> (Arc<StorageNode>, StorageServer) {
     let identity = authority.issue(authority);
     let keys = (
         Arc::clone(&own.keys),
         KekName::new("storage").expect("a name"),
     );
-    let node = StorageNode::new(own.engines.clone(), keys, listed, &identity, timings())
+    let node = StorageNode::new(own.engines.clone(), keys, listed, &identity, timings)
         .expect("a Storage node");
     let server = StorageServer::several(&node, listener, &identity).expect("served");
     (node, server)
@@ -364,10 +374,13 @@ fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
 
 mod bootstrap;
 mod due;
+mod following;
 mod handed;
 mod interrupted;
 mod membership;
 mod refused;
+mod rolling;
+mod stopped;
 mod synced;
 mod uncopied;
 mod waited;

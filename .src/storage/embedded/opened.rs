@@ -100,6 +100,7 @@ impl<R: Engine + 'static, A: Engine> Embedded<R, A> {
             versions,
             watch,
             kept,
+            standbys: AtomicU64::new(0),
         })
     }
 }

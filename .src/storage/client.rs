@@ -47,7 +47,10 @@
 //! is not asked at all, nor a primary of an epoch before the latest one this
 //! node met. So a node asks the primary, and whichever is promoted once
 //! every one listed answers again. What it last came to with each is
-//! [`StorageClient::reached`], which every surface shows.
+//! [`StorageClient::reached`], which every surface shows; and whether each
+//! follows the primary now is [`StorageClient::following`], from the
+//! primary's one list, told through the waits it asks (`standbys`; open
+//! problem 95), never from what a standby said when last asked.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,6 +69,7 @@ mod expected;
 mod held;
 mod node;
 mod operations;
+mod standbys;
 mod statement;
 mod waiting;
 
@@ -135,6 +139,8 @@ pub struct StorageClient {
     epoch: Arc<AtomicU64>,
     /// The Storage node every operation goes to, for one statement.
     pinned: Option<usize>,
+    /// Who follows the primary, as it last said, shared by every clone.
+    standbys: Arc<standbys::Standbys>,
 }
 
 impl StorageClient {
@@ -191,6 +197,7 @@ impl StorageClient {
             clock,
             epoch: Arc::new(AtomicU64::new(0)),
             pinned: None,
+            standbys: Arc::default(),
         })
     }
 
@@ -205,6 +212,15 @@ impl StorageClient {
                 (node.address.clone(), last.clone())
             })
             .collect()
+    }
+
+    /// Whether each Storage node listed follows the primary now, in the
+    /// order listed, as the primary's list said it last (`standbys`; open
+    /// problem 95): none until a primary said, or where the one that said
+    /// did not answer its last ask.
+    #[must_use]
+    pub fn following(&self) -> Option<Vec<bool>> {
+        self.standbys.following(&self.nodes)
     }
 
     /// The Storage nodes in the order a request asks them: from the next

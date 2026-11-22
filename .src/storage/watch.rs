@@ -111,6 +111,11 @@ pub enum Watched {
     /// its latest write, which only a node's membership row written moves
     /// (`super::membership`): what a node following the members waits on.
     Membership,
+    /// Who follows a primary of several now, by how many times that
+    /// changed in its epoch, the epoch above (`super::standby::followers`):
+    /// a count no write moves, told as a standby begins or ends following,
+    /// which a Storage client adds to every wait it asks (open problem 95).
+    Standbys,
 }
 
 /// Where what a wait watches stands: its count, as [`Watched`] says what is

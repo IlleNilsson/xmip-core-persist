@@ -132,7 +132,7 @@ pub(crate) fn answer(storage: &dyn XmipStorage, request: Request, waiters: &Wait
             .read_kept_audit_chunk(id, stream, index)
             .map(Answer::Bytes),
         // The server's own to answer, never an operation's (`serve`).
-        Request::Standing | Request::Follow(_) => Err(PersistError::Failed {
+        Request::Standing | Request::Follow(_) | Request::Standbys => Err(PersistError::Failed {
             reason: "a Storage node's standing is its server's to answer".to_string(),
         }),
         // Answered in two frames, its server's to send ([`ahead`]).

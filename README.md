@@ -433,7 +433,15 @@ and 9).
   node is (wire operation 29): a standby is passed over, and so is a primary
   of an epoch before the latest the client met; a standby asked anyway says
   it is one, and the next is asked. `StorageClient::reached` says what it
-  last came to with each — what a node publishes at `<node>/storage`. A
+  last came to with each — what a node publishes at `<node>/storage` — and
+  `StorageClient::following` whether each follows the primary now, from
+  the primary's one list: every wait the client asks names, beside what its
+  caller waits on, where the primary's count of who follows it stands
+  (`Watched::Standbys`), and where that moved it reads the list once (wire
+  operation 47), matched by the place each standby said asking to follow,
+  never by a name, so a standby stopped is shown so as soon as its primary
+  knows, never as what it said when last asked (open problem 95; ADR-0056,
+  amendment 2026-11-22). A
   node that is itself the Storage node calls its `Embedded` in process
   instead: both are `XmipStorage`, so nothing above knows which it has.
 - **`standby`** — embedded Storage nodes as a primary and its standbys
@@ -444,10 +452,12 @@ and 9).
   node's membership row says), follows a primary that
   answers, and is promoted only where every one listed answered and none
   of them is a primary — the one holding most of the latest epoch, the
-  first listed of equals. A primary that is gone is waited for, never
-  replaced: automatic failover returns with a witness (the owner,
-  2026-11-08). Each epoch is written, durable, before a role is
-  taken in it, and a promotion whose epoch cannot be written fails.
+  first listed of equals — and, the epoch it is promoted in kept first,
+  every one listed asked again holds an earlier one, so at most one is
+  promoted in an epoch (amendment 2026-11-22). A primary that is gone is
+  waited for, never replaced: automatic failover returns with a witness
+  (the owner, 2026-11-08). Each epoch is written, durable, before a role
+  is taken in it, and a promotion whose epoch cannot be written fails.
   `Copied` numbers every write an engine takes, in
   the order taken, into `Copies`, the writes kept for a standby behind; a
   standby asks to follow (wire operation 30) and is handed them in order
@@ -468,15 +478,29 @@ and 9).
   node's own Xmip Storage, its databases while primary and the primary over
   the wire while not. A stop serves nothing more, waits for every operation
   under way, and hands on everything written before the standbys'
-  connections end. A primary knows each standby by the node its
+  connections end, at once (open problem 94): it wakes the shipping that
+  waits out a beat, and cuts a whole copy it hands on short before its next
+  page, the standby copying still and never promoted. A standby's stop
+  shuts the socket it follows on, so a read of its primary's next frame ends
+  there on Linux and macOS, and within the server's watch of 50 ms on
+  Windows (open problem 100), which wakes such a read only as its peer
+  closes (the read is the estate's watched connection, `net::watched`, its
+  silence counted on the node's Clock); and its whole copy's wipe of its
+  own databases looks at the stop between pages, each scan on from the last
+  key it removed; until
+  2026-11-22 a standby copied whole outlived its service manager's 90 s and
+  was killed. A primary knows each standby by the node its
   certificate names — read by the reading the traffic counts use, its
   address kept as evidence — and counts what it hands each: each write,
   each entry of a whole copy, and the bytes of both, added atomically as
   each frame is sent and kept across the standby's connections while the
   primary runs (`standby/followers.rs`). `StorageNode::followers` lists
-  each standby following now with its counts and how many writes it is
-  behind — what the primary's standing says, and what its node draws as
-  *copies to* (ADR-0052 and ADR-0056, amendments 2026-11-13). A standby
+  each standby following now with its counts, how many writes it is
+  behind and its place among those listed — what the primary's standing
+  says, what its node draws as *copies to* (ADR-0052 and ADR-0056,
+  amendments 2026-11-13), and what every node shows of each standby, each
+  change of who follows told to every wait on the primary (amendment
+  2026-11-22). A standby
   syncs what it copied on each beat, and once ten milliseconds have passed
   since its last sync on the node's Clock: `StorageNode::with_clock` takes
   it, and its client and its primary, once promoted, tell time by it too;
@@ -555,7 +579,9 @@ the primary's return can still lose and duplicate the following.
   sender whose Message is lost so is not asked again: the Message is gone.
 - **No second primary.** A primary cut off from its standbys serves on
   alone, and they wait; none is promoted beside it, so no two epochs take
-  writes at once.
+  writes at once. Nor do two in one epoch: a Storage node to be promoted
+  keeps the epoch before it asks every one listed again, and is promoted
+  only where none other holds it (ADR-0056, amendment 2026-11-22).
 - **Sends are duplicated.** A Message sent and not handed on in a killed
   primary's last writes is, on the standby promoted, still queued or
   claimed; once its claim lapses there it is claimed and sent again, so the

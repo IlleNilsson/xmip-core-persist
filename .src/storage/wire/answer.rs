@@ -20,7 +20,7 @@ use super::super::record::{
     AdministrationRecord, Claim, JourneyRecord, MessageRecord, StreamChunk,
 };
 use super::super::secret::{SecretEntry, SecretRecord};
-use super::super::standby::Standing;
+use super::super::standby::{Follower, Standing};
 use super::super::stream::StreamRecord;
 use super::super::watch::Moved;
 
@@ -85,6 +85,8 @@ pub(crate) enum Answer {
     /// A start not registered: a later start of its node, numbered so, is
     /// its member (`super::super::membership`), in words.
     Superseded(u64, String),
+    /// Who follows the Storage node now (`super::super::standby::followers`).
+    Standbys(Vec<Follower>),
 }
 
 impl Answer {
@@ -140,6 +142,10 @@ impl Answer {
                 out.byte(32);
                 out.u64_be(*latest);
                 field::text(out, reason);
+            }
+            Self::Standbys(followers) => {
+                out.byte(33);
+                followers.write(out);
             }
             _ => {}
         }
@@ -304,6 +310,7 @@ impl Form for Answer {
             30 => Self::Acts(Vec::read(cursor)?),
             31 => Self::Members(Vec::read(cursor)?),
             32 => Self::Superseded(cursor.u64_be()?, field::read_text(cursor)?),
+            33 => Self::Standbys(Vec::read(cursor)?),
             other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
         })
     }

@@ -20,6 +20,8 @@ impl Form for Watched {
             Self::Act(id) => (5, id),
             // The table is one: it is named by its kind alone.
             Self::Membership => (6, &0),
+            // A primary's standbys are one list, named by its kind alone.
+            Self::Standbys => (7, &0),
         };
         out.byte(kind);
         out.u128_be(*id);
@@ -36,6 +38,7 @@ impl Form for Watched {
             4 => Self::Acts(id),
             5 => Self::Act(id),
             6 => Self::Membership,
+            7 => Self::Standbys,
             other => return Err(CodecError::new(format!("nothing watched is kind {other}"))),
         })
     }
