@@ -5,7 +5,7 @@
 //! Message and the Stream found by what Xmip Storage keeps of each in
 //! columns (`super::facts`), never by reading a body. Until 2026-11-12 a
 //! node woken by another's Publication asked them one by one, four round
-//! trips after its claim, 0.9 ms in the Essentials.
+//! trips after its claim, 0.9 ms in the System Tests.
 
 use codec::cursor::Cursor;
 use codec::form::Form;
