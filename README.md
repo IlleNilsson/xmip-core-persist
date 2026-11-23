@@ -432,7 +432,13 @@ and 9).
   on (the owner, 2026-10-03). A new connection first asks what its Storage
   node is (wire operation 29): a standby is passed over, and so is a primary
   of an epoch before the latest the client met; a standby asked anyway says
-  it is one, and the next is asked. `StorageClient::reached` says what it
+  it is one, and the next is asked. A standby's connection is kept and asked
+  what its node is again before it is used (`client/node.rs`,
+  `Node::held`), and a client told who follows the primary keeps a live one
+  to each, opened on its wait (`client/waiting.rs`), so the standby that
+  succeeds a primary stopped in order is asked at once, with no new
+  handshake, held to its epoch (ADR-0056, amendment 2026-11-23).
+  `StorageClient::reached` says what it
   last came to with each — what a node publishes at `<node>/storage` — and
   `StorageClient::following` whether each follows the primary now, from
   the primary's one list: every wait the client asks names, beside what its
@@ -454,9 +460,23 @@ and 9).
   of them is a primary — the one holding most of the latest epoch, the
   first listed of equals — and, the epoch it is promoted in kept first,
   every one listed asked again holds an earlier one, so at most one is
-  promoted in an epoch (amendment 2026-11-22). A primary that is gone is
-  waited for, never replaced: automatic failover returns with a witness
-  (the owner, 2026-11-08). Each epoch is written, durable, before a role
+  promoted in an epoch (amendment 2026-11-22). A primary that vanishes —
+  killed, its machine lost, cut off — is waited for, never replaced:
+  automatic failover returns with a witness (the owner, 2026-11-08). A
+  primary stopped in order hands over (`standby/succession.rs`; the owner,
+  2026-11-23; amendment 2026-11-23): every write synced and handed on, each
+  of its connections says it stopped (`Shipped::Stopped`), naming its
+  successor, the first standby handed every write; that standby, ready,
+  holding every write and of its epoch, keeps the next epoch, durable,
+  answers so (`Succeeding::Kept`), and is promoted where every other one
+  listed answers, none is a primary and none other holds that epoch, the
+  primary that handed over not asked — its stop waited for that answer, so
+  started again it never takes itself for the one to promote; a standby
+  told another succeeds rests a beat and follows it. The former primary
+  keeps its positions again, so it follows its successor on from where it
+  stopped, never copied whole. A standby is following
+  (`StorageNode::is_following`) only once its primary has handed it a frame
+  on its connection. Each epoch is written, durable, before a role
   is taken in it, and a promotion whose epoch cannot be written fails.
   `Copied` numbers every write an engine takes, in
   the order taken, into `Copies`, the writes kept for a standby behind; a
@@ -479,8 +499,13 @@ and 9).
   the wire while not. A stop serves nothing more, waits for every operation
   under way, and hands on everything written before the standbys'
   connections end, at once (open problem 94): it wakes the shipping that
-  waits out a beat, and cuts a whole copy it hands on short before its next
-  page, the standby copying still and never promoted. A standby's stop
+  waits out a beat — which reads what it waits on before whether its node
+  stops, so a stop between the two is never waited out a beat, as it was
+  until 2026-11-23 — and cuts a whole copy it hands on short before its next
+  page, the standby copying still and never promoted. Each turn of the
+  shipping hands its writes on in one write, a frame each
+  (`wire::appended`), where each was written and flushed alone, some 60 µs a
+  write on Windows. A standby's stop
   shuts the socket it follows on, so a read of its primary's next frame ends
   there on Linux and macOS, and within the server's watch of 50 ms on
   Windows (open problem 100), which wakes such a read only as its peer
@@ -555,22 +580,29 @@ killed process takes with it was never acknowledged, nor seen by a far end. A St
 node killed between a Publication's answer and its sync leaves exactly
 what was synced before (the runtime's `tests/ledger/unsynced.rs`).
 
-Between a primary and its standbys it is otherwise. **Failover waits for
-the primary to return.** There is no witness and no quorum, so a standby
-is promoted only where every Storage node listed answers and none of them
-is a primary (the owner, 2026-11-08; ADR-0056, amendment 2026-11-08): a
-primary that is gone — stopped, killed or cut off — is not replaced, and
-until it is back the nodes that cannot reach it store nothing, each
-publishing Done at `<node>/storage`. Automatic failover
-returns with a witness (open problem 45). Since the copy is asynchronous,
-the primary's return can still lose and duplicate the following.
+Between a primary and its standbys it is otherwise. **A primary stopped in
+order hands over at once** to a standby holding every write it took, which
+keeps the next epoch and is promoted, so it loses nothing and stops no work
+(the owner, 2026-11-23; ADR-0056, amendment 2026-11-23). **Failover waits
+for a primary that vanishes to return.** There is no witness and no quorum,
+so otherwise a standby is promoted only where every Storage node listed
+answers and none of them is a primary (the owner, 2026-11-08; ADR-0056,
+amendment 2026-11-08): a primary that is gone without handing over —
+killed, its machine lost, cut off — is not replaced, nor is one stopped in
+order while no standby was ready to succeed it, and until it is back the
+nodes that cannot reach it store nothing, each publishing Done at
+`<node>/storage`. Automatic failover returns with a witness (open problem
+45). Since the copy is asynchronous, a killed primary's return can still
+lose and duplicate the following.
 
 - **What a killed primary synced and had not handed on is lost.** The
   primary answers a write once it is synced on its own disk; a standby is
   handed it after that, at once while writes come and within a beat
   (`storage_beat`) while none do, and syncs what it took every ten
   milliseconds while copies come and at each beat. A primary stopped in
-  order hands on everything first. One killed gave up its positions when
+  order hands on everything first, and keeps its positions again, so it
+  holds every write it took, its standbys' too, and none is promoted over
+  it holding fewer. One killed gave up its positions when
   it was promoted, so once it is back and every one listed answers, a
   standby holding more is promoted and the former primary follows it,
   copied whole: every write synced on it and not yet synced on that
@@ -614,7 +646,7 @@ the primary's return can still lose and duplicate the following.
   started empty, or a former primary, which gave up its positions — is
   *copying* from when it stands by a primary, written before it keeps that
   primary's epoch: of that epoch and holding none of its Ledger, it is
-  never taken for one holding it. A primary stopped before the copy began
+  never taken for one holding it. A primary killed before the copy began
   is promoted again once both are back, even listed after the standby, and
   the standby is copied whole from it — never the standby promoted and the
   Ledger copied over from it (`standby/tests/uncopied.rs`).

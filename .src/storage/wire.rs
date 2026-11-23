@@ -357,6 +357,19 @@ pub(crate) fn sent(connection: &mut impl Write, record: &impl Form) -> io::Resul
     Ok(bytes.len())
 }
 
+/// `record` appended to `out` as one frame, so several go out in one write
+/// (`net::frame::append`), and how many bytes the record took, as [`sent`]
+/// says.
+///
+/// # Errors
+///
+/// Where the record is larger than a frame holds.
+pub(crate) fn appended(out: &mut Vec<u8>, record: &impl Form) -> io::Result<usize> {
+    let bytes = record.bytes();
+    net::frame::append(out, &bytes).map_err(failed)?;
+    Ok(bytes.len())
+}
+
 /// Read one frame, and the record in it. `None` where the connection ended
 /// cleanly before a frame began.
 ///

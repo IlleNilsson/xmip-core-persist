@@ -14,11 +14,16 @@
 //! them by the process it answers as, never by a name. A primary that
 //! answers is followed. **One is promoted only where every one listed
 //! answered and none of them is a primary**: the one holding most of the
-//! latest epoch, the first listed of equals. A primary that is gone is not
-//! replaced; the others wait for it to come back, since with no witness a
-//! primary cut off from them would serve on beside the one promoted, and
-//! automatic failover returns with a witness (the owner, 2026-11-08;
-//! ADR-0056, amendment 2026-11-08). Each promotion raises the epoch, and a
+//! latest epoch, the first listed of equals. A primary that vanishes —
+//! killed, its machine lost, cut off — is not replaced; the others wait for
+//! it to come back, since with no witness a primary cut off from them would
+//! serve on beside the one promoted, and automatic failover returns with a
+//! witness (the owner, 2026-11-08; ADR-0056, amendment 2026-11-08). **A
+//! primary stopped in order hands over** ([`succession`]; the owner,
+//! 2026-11-23; ADR-0056, amendment 2026-11-23): every write handed on, it
+//! names a standby holding every one its successor, which keeps the next
+//! epoch, says so, and is promoted at once, its stopped primary's hand-over
+//! its answer. Each promotion raises the epoch, and a
 //! primary that finds one of a later epoch steps down; a node keeps the
 //! latest epoch it met, and a primary of an earlier one is not asked
 //! (`client`).
@@ -37,9 +42,10 @@
 //! **Asynchronous, so a standby can lack the last writes.** The primary
 //! answers before its standbys have a write, and hands one on only once it
 //! is synced ([`copies`]); a primary stopped in order hands on everything it
-//! wrote first, and one killed loses what it had not handed on: it gave up
-//! its positions when it was promoted, so once it is back and every one
-//! listed answers, a standby holding more is promoted, and the former
+//! wrote first and keeps its positions again, so it follows its successor on
+//! from where it stopped; one killed loses what it had not handed on: it
+//! gave up its positions when it was promoted, so once it is back and every
+//! one listed answers, a standby holding more is promoted, and the former
 //! primary follows it, copied whole. **A standby copied whole is copying,
 //! then catching up, then ready** ([`bootstrap`]; ADR-0056, amendment
 //! 2026-11-12): its primary's pages reflect the writes taken while it
@@ -64,13 +70,14 @@ mod position;
 mod served;
 mod ship;
 mod shipped;
+mod succession;
 mod timings;
 
 pub use bootstrap::Bootstrap;
 pub use copies::{Behind, Copied, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
 pub use followers::Follower;
-pub use shipped::{Follow, Shipped, Standing};
+pub use shipped::{Follow, Shipped, Standing, Succeeding};
 pub use timings::{BEAT, KEPT, SILENCE, Timings};
 
 pub(crate) use position::POSITION;
@@ -152,6 +159,12 @@ pub struct StorageNode {
     /// Set once a stop has waited for every operation lent: what its
     /// standbys are handed is then all it wrote.
     drained: AtomicBool,
+    /// How many connections it hands writes on, or refuses to: what a stop
+    /// in order waits for, each hand-over said ([`succession`]).
+    shipping: AtomicUsize,
+    /// The place of the standby it named its successor as it stopped in
+    /// order, once named: one, whichever was handed every write first.
+    successor: Mutex<Option<u32>>,
 }
 
 impl StorageNode {
@@ -240,6 +253,8 @@ impl StorageNode {
             last: Mutex::new(None),
             lent: AtomicUsize::new(0),
             drained: AtomicBool::new(false),
+            shipping: AtomicUsize::new(0),
+            successor: Mutex::new(None),
         }))
     }
 
@@ -258,36 +273,16 @@ impl StorageNode {
             .spawn(move || node.find())
             .map_err(|error| PersistError::engine("xmip-storage", error))?;
         *self.finding.locked() = Some(thread);
-        let deadline = Instant::now() + within;
-        let mut settling = self.settling.locked();
-        while self.is_finding() {
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            settling = self
-                .settled
-                .wait_timeout(settling, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
+        self.settle_while(within, || self.is_finding());
         Ok(())
     }
 
-    /// Stop: serve no operation more, wait for each one under way, then let
-    /// every standby it hands writes to have what it wrote — a primary
-    /// stopped in order has handed on everything — and stop settling, a
-    /// standby's read of its primary's next frame ended at once.
-    pub fn stop(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
-        self.followed.shut();
-        // No wait holds a loan: each one on its queues is ended now, so the
-        // node waiting asks the next Storage node at once.
-        if let Some(primary) = self.primary() {
-            primary.refuse_waits("this Storage node is stopping");
-        }
-        let deadline = Instant::now() + self.timings.timeout;
+    /// Wait while `holds`, `most` at the longest: whatever it waits on tells
+    /// `settled` as it changes.
+    fn settle_while(&self, most: Duration, holds: impl Fn() -> bool) {
+        let deadline = Instant::now() + most;
         let mut settling = self.settling.locked();
-        while self.lent.load(Ordering::SeqCst) > 0 {
+        while holds() {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
@@ -296,14 +291,6 @@ impl StorageNode {
                 .wait_timeout(settling, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
-        }
-        self.drained.store(true, Ordering::SeqCst);
-        self.settled.notify_all();
-        drop(settling);
-        // Each standby's shipping hands on the last writes now, not a beat on.
-        self.copies.wake();
-        if let Some(thread) = self.finding.locked().take() {
-            let _ = thread.join();
         }
     }
 

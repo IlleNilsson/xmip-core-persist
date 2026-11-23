@@ -14,7 +14,9 @@
 //! millisecond beyond the six wakes that stop makes, held by its wall clock
 //! alone (`woke_beside_a_plain_wake`): its standby, in the same process,
 //! answers the primary's going with handshakes of its own. Until that day
-//! its stop lasted as long as the copy.
+//! its stop lasted as long as the copy. The copy is held between its pages
+//! until the stop, so the stop always cuts it short, and the standby copied
+//! is never handed over to (`succession`, ADR-0056, amendment 2026-11-23).
 
 use std::net::TcpListener;
 use std::sync::{Arc, mpsc};
@@ -24,16 +26,13 @@ use xcore::JourneyId;
 #[cfg(unix)]
 use xcore::latency::Rounds;
 use xcore::latency::{PlainWake, spread, woke_beside_a_plain_wake};
-use xmip_core_persist::Engine;
 use xmip_core_persist::fixture::{Hooked, Hooks, Memory};
 #[cfg(unix)]
 use xmip_core_persist::storage::standby::Bootstrap;
-use xmip_core_persist::storage::standby::Timings;
-use xmip_core_persist::storage::{
-    JourneyFacts, JourneyRecord, StorageNode, StorageServer, UNWAITED, WRITER_KEPT,
-};
+use xmip_core_persist::storage::{JourneyFacts, JourneyRecord};
 
 use super::authority::Authority;
+use super::nodes::{Own, Served, listeners, timings};
 
 /// How many stops of each are timed.
 const STOPS: usize = 25;
@@ -44,8 +43,8 @@ const STOPS: usize = 25;
 const WOKEN: u32 = 2;
 
 /// The threads a primary's stop with its server's wakes: its settling
-/// thread, from its rest, its server's accepting thread, knocked, and the
-/// thread handing on the copy, let go; and the stopping thread from each
+/// thread, from its rest, and its server's accepting thread, knocked; and
+/// the stopping thread from the end of the copy it waits for, and from each
 /// join.
 const PRIMARY_WOKEN: u32 = 6;
 
@@ -56,46 +55,10 @@ const LONG: Duration = Duration::from_secs(10);
 /// How long a test waits for what it waits on.
 const WITHIN: Duration = Duration::from_secs(10);
 
-/// One Storage node's own: its engines and its key store.
-struct Own {
-    engines: [Arc<dyn Engine>; 3],
-    keys: Arc<dyn secret::KeyStore>,
-}
-
-impl Own {
-    fn new() -> Self {
-        Self {
-            engines: [0, 1, 2].map(|_| Arc::new(Memory::default()) as Arc<dyn Engine>),
-            keys: Arc::new(secret::Held::new(secret::fixture::Memory::default())),
-        }
-    }
-}
-
 /// The Storage node of `listed` at `listener` over `own`, served, its beat
 /// and silence [`LONG`].
-fn served(
-    own: &Own,
-    (listener, listed): (TcpListener, &[String]),
-    authority: &Authority,
-) -> Served {
-    let identity = authority.issue(authority);
-    let timings = Timings {
-        beat: LONG,
-        silence: LONG,
-        timeout: Duration::from_secs(2),
-        pass_over: Duration::from_millis(200),
-        kept: 1 << 20,
-        unwaited: UNWAITED,
-        writer_kept: WRITER_KEPT,
-    };
-    let keys = (
-        Arc::clone(&own.keys),
-        secret::KekName::new("storage").expect("a name"),
-    );
-    let node = StorageNode::new(own.engines.clone(), keys, listed, &identity, timings)
-        .expect("a Storage node");
-    let server = StorageServer::several(&node, listener, &identity).expect("served");
-    (node, server)
+fn served(own: &Own, at: (TcpListener, &[String]), authority: &Authority) -> Served {
+    super::nodes::served(own, at, authority, timings(LONG, LONG))
 }
 
 /// Until `holds`, or [`WITHIN`] passed.
@@ -111,20 +74,11 @@ fn until(holds: impl Fn() -> bool) -> bool {
     holds()
 }
 
-/// A Storage node and its server.
-type Served = (Arc<StorageNode>, StorageServer);
-
 /// A primary over `first`, settled with a standby that is then stopped,
 /// holding more than a page of a whole copy's journeys; and the addresses
 /// listed, the second free for each standby a round starts.
 fn primary(first: &Own, authority: &Authority) -> (Served, Vec<String>) {
-    let listeners: Vec<TcpListener> = (0..2)
-        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bound"))
-        .collect();
-    let listed: Vec<String> = listeners
-        .iter()
-        .map(|listener| listener.local_addr().expect("an address").to_string())
-        .collect();
+    let (listeners, listed) = listeners(2);
     let mut bound = listeners.into_iter();
     let one = served(first, (bound.next().expect("one"), &listed), authority);
     let two = served(
@@ -228,15 +182,18 @@ fn a_primary_handing_on_a_whole_copy_stops_within_a_millisecond_beyond_its_wakes
         first.engines[0] = Arc::new(Hooked::new(Memory::default(), &paged));
         let ((one, one_server), listed) = primary(&first, &authority);
         let (paging, paused) = mpsc::channel();
-        let (go_on, gone_on) = mpsc::channel::<()>();
+        // Held until the primary stops: it is the primary no more as its
+        // stop begins, and the copy's next page is never read.
+        let stopping = Arc::clone(&one);
         paged.between_pages(move || {
             let _ = paging.send(());
-            let _ = gone_on.recv();
+            while stopping.standing().primary {
+                std::hint::spin_loop();
+            }
         });
         let (late, late_server) = standby(&listed, &authority);
         paused.recv_timeout(WITHIN).expect("between two pages");
         let began = Instant::now();
-        drop(go_on);
         one.stop();
         one_server.stop();
         took.push(began.elapsed());

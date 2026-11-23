@@ -2,18 +2,20 @@
 //! where the standby is, or the whole of each database first where it
 //! cannot take them on from there, then each write as it is kept, and a
 //! beat while there is none. A primary stopped in order hands on what it
-//! wrote before the connection ends. What it hands is counted against the
+//! wrote, then says it stopped and who succeeds it, before the connection
+//! ends (`super::succession`). What it hands is counted against the
 //! standby as each frame is sent (`super::followers`), and each standby that
 //! begins or ends following is told to every wait on the primary
 //! (`Watched::Standbys`).
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::super::wire;
 use super::copies::DATABASES;
 use super::follow::LAST;
 use super::followers::Handed;
+use super::succession::Shipping;
 use super::{Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
 use crate::{Engine, PersistError};
@@ -32,10 +34,11 @@ impl StorageNode {
     /// declines it is said to it.
     pub(crate) fn ship(
         &self,
-        connection: &mut impl Write,
+        connection: &mut (impl Read + Write),
         asked: &Follow,
         (standby, server): ((Option<&str>, &str), &AtomicBool),
     ) {
+        let _shipping = Shipping::of(self);
         let handed = self.followers.began(standby, (asked.next, asked.place));
         self.standbys_moved();
         let shipped = self.shipping(connection, asked, (&handed, server));
@@ -57,7 +60,7 @@ impl StorageNode {
 
     fn shipping(
         &self,
-        connection: &mut impl Write,
+        connection: &mut (impl Read + Write),
         asked: &Follow,
         (handed, server): (&Handed, &AtomicBool),
     ) -> Result<(), String> {
@@ -79,30 +82,25 @@ impl StorageNode {
             self.whole(connection, (epoch, handed, server))?
         };
         loop {
-            // Its last writes are handed on once no operation is under way.
-            let stopping = self.drained.load(Ordering::SeqCst) || server.load(Ordering::SeqCst);
+            // What it waits on read first, then whether it stops: a stop
+            // drains, then wakes it, so either it sees the stop or the wake
+            // comes after `seen` and its wait returns at once. Read the other
+            // way round, a stop between the two was waited out a whole beat.
+            let seen = self.copies.count();
+            // Its last writes are handed on once no operation is under way,
+            // every one synced (`super::succession`).
+            let drained = self.drained.load(Ordering::SeqCst);
+            let stopping = drained || server.load(Ordering::SeqCst);
             if !self.is_primary() {
                 return Err(format!("{} stepped down", self.said()));
             }
-            let seen = self.copies.count();
-            let mut moved = false;
-            for (database, next) in next.iter_mut().enumerate() {
-                let copies = self.copies.since(database, *next, TURN).map_err(|_| {
-                    "the standby fell further behind than this Storage node keeps".to_string()
-                })?;
-                for (number, changes) in copies {
-                    let database = u8::try_from(database).unwrap_or_default();
-                    let bytes = send(
-                        connection,
-                        &Shipped::Copy(database, number, changes.to_vec()),
-                    )?;
-                    handed.wrote(bytes);
-                    *next = number + 1;
-                    moved = true;
-                }
-            }
-            handed.reached(next);
+            let moved = self.turn(connection, &mut next, handed)?;
             if stopping && !moved {
+                // The node stopped in order, not its server alone: it says
+                // so, and who succeeds it.
+                if drained {
+                    self.hand_over(connection, (asked, next), epoch)?;
+                }
                 return Ok(());
             }
             if !moved {
@@ -112,6 +110,47 @@ impl StorageNode {
                 }
             }
         }
+    }
+
+    /// One turn: each write synced since `next`, up to [`TURN`] bytes of each
+    /// database, handed on in one write — a frame each, never a write and a
+    /// flush each, which cost a standby catching up some 60 µs a write on
+    /// Windows, so a primary stopping in order handed on 180 writes behind
+    /// for 11 ms before it could say who succeeds it (2026-11-23). Counted
+    /// against the standby once written. Whether it handed on any.
+    ///
+    /// # Errors
+    ///
+    /// Where the standby is further behind than this node keeps, or went.
+    fn turn(
+        &self,
+        connection: &mut impl Write,
+        next: &mut [u64; DATABASES],
+        handed: &Handed,
+    ) -> Result<bool, String> {
+        let (mut frames, mut sizes) = (Vec::new(), Vec::new());
+        for (database, next) in next.iter_mut().enumerate() {
+            let copies = self.copies.since(database, *next, TURN).map_err(|_| {
+                "the standby fell further behind than this Storage node keeps".to_string()
+            })?;
+            let at = u8::try_from(database).unwrap_or_default();
+            for (number, changes) in copies {
+                let copy = Shipped::Copy(at, number, changes.to_vec());
+                sizes.push(wire::appended(&mut frames, &copy).map_err(|e| e.to_string())?);
+                *next = number + 1;
+            }
+        }
+        if !frames.is_empty() {
+            connection
+                .write_all(&frames)
+                .and_then(|()| connection.flush())
+                .map_err(|e| format!("the standby went: {e}"))?;
+        }
+        for bytes in &sizes {
+            handed.wrote(*bytes);
+        }
+        handed.reached(*next);
+        Ok(!sizes.is_empty())
     }
 
     /// The whole of each database handed on, with its data key: where the
@@ -191,6 +230,6 @@ impl StorageNode {
 
 /// `frame` handed to the standby on `connection`, and how many bytes it
 /// took.
-fn send(connection: &mut impl Write, frame: &Shipped) -> Result<usize, String> {
+pub(super) fn send(connection: &mut impl Write, frame: &Shipped) -> Result<usize, String> {
     wire::sent(connection, frame).map_err(|e| format!("the standby went: {e}"))
 }

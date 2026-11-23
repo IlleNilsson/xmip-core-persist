@@ -1,9 +1,10 @@
 //! A standby waiting for its first whole copy (ADR-0056, amendment
 //! 2026-11-15): it stands by its primary copying, kept durable before that
-//! primary's epoch. With the primary stopped before the copy began and both
+//! primary's epoch. With the primary killed before the copy began and both
 //! started again — equal in epoch and in what each says it holds, since a
-//! former primary gave up its positions — the primary is promoted and the
-//! standby copied whole, never the standby promoted and the Ledger wiped.
+//! former primary gave up its positions, and one killed keeps none again —
+//! the primary is promoted and the standby copied whole, never the standby
+//! promoted and the Ledger wiped.
 
 use super::*;
 
@@ -28,15 +29,14 @@ fn a_standby_waiting_for_its_first_whole_copy_is_never_promoted_over_the_ledger(
             .expect("written");
     }
 
-    // The first listed stands by it, and the primary stops before the
+    // The first listed stands by it, and the primary is killed before the
     // whole copy reaches it.
     let epoch = ledger.standing().epoch;
     empty.stand_by(&listed[1], epoch).expect("standing by");
     assert_eq!(empty.bootstrap(), Bootstrap::Copying, "{}", empty.said());
-    for (node, server) in [(ledger, ledger_server), (empty, empty_server)] {
-        node.stop();
-        server.stop();
-    }
+    killed((ledger, ledger_server));
+    empty.stop();
+    empty_server.stop();
 
     // Both started again: the first listed still copying, in the primary's
     // epoch, and saying it holds what the former primary says it holds.

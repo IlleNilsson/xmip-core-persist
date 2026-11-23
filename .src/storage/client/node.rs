@@ -47,6 +47,24 @@ impl Node {
         })
     }
 
+    /// `connection` to it, where `stands`, what it said it is, lets it be
+    /// asked; kept, where it said it is a standby, for once it is promoted
+    /// (ADR-0056, amendment 2026-11-23).
+    pub(super) fn held(
+        &self,
+        connection: Connection,
+        stands: Result<(), Asked>,
+    ) -> Result<Connection, Asked> {
+        match stands {
+            Ok(()) => Ok(connection),
+            Err(Asked::Standby(said)) => {
+                self.idle.locked().push(connection);
+                Err(Asked::Standby(said))
+            }
+            Err(failed) => Err(failed),
+        }
+    }
+
     /// Whether it is passed over at `now`, the client's monotonic reading.
     pub(super) fn passed_over(&self, now: i128) -> bool {
         let until = *self.passed_over.locked();

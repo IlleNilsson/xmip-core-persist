@@ -3,7 +3,8 @@
 //! promoted only where every one listed answered, none is a primary, and
 //! it is the one to be — and, the epoch it is promoted in kept, asked again,
 //! none holds that epoch or a later one. A primary that does not answer is
-//! waited for.
+//! waited for; one that stopped in order handed over to its successor
+//! (`super::succession`).
 
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ use xcore::lock::Locked;
 
 use super::super::embedded::Embedded;
 use super::super::wire::{self, Answer, Request};
+use super::succession::Ended;
 use super::{Bootstrap, Copied, POSITION, Primary, Role, Standing, StorageNode};
 use crate::{EncryptedStore, PersistError};
 
@@ -43,9 +45,16 @@ impl StorageNode {
                     self.rest(self.timings.beat);
                     continue;
                 }
-                self.follow(&address);
-                if !self.stopping() {
-                    self.stand(Role::Finding);
+                let place = primary.place;
+                let ended = self.follow(&address);
+                if self.stopping() {
+                    continue;
+                }
+                self.stand(Role::Finding);
+                match ended {
+                    Ended::Succeeding(epoch) => self.succeed(epoch, place),
+                    Ended::Deferring => self.rest(self.timings.beat),
+                    Ended::Lost => {}
                 }
                 continue;
             }
@@ -70,7 +79,7 @@ impl StorageNode {
         let next = latest.unwrap_or(0).max(epoch) + 1;
         let promoted = self
             .keep_epoch(next)
-            .and_then(|()| self.unrivalled(next))
+            .and_then(|()| self.unrivalled(next, None))
             .and_then(|()| self.promote(next));
         if let Err(problem) = promoted {
             self.told(&format!("could not be promoted: {problem}"));
@@ -86,17 +95,25 @@ impl StorageNode {
     /// was — and each keeps the epoch before it asks again, so the one asking
     /// second finds the other's kept: at most one is promoted in an epoch,
     /// with no witness, as every one listed answers (ADR-0056, amendment
-    /// 2026-11-22).
+    /// 2026-11-22). The one at `excused`, a primary that stopped in order and
+    /// handed over to it, is not asked: its hand-over is its answer, and its
+    /// stop waited for this epoch to be kept (`super::succession`).
     ///
     /// # Errors
     ///
     /// The Storage node in its way, or that one listed did not answer again.
-    fn unrivalled(&self, epoch: u64) -> Result<(), PersistError> {
-        let answered = self.standings();
+    pub(super) fn unrivalled(
+        &self,
+        epoch: u64,
+        excused: Option<usize>,
+    ) -> Result<(), PersistError> {
+        let answered = self.standings_but(excused);
         let rival = answered.iter().find(|a| {
             a.standing.process != self.process && (a.standing.primary || a.standing.epoch >= epoch)
         });
-        let every = (0..self.listed.len()).all(|place| answered.iter().any(|a| a.place == place));
+        let every = (0..self.listed.len())
+            .filter(|place| Some(*place) != excused)
+            .all(|place| answered.iter().any(|a| a.place == place));
         let reason = match rival {
             Some(rival) if rival.standing.primary => format!(
                 "{} is the primary, epoch {}",
@@ -227,12 +244,25 @@ impl StorageNode {
     /// answered as this node's own process, its own place, kept
     /// ([`StorageNode::place`]).
     pub(super) fn standings(&self) -> Vec<Answered> {
+        self.standings_but(None)
+    }
+
+    /// [`StorageNode::standings`], the one at `but` not asked; its own place
+    /// once known answered by its own standing, never over the wire, which
+    /// answers the same.
+    fn standings_but(&self, but: Option<usize>) -> Vec<Answered> {
+        let own = self.place();
         let answered: Vec<Answered> = self
             .listed
             .iter()
             .enumerate()
+            .filter(|(place, _)| Some(*place) != but)
             .filter_map(|(place, address)| {
-                let standing = self.ask_standing(address).ok()?;
+                let standing = if Some(place) == own {
+                    self.standing()
+                } else {
+                    self.ask_standing(address).ok()?
+                };
                 Some(Answered {
                     place,
                     address: address.clone(),

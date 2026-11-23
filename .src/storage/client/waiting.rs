@@ -39,6 +39,7 @@ impl StorageClient {
     /// stopped or renewed. Beside `seen`, each wait names where the
     /// primary's count of who follows it stands (`super::standbys`): where
     /// that moved, the list is read once of the Storage node that told it,
+    /// a connection kept to each standby it lists ([`StorageClient::reach`]),
     /// and where nothing else moved, the wait is asked again for what is
     /// left of `bound`.
     pub(super) fn waited(
@@ -58,11 +59,32 @@ impl StorageClient {
                 return Ok(moved);
             };
             if self.standbys.moved_to(at) {
-                self.standbys.heard(at, self.standbys_of(index));
+                let said = self.standbys_of(index);
+                for follower in said.iter().flat_map(|(_, followers)| followers) {
+                    if let Some(place) = follower.place.and_then(|p| usize::try_from(p).ok()) {
+                        self.reach(place);
+                    }
+                }
+                self.standbys.heard(at, said);
             }
             if !moved.is_empty() || left.is_zero() {
                 return Ok(moved);
             }
+        }
+    }
+
+    /// A live connection kept to the Storage node listed at `place`, its
+    /// primary says follows it: what it is asked on the connection kept,
+    /// opened afresh where that one went with a process since restarted —
+    /// here, on the wait, never on a Message's path — and kept though it says
+    /// it is a standby (`Node::held`). So where it succeeds its primary
+    /// stopped in order, the node asks it on it at once, with no new
+    /// handshake (ADR-0056, amendment 2026-11-23): some 1.8 ms on Linux and
+    /// 4 to 8 ms on Windows of every write's wait across that stop.
+    fn reach(&self, place: usize) {
+        if let Some(node) = self.nodes.get(place) {
+            let asked = self.ask_node(node, &Request::Standing);
+            node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
         }
     }
 

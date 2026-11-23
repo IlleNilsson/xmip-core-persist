@@ -2,7 +2,8 @@
 //! primary's writes from where it is, and takes them in order — first the
 //! whole of each database where it cannot take them on from there, then
 //! the writes taken meanwhile until it is caught up (`super::bootstrap`) —
-//! until the primary goes silent, declines or the node stops. What it took
+//! until the primary goes silent, declines, stops in order, saying who
+//! succeeds it (`super::succession`), or the node stops. What it took
 //! is synced on each beat, and once [`SYNC`] has passed on the node's clock
 //! since it last synced.
 //!
@@ -16,6 +17,7 @@
 //! stopped while it was copied whole was killed 90 s later.
 use std::net::{Shutdown, TcpStream};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use net::watched::Watched;
@@ -28,6 +30,7 @@ use super::super::wire::{self, Request};
 use super::bootstrap::{BOOTSTRAP, Bootstrap};
 use super::copies::DATABASES;
 use super::position::position;
+use super::succession::Ended;
 use super::{EPOCH, Follow, Shipped, StorageNode};
 use crate::encrypted_store::{DATA_KEY, OWN};
 use crate::{Change, PersistError, borrowed};
@@ -59,7 +62,7 @@ struct Whole {
 /// What a standby taking its primary's frames holds between them.
 pub(super) struct Taking {
     /// Each database written since its last sync.
-    dirty: [bool; DATABASES],
+    pub(super) dirty: [bool; DATABASES],
     /// When it last synced, on the node's monotonic reading.
     synced: i128,
     whole: Option<Whole>,
@@ -77,45 +80,61 @@ impl Taking {
 }
 
 /// The socket a standby follows its primary on, while it does: what its
-/// stop shuts, which ends a read blocked on it at once.
+/// stop shuts, which ends a read blocked on it at once; and whether its
+/// primary has handed it anything on it yet.
 #[derive(Default)]
-pub(super) struct Followed(Mutex<Option<TcpStream>>);
+pub(super) struct Followed {
+    socket: Mutex<Option<TcpStream>>,
+    /// Set by the first frame its primary hands it on the socket held, so
+    /// it is following only once its primary hands it writes: a stop of
+    /// that primary hands over to it (`super::succession`).
+    heard: AtomicBool,
+}
 
 impl Followed {
-    /// `socket` the one followed on from now, or none.
+    /// `socket` the one followed on from now, or none: nothing heard on it
+    /// yet.
     fn hold(&self, socket: Option<TcpStream>) {
-        *self.0.locked() = socket;
+        self.heard.store(false, Ordering::SeqCst);
+        *self.socket.locked() = socket;
     }
 
     /// The socket followed on shut, both ways, where there is one.
     pub(super) fn shut(&self) {
-        if let Some(socket) = self.0.locked().take() {
+        if let Some(socket) = self.socket.locked().take() {
             let _ = socket.shutdown(Shutdown::Both);
         }
+    }
+
+    /// Whether its primary has handed it a frame on the socket held.
+    pub(super) fn heard(&self) -> bool {
+        self.heard.load(Ordering::SeqCst)
     }
 }
 
 impl StorageNode {
-    /// Follow the primary at `address` until it is lost.
-    pub(super) fn follow(&self, address: &str) {
+    /// Follow the primary at `address` until it is lost or stops in order:
+    /// how it ended.
+    pub(super) fn follow(&self, address: &str) -> Ended {
         let followed = self.following(address);
         self.followed.hold(None);
-        if let Err(problem) = followed
-            && !self.stopping()
-        {
-            self.told(&format!("stopped following {address}: {problem}"));
-        }
         let _ = self.synced(&mut [true; DATABASES]);
+        followed.unwrap_or_else(|problem| {
+            if !self.stopping() {
+                self.told(&format!("stopped following {address}: {problem}"));
+            }
+            Ended::Lost
+        })
     }
 
     /// Its primary's frames taken until the primary falls silent for the
-    /// silence, on the node's clock, or the node stops: read through the
-    /// estate's watched connection (`net::watched`), which looks at the stop
-    /// each [`WATCH`] a read waits — Windows wakes a read blocked on a socket
-    /// shut from another thread only when its peer closes — and the socket
-    /// held for the stop to shut, which ends the read at once where the
-    /// platform wakes it, Linux and macOS.
-    fn following(&self, address: &str) -> Result<(), String> {
+    /// silence, on the node's clock, stops in order, or the node stops: read
+    /// through the estate's watched connection (`net::watched`), which looks
+    /// at the stop each [`WATCH`] a read waits — Windows wakes a read blocked
+    /// on a socket shut from another thread only when its peer closes — and
+    /// the socket held for the stop to shut, which ends the read at once
+    /// where the platform wakes it, Linux and macOS.
+    fn following(&self, address: &str) -> Result<Ended, String> {
         let mut connection = self.connect(address, self.timings.silence)?;
         // Held before the stop is looked at, so a stop that shuts nothing
         // yet is seen before the first read.
@@ -139,9 +158,13 @@ impl StorageNode {
             let frame = wire::receive::<Shipped>(&mut watched)
                 .map_err(|e| format!("heard nothing for {:?}: {e}", self.timings.silence))?
                 .ok_or("the primary ended the connection")?;
+            self.followed.heard.store(true, Ordering::SeqCst);
+            if let Shipped::Stopped(epoch, next, successor) = frame {
+                return Ok(self.succeeding(&mut watched, (epoch, next, successor), &mut taking));
+            }
             self.take(frame, &mut taking)?;
         }
-        Ok(())
+        Ok(Ended::Lost)
     }
 
     /// Where it asks to be followed from: where it is; or nowhere, so it is
@@ -222,6 +245,9 @@ impl StorageNode {
                 }
             }
             Shipped::Declined(reason) => return Err(format!("declined: {reason}")),
+            // Answered on the connection before it is taken: following ends
+            // there (`super::succession`).
+            Shipped::Stopped(..) => return Err("the primary stopped in order".to_string()),
         }
         let now = self.clock.monotonic_nanos();
         if between(taking.synced, now) >= SYNC {
@@ -234,7 +260,7 @@ impl StorageNode {
     /// Each database written since its last sync synced, its copies so far
     /// on disk (`Copies::sync`); then ready, where that caught it up
     /// (`StorageNode::caught_up`).
-    fn synced(&self, dirty: &mut [bool; DATABASES]) -> Result<(), PersistError> {
+    pub(super) fn synced(&self, dirty: &mut [bool; DATABASES]) -> Result<(), PersistError> {
         let databases = self.engines.iter().zip(dirty.iter_mut()).enumerate();
         for (at, (engine, dirty)) in databases {
             if *dirty {

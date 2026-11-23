@@ -45,7 +45,11 @@
 //! operation and says so, and is asked after every node that did not say
 //! it; a new connection first asks what its Storage node is, so a standby
 //! is not asked at all, nor a primary of an epoch before the latest one this
-//! node met. So a node asks the primary, and whichever is promoted once
+//! node met. A standby's connection is kept, and asked what its node is
+//! again before it is used, so the standby succeeding a primary stopped in
+//! order serves on it at once, held to its epoch, with no new handshake
+//! (ADR-0056, amendment 2026-11-23). So a node asks the primary, and
+//! whichever is promoted: at once from a primary stopped in order, or once
 //! every one listed answers again. What it last came to with each is
 //! [`StorageClient::reached`], which every surface shows; and whether each
 //! follows the primary now is [`StorageClient::following`], from the
@@ -301,7 +305,12 @@ impl StorageClient {
 
     /// [`StorageClient::ask_node_by`]'s answer, and the connection it came
     /// on, kept by none yet: what a claim asked ahead holds for its second
-    /// frame (`ahead`).
+    /// frame (`ahead`). One kept from a Storage node that last said it is a
+    /// standby is asked what it is first, as a new one is, and a standby's
+    /// is kept whichever it is: promoted, it serves on it at once, held to
+    /// its epoch, where a new connection's handshake cost some 5 to 8 ms on
+    /// Windows of every write's wait across its primary's stop in order
+    /// (ADR-0056, amendment 2026-11-23).
     fn ask_node_held(
         &self,
         node: &Node,
@@ -309,17 +318,29 @@ impl StorageClient {
         exchanged: Exchange<'_>,
     ) -> Result<(Answer, Connection), Asked> {
         let kept = node.idle.locked().pop();
-        if let Some(mut connection) = kept
-            && let Ok(answer) = exchanged(&mut connection, request)
-        {
-            return Ok((answer, connection));
+        if let Some(mut connection) = kept {
+            let stands = if node.standby.load(Ordering::Relaxed) {
+                self.standing(&mut connection)
+            } else {
+                Ok(())
+            };
+            match node.held(connection, stands) {
+                Ok(mut connection) => {
+                    if let Ok(answer) = exchanged(&mut connection, request) {
+                        return Ok((answer, connection));
+                    }
+                }
+                Err(Asked::Failed(_)) => {}
+                Err(standby) => return Err(standby),
+            }
         }
         let failed = |failure: String| Asked::Failed(failure);
         let tcp = net::connect(node.address.as_str(), Some(self.timeout))
             .map_err(|failure| failed(failure.to_string()))?;
         let mut connection = tls::client_with(&node.host, tcp, Arc::clone(&self.config))
             .map_err(|failure| failed(failure.message))?;
-        self.standing(&mut connection)?;
+        let stands = self.standing(&mut connection);
+        let mut connection = node.held(connection, stands)?;
         let answer =
             exchanged(&mut connection, request).map_err(|failure| failed(failure.to_string()))?;
         Ok((answer, connection))

@@ -1,6 +1,6 @@
 //! Storage nodes of one cluster settling a primary once every one listed
-//! answers, a standby copying it, and the primary gone waited for, never
-//! replaced, each over Xmip's own mutual TLS on loopback.
+//! answers, a standby copying it, and the primary gone without a word
+//! waited for, never replaced, each over Xmip's own mutual TLS on loopback.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -82,6 +82,16 @@ fn started(
     (node, server)
 }
 
+/// The Storage node over `own` started again at `listed[at]`.
+fn again(
+    own: &Own,
+    (listed, at): (&[String], usize),
+    authority: &Authority,
+) -> (Arc<StorageNode>, StorageServer) {
+    let listener = TcpListener::bind(&listed[at]).expect("bound again");
+    started(own, (listener, listed), authority)
+}
+
 /// Two Storage nodes of `listed`, each over its own, both served before
 /// either starts: every one listed answers, and they settle at once.
 fn both_started(
@@ -126,6 +136,24 @@ fn journey(number: u128, body: &[u8]) -> JourneyRecord {
         journey: JourneyId::new(0x0199_0000_0000_7000_8000_0000_0000_0000 + number),
         body: body.to_vec(),
         facts: JourneyFacts::default(),
+    }
+}
+
+/// A Storage node gone as a killed process goes: its server first, so no
+/// connection of its says anything more — no standby is told it stopped,
+/// nor named its successor — then its settling, with no stop in order, so
+/// it keeps no positions. Its databases are as the process left them.
+fn killed((node, server): (Arc<StorageNode>, StorageServer)) {
+    server.stop();
+    node.stopping
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    {
+        let _settling = xcore::lock::Locked::locked(&node.settling);
+        node.settled.notify_all();
+    }
+    let finding = xcore::lock::Locked::locked(&node.finding).take();
+    if let Some(thread) = finding {
+        thread.join().expect("its settling thread");
     }
 }
 
@@ -206,10 +234,10 @@ fn a_standby_is_not_promoted_while_its_primary_is_gone_and_one_is_once_every_one
         .expect("asked")
         .expect("taken");
     let epoch = one.standing().epoch;
-    one.stop();
-    one_server.stop();
+    killed((one, one_server));
 
-    // No witness: the primary gone is waited for, never replaced.
+    // No witness: the primary gone without a word is waited for, never
+    // replaced; one stopped in order hands over (`succession`).
     assert!(
         until(Duration::from_secs(5), || two.is_finding()),
         "{}",
@@ -225,7 +253,8 @@ fn a_standby_is_not_promoted_while_its_primary_is_gone_and_one_is_once_every_one
 
     // The former primary back: every one listed answers, none a primary,
     // and the standby, holding more — the former primary gave up its
-    // positions when promoted — is promoted; the former primary follows.
+    // positions when promoted, and was killed before it kept them again —
+    // is promoted; the former primary follows.
     let listener = TcpListener::bind(&first_address).expect("bound again");
     let (again, again_server) = started(&first, (listener, &listed), &authority);
     assert!(
@@ -342,36 +371,6 @@ fn the_primary_serves_on_while_a_standby_is_gone_and_one_started_empty_is_copied
     one_server.stop();
 }
 
-#[test]
-fn a_standby_serves_no_operation_and_says_whose_standby_it_is() {
-    let authority = Authority::new();
-    let (bound, listed) = listeners(2);
-    let (first, second) = (Own::new(), Own::new());
-    let [(one, one_server), (two, two_server)] =
-        both_started([&first, &second], (bound, &listed), &authority);
-    let refused = two.served().read_journey(journey(1, b"").journey);
-    let Err(crate::PersistError::Standby { reason }) = refused else {
-        panic!("{refused:?}");
-    };
-    assert!(reason.contains(&listed[0]), "{reason}");
-    assert!(
-        two.reaching()
-            .write_journey(&journey(1, b"own work"))
-            .is_ok()
-    );
-    assert!(
-        one.served()
-            .read_journey(journey(1, b"").journey)
-            .expect("read")
-            .is_some(),
-        "a standby's own work reaches its primary"
-    );
-    two.stop();
-    two_server.stop();
-    one.stop();
-    one_server.stop();
-}
-
 mod bootstrap;
 mod due;
 mod following;
@@ -380,7 +379,9 @@ mod interrupted;
 mod membership;
 mod refused;
 mod rolling;
+mod served;
 mod stopped;
+mod succession;
 mod synced;
 mod uncopied;
 mod waited;

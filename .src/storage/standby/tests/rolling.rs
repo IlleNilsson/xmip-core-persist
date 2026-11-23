@@ -5,7 +5,11 @@
 //! node writing all along. Either order ends with one primary, writes
 //! accepted, and every Journey a Storage node answered as written read back;
 //! and a node turning ready as its peer is promoted is never a second
-//! primary of the epoch (ADR-0056, amendment 2026-11-22).
+//! primary of the epoch (ADR-0056, amendment 2026-11-22). A primary stopped
+//! in order hands over to its standby (ADR-0056, amendment 2026-11-23), so
+//! the first restarted is copied whole on its return only where what it
+//! lacks is no longer kept: written past it while it is gone
+//! (`succession.rs` holds the hand-over itself).
 
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -37,16 +41,6 @@ fn held_between_pages(hooks: &Arc<Hooks>, entered: Sender<()>, go: Receiver<()>)
         let _ = entered.send(());
         let _ = go.recv();
     });
-}
-
-/// The Storage node over `own` started again at `listed[at]`.
-fn again(
-    own: &Own,
-    (listed, at): (&[String], usize),
-    authority: &Authority,
-) -> (Arc<StorageNode>, StorageServer) {
-    let listener = TcpListener::bind(&listed[at]).expect("bound again");
-    started(own, (listener, listed), authority)
 }
 
 type Running = Option<(Arc<StorageNode>, StorageServer)>;
@@ -104,13 +98,21 @@ fn rolled(first: usize, meets: Meets) {
     let (stop_writing, gate) = (mpsc::channel(), Arc::new(Mutex::new(())));
     let along = writing((&listed, &authority), (stop_writing.1, Arc::clone(&gate)));
 
-    // The first restarted. A standby is copied whole where its primary no
-    // longer keeps what it lacks: written past it while it is gone.
+    // The first restarted, the primary handing over where it is the one.
+    // A standby is copied whole where its primary no longer keeps what it
+    // lacks: written past it while it is gone.
     let (node, server) = nodes[first].take().expect("running");
     node.stop();
     server.stop();
+    let remaining = running(&nodes, 1 - first);
+    let primary = || remaining.is_primary();
+    assert!(
+        until(Duration::from_secs(5), primary),
+        "{}",
+        remaining.said()
+    );
     let mut away = 0..0;
-    if first == 1 && meets != Meets::Following {
+    if meets != Meets::Following {
         away = 300..500;
         written(&client, away.clone(), &[7; 8 * 1024]);
     }

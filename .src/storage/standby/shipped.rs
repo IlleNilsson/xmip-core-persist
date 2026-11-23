@@ -1,6 +1,7 @@
 //! What a primary sends a standby following it, frame after frame on the
-//! connection the standby asked on, and what a Storage node says of its
-//! standing (`super`).
+//! connection the standby asked on, what the standby it names its successor
+//! as it stops in order answers it on that connection, and what a Storage
+//! node says of its standing (`super`).
 
 use codec::CodecError;
 use codec::cursor::Cursor;
@@ -121,6 +122,43 @@ pub enum Shipped {
     Copied(u8, u64, u64),
     /// The Storage node asked is not the primary, in words.
     Declined(String),
+    /// The primary stopped in order, in its epoch: every write it took was
+    /// handed on, the next of each database numbered as given, and the
+    /// standby at the place given, where one is, succeeds it
+    /// (`super::succession`).
+    Stopped(u64, [u64; DATABASES], Option<u32>),
+}
+
+/// What the standby a primary stopping in order names its successor answers
+/// it (`Shipped::Stopped`): the epoch it kept, durable, to be promoted in,
+/// or why it does not succeed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Succeeding {
+    Kept(u64),
+    Declined(String),
+}
+
+impl Form for Succeeding {
+    fn write(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Kept(epoch) => {
+                out.byte(0);
+                out.u64_be(*epoch);
+            }
+            Self::Declined(reason) => {
+                out.byte(1);
+                field::text(out, reason);
+            }
+        }
+    }
+
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Ok(match cursor.byte()? {
+            0 => Self::Kept(cursor.u64_be()?),
+            1 => Self::Declined(field::read_text(cursor)?),
+            other => return Err(CodecError::new(format!("no answer is numbered {other}"))),
+        })
+    }
 }
 
 fn write_change(out: &mut Vec<u8>, (key, value): &Change) {
@@ -188,6 +226,16 @@ impl Form for Shipped {
                 out.byte(5);
                 field::text(out, reason);
             }
+            Self::Stopped(epoch, next, successor) => {
+                out.byte(6);
+                out.u64_be(*epoch);
+                for next in next {
+                    out.u64_be(*next);
+                }
+                field::optional(out, *successor, |out, place| {
+                    out.u32_be(place);
+                });
+            }
         }
     }
 
@@ -232,6 +280,11 @@ impl Form for Shipped {
             }
             4 => Self::Copied(database(cursor)?, cursor.u64_be()?, cursor.u64_be()?),
             5 => Self::Declined(field::read_text(cursor)?),
+            6 => Self::Stopped(
+                cursor.u64_be()?,
+                [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
+                field::read_optional(cursor, Cursor::u32_be)?,
+            ),
             other => return Err(CodecError::new(format!("no frame is numbered {other}"))),
         })
     }
@@ -254,9 +307,20 @@ mod tests {
             Shipped::Entries(2, vec![(b"k".to_vec(), b"v".to_vec())]),
             Shipped::Copied(0, 12, 15),
             Shipped::Declined("a standby".to_string()),
+            Shipped::Stopped(4, [12, 3, 7], Some(1)),
+            Shipped::Stopped(4, [12, 3, 7], None),
         ];
         for frame in frames {
             assert_eq!(Shipped::from_bytes(&frame.bytes()).expect("read"), frame);
+        }
+        for answer in [
+            Succeeding::Kept(5),
+            Succeeding::Declined("not ready".to_string()),
+        ] {
+            assert_eq!(
+                Succeeding::from_bytes(&answer.bytes()).expect("read"),
+                answer
+            );
         }
         let catching_up = Bootstrap::CatchingUp {
             epoch: 2,

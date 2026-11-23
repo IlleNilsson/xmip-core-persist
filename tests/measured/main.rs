@@ -31,7 +31,12 @@
 //!   where the platform wakes a read blocked on a socket shut, Linux and
 //!   macOS; and a primary handing on a whole copy, stopped with its server,
 //!   within a millisecond beyond the six its stop wakes (`stopped`; open
-//!   problem 94, 2026-11-22).
+//!   problem 94, 2026-11-22);
+//! - a primary stopped in order is succeeded by its standby, serving as the
+//!   primary within a millisecond beyond the two wakes its hand-over makes,
+//!   over a rolling restart of two Storage nodes; and how long a node
+//!   writing all along waits across each stop is measured and printed
+//!   (`succession`; ADR-0056, amendment 2026-11-23).
 //!
 //! Each wake is held as every wait that works as it wakes is, beside a
 //! plain wake measured in the same rounds (`xcore::latency::Rounds`): its
@@ -50,7 +55,9 @@
 #[path = "../../.src/storage/authority.rs"]
 mod authority;
 mod membership;
+mod nodes;
 mod stopped;
+mod succession;
 
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};

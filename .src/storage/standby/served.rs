@@ -42,6 +42,16 @@ impl StorageNode {
         }
     }
 
+    /// Whether it is a standby its primary hands writes to now: it stands by
+    /// a primary, and has been handed a frame on its connection to it — a
+    /// beat, a write or a page — so that primary's stop in order hands over
+    /// to it (`super::succession`). One that stood by and was handed nothing
+    /// yet is not.
+    #[must_use]
+    pub fn is_following(&self) -> bool {
+        matches!(self.held().role, Role::Standby(_)) && self.followed.heard()
+    }
+
     /// Its own databases lent for one operation, while it is the primary
     /// and not stopping: held until the operation ends ([`Lent`]).
     fn lent(self: &Arc<Self>) -> Option<Lent> {
@@ -139,8 +149,13 @@ impl StorageNode {
                 format!("the primary Storage node, epoch {}, {standbys}", held.epoch)
             }
             Role::Standby(primary) => format!(
-                "a standby Storage node of the primary at {primary}, epoch {}, {bootstrap}",
-                held.epoch
+                "a standby Storage node of the primary at {primary}, epoch {}, {bootstrap}{}",
+                held.epoch,
+                if self.followed.heard() {
+                    ""
+                } else {
+                    ", handed nothing yet"
+                }
             ),
         };
         let last = self.last.locked();

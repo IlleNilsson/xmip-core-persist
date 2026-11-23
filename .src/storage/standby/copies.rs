@@ -202,6 +202,13 @@ impl Copies {
         Ok(())
     }
 
+    /// Whether every write of `database` numbered so far is synced, so may
+    /// be handed on.
+    pub(crate) fn all_synced(&self, database: usize) -> bool {
+        let kept = self.kept(database);
+        kept.synced >= kept.next
+    }
+
     /// The write `number` of `database`, its primary's, written to `engine`
     /// with the position it reaches in the same batch, and kept under its
     /// number — a standby's copy, in order.
