@@ -197,7 +197,7 @@ mod tests {
             start: u64::MAX - 2,
             node: node.to_string(),
             roles: "receiving".to_string(),
-            evidence: "declares receiving; offline".to_string(),
+            evidence: "declares receiving; no Node capability".to_string(),
             operate: Some("127.0.0.1:7443".to_string()),
             sync: None,
             storage_place: None,

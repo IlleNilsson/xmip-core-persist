@@ -60,12 +60,6 @@ fn gap(answered: &Answered, began: Instant, until: Option<&Instant>) -> Duration
         .unwrap_or(Duration::MAX)
 }
 
-/// Whether `standby` follows its primary, ready: what the deploy waits for
-/// (`running::activation::readiness`).
-fn following(standby: &StorageNode) -> bool {
-    standby.bootstrap() == Bootstrap::Ready && standby.is_following()
-}
-
 /// Every Journey `answered` as written read back, and every one written
 /// before, `0..before`.
 fn read_back(client: &StorageClient, answered: &Answered, before: u128) {

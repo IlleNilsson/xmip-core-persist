@@ -29,19 +29,21 @@ const PAGE: usize = 256;
 impl StorageNode {
     /// Hand this node's writes to the standby that asked `asked` on
     /// `connection` — the node its certificate names, where it names one,
-    /// from the address it connected from — until it is no longer the
-    /// primary, the standby goes or the node or `server` stops; what
-    /// declines it is said to it.
+    /// from the address it connected from, at `place` among the Storage
+    /// nodes listed as its certificate proves it (`super::proven`) — until
+    /// it is no longer the primary, the standby goes or the node or `server`
+    /// stops; what declines it is said to it.
     pub(crate) fn ship(
         &self,
         connection: &mut (impl Read + Write),
-        asked: &Follow,
+        (asked, place): (&Follow, usize),
         (standby, server): ((Option<&str>, &str), &AtomicBool),
     ) {
         let _shipping = Shipping::of(self);
-        let handed = self.followers.began(standby, (asked.next, asked.place));
+        let at = u32::try_from(place).ok();
+        let handed = self.followers.began(standby, (asked.next, at));
         self.standbys_moved();
-        let shipped = self.shipping(connection, asked, (&handed, server));
+        let shipped = self.shipping(connection, (asked, place), (&handed, server));
         self.followers.ended(&handed);
         self.standbys_moved();
         if let Err(reason) = shipped {
@@ -61,7 +63,7 @@ impl StorageNode {
     fn shipping(
         &self,
         connection: &mut (impl Read + Write),
-        asked: &Follow,
+        (asked, place): (&Follow, usize),
         (handed, server): (&Handed, &AtomicBool),
     ) -> Result<(), String> {
         let epoch = self.held().epoch;
@@ -81,6 +83,11 @@ impl StorageNode {
             handed.reached([1; DATABASES]);
             self.whole(connection, (epoch, handed, server))?
         };
+        // A frame at once, so it is following before this node has a write
+        // to hand it: until 2026-11-24 an idle primary handed a new follower
+        // its first beat a beat later, and its node said it ready that late
+        // (open problem 140).
+        send(connection, &Shipped::Beat(epoch))?;
         loop {
             // What it waits on read first, then whether it stops: a stop
             // drains, then wakes it, so either it sees the stop or the wake
@@ -99,7 +106,7 @@ impl StorageNode {
                 // The node stopped in order, not its server alone: it says
                 // so, and who succeeds it.
                 if drained {
-                    self.hand_over(connection, (asked, next), epoch)?;
+                    self.hand_over(connection, (place, next), epoch)?;
                 }
                 return Ok(());
             }

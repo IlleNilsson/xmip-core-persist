@@ -1,10 +1,12 @@
 //! An engine a test steers: every call handed to the engine beneath, but a
-//! sync held until the test lets it go, a sync, a durable write or a scan
-//! going on from a key failed, a panic once an unsynced write is in, one
-//! unsynced write refused, or a write let in between two pages of a scan,
-//! on demand. How a test stalls the Ledger between a write's answer and its
-//! sync, kills a process there or mid-way through a whole copy, makes the
-//! disk refuse, or writes while a whole copy is read.
+//! sync or a durable write held until the test lets it go, a sync, a
+//! durable write or a scan going on from a key failed, a panic once an
+//! unsynced write is in, one unsynced write refused, or a write let in
+//! between two pages of a scan, on demand; and every sync and durable write
+//! counted. How a test stalls the Ledger between a write's answer and its
+//! sync, stalls a disk past a bound, kills a process there or mid-way
+//! through a whole copy, makes the disk refuse, writes while a whole copy
+//! is read, or counts what a step makes durable.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -23,6 +25,14 @@ pub struct Hooks {
     woken: Condvar,
     /// How many syncs wait now.
     held: AtomicUsize,
+    /// Whether a durable write waits until let go.
+    holding_writes: Mutex<bool>,
+    writes_woken: Condvar,
+    /// How many durable writes wait now.
+    writes_held: AtomicUsize,
+    /// How many syncs and durable writes were asked so far.
+    syncs: AtomicUsize,
+    writes: AtomicUsize,
     failing_syncs: AtomicBool,
     failing_writes: AtomicBool,
     failing_scans: AtomicBool,
@@ -43,6 +53,46 @@ impl Hooks {
     pub fn release_syncs(&self) {
         *self.holding.lock().unwrap_or_else(PoisonError::into_inner) = false;
         self.woken.notify_all();
+    }
+
+    /// Every durable write from now on — a write, a removal, a batch
+    /// applied — waits until [`Hooks::release_writes`]: a disk stalled.
+    pub fn hold_writes(&self) {
+        *self
+            .holding_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = true;
+    }
+
+    /// Every durable write waiting goes on, and none waits from now on.
+    pub fn release_writes(&self) {
+        *self
+            .holding_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        self.writes_woken.notify_all();
+    }
+
+    /// Whether a durable write waits, by `within`.
+    #[must_use]
+    pub fn write_held(&self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        while self.writes_held.load(Ordering::SeqCst) == 0 {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
+    }
+
+    /// How many syncs and how many durable writes were asked so far.
+    #[must_use]
+    pub fn counted(&self) -> (usize, usize) {
+        (
+            self.syncs.load(Ordering::SeqCst),
+            self.writes.load(Ordering::SeqCst),
+        )
     }
 
     /// Every sync from now on fails, or none does: one held fails once let
@@ -94,6 +144,7 @@ impl Hooks {
     }
 
     fn sync(&self) -> Result<(), PersistError> {
+        self.syncs.fetch_add(1, Ordering::SeqCst);
         let holding = self.holding.lock().unwrap_or_else(PoisonError::into_inner);
         self.held.fetch_add(1, Ordering::SeqCst);
         let released = self
@@ -109,6 +160,18 @@ impl Hooks {
     }
 
     fn write(&self) -> Result<(), PersistError> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        let holding = self
+            .holding_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.writes_held.fetch_add(1, Ordering::SeqCst);
+        let released = self
+            .writes_woken
+            .wait_while(holding, |holding| *holding)
+            .unwrap_or_else(PoisonError::into_inner);
+        self.writes_held.fetch_sub(1, Ordering::SeqCst);
+        drop(released);
         if self.failing_writes.load(Ordering::SeqCst) {
             return Err(PersistError::engine("hooked", "the write failed, as told"));
         }

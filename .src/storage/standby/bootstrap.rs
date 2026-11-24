@@ -163,6 +163,7 @@ impl StorageNode {
         batch.push((&key, value.as_deref()));
         self.engines[0].apply(&batch)?;
         *self.bootstrap.locked() = bootstrap;
+        self.tell();
         Ok(())
     }
 

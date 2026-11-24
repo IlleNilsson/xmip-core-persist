@@ -432,20 +432,25 @@ and 9).
   on (the owner, 2026-10-03). A new connection first asks what its Storage
   node is (wire operation 29): a standby is passed over, and so is a primary
   of an epoch before the latest the client met; a standby asked anyway says
-  it is one, and the next is asked. A standby's connection is kept and asked
-  what its node is again before it is used (`client/node.rs`,
-  `Node::held`), and a client told who follows the primary keeps a live one
-  to each, opened on its wait (`client/waiting.rs`), so the standby that
-  succeeds a primary stopped in order is asked at once, with no new
-  handshake, held to its epoch (ADR-0056, amendment 2026-11-23).
+  it is one, and the next is asked; where every one refused, those that
+  said they are standbys are asked once more, so a request asked across a
+  primary's stop in order is answered by its successor, whichever it asked
+  first (ADR-0056, amendment 2026-11-24). A standby's connection is kept and asked
+  what its node is again before it is used (`client/connected.rs`,
+  `Node::held`), and a client told who follows the primary keeps live ones
+  to each, as many as it held to the primary at once, opened on a thread of
+  their own (`client/waiting.rs`), so the standby that
+  succeeds a primary stopped in order is asked at once by every thread, with no new
+  handshake, held to its epoch (ADR-0056, amendments 2026-11-23 and
+  2026-11-24).
   `StorageClient::reached` says what it
   last came to with each — what a node publishes at `<node>/storage` — and
   `StorageClient::following` whether each follows the primary now, from
   the primary's one list: every wait the client asks names, beside what its
   caller waits on, where the primary's count of who follows it stands
   (`Watched::Standbys`), and where that moved it reads the list once (wire
-  operation 47), matched by the place each standby said asking to follow,
-  never by a name, so a standby stopped is shown so as soon as its primary
+  operation 47), matched by the place the primary worked out for each
+  standby from the certificate it proved, never by a name, so a standby stopped is shown so as soon as its primary
   knows, never as what it said when last asked (open problem 95; ADR-0056,
   amendment 2026-11-22). A
   node that is itself the Storage node calls its `Embedded` in process
@@ -464,20 +469,31 @@ and 9).
   killed, its machine lost, cut off — is waited for, never replaced:
   automatic failover returns with a witness (the owner, 2026-11-08). A
   primary stopped in order hands over (`standby/succession.rs`; the owner,
-  2026-11-23; amendment 2026-11-23): every write synced and handed on, each
-  of its connections says it stopped (`Shipped::Stopped`), naming its
-  successor, the first standby handed every write; that standby, ready,
-  holding every write and of its epoch, keeps the next epoch, durable,
-  answers so (`Succeeding::Kept`), and is promoted where every other one
-  listed answers, none is a primary and none other holds that epoch, the
-  primary that handed over not asked — its stop waited for that answer, so
-  started again it never takes itself for the one to promote; a standby
-  told another succeeds rests a beat and follows it. The former primary
+  2026-11-23; amendments 2026-11-23 and 2026-11-24): every write synced and
+  handed on, each of its connections says it stopped (`Shipped::Stopped`),
+  naming its successor, the first standby handed every write, where its
+  stop drained — one an operation outlasted takes no write more and names
+  none; that standby, ready, holding every write and of its epoch, syncs
+  once, keeps the next epoch in one durable write, answers so
+  (`Succeeding::Kept`), and is promoted where every other one listed
+  answers, none is a primary and none other holds that epoch, the primary
+  that handed over not asked once it acknowledged that epoch
+  (`Shipped::Acknowledged`), and asked as every other where it did not; a
+  standby told another succeeds rests a beat and follows it. An operation
+  asked of the stopping primary is held until it handed over, then refused
+  naming its successor, and the successor holds what it is asked from its
+  answer until it serves. Only a Storage node listed follows, by the
+  certificate it proves, the leaf the primary kept as that one presented
+  it, its place the primary's to work out (`standby/proven.rs`). The former primary
   keeps its positions again, so it follows its successor on from where it
   stopped, never copied whole. A standby is following
   (`StorageNode::is_following`) only once its primary has handed it a frame
-  on its connection. Each epoch is written, durable, before a role
-  is taken in it, and a promotion whose epoch cannot be written fails.
+  on its connection, a beat at once where it has no write to hand, and its
+  node is told each change of what it is (`StorageNode::telling`). Each
+  epoch is written, durable, before a role is taken in it, and a promotion
+  whose epoch cannot be written fails; its positions are given up by writes
+  not synced on their own, durable in order with its first sync as the
+  primary.
   `Copied` numbers every write an engine takes, in
   the order taken, into `Copies`, the writes kept for a standby behind; a
   standby asks to follow (wire operation 30) and is handed them in order
@@ -492,8 +508,9 @@ and 9).
   amendments 2026-11-12 and 2026-11-15). `StorageServer::several`
   serves one; `StorageNode::served` refuses every operation while it is not
   the primary (`PersistError::Standby`) — a wait on queues held by no loan,
-  so a primary's stop waits for none, and refused as it stops or steps down,
-  its node's own wait asked again at once of the new primary — and
+  so a primary's stop waits for none, and refused as it steps down or, once
+  its stop has handed over, naming its successor, its node's own wait
+  asked again at once of the new primary — and
   `StorageNode::reaching` is the
   node's own Xmip Storage, its databases while primary and the primary over
   the wire while not. A stop serves nothing more, waits for every operation

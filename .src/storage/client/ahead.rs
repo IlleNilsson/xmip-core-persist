@@ -20,8 +20,9 @@ use xcore::lock::Locked;
 use super::super::durable::Durable;
 use super::super::record::Claim;
 use super::super::wire::{self, Answer, Request};
+use super::connected::standby;
 use super::expected::{claimed, expected};
-use super::{Connection, StorageClient, exchange, standby};
+use super::{Connection, StorageClient, exchange};
 use crate::PersistError;
 
 impl StorageClient {

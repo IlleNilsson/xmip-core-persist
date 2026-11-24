@@ -20,10 +20,12 @@
 //! serve on beside the one promoted, and automatic failover returns with a
 //! witness (the owner, 2026-11-08; ADR-0056, amendment 2026-11-08). **A
 //! primary stopped in order hands over** ([`succession`]; the owner,
-//! 2026-11-23; ADR-0056, amendment 2026-11-23): every write handed on, it
-//! names a standby holding every one its successor, which keeps the next
-//! epoch, says so, and is promoted at once, its stopped primary's hand-over
-//! its answer. Each promotion raises the epoch, and a
+//! 2026-11-23; ADR-0056, amendments 2026-11-23 and 2026-11-24): every write
+//! handed on, its stop drained, it names a standby holding every one its
+//! successor, which keeps the next epoch, says so, and is promoted at once,
+//! its stopped primary not asked once it acknowledged that epoch; only a
+//! Storage node listed follows, by the certificate it proves ([`proven`]).
+//! Each promotion raises the epoch, and a
 //! primary that finds one of a later epoch steps down; a node keeps the
 //! latest epoch it met, and a primary of an earlier one is not asked
 //! (`client`).
@@ -61,12 +63,15 @@
 //! standby is counted, by the node its certificate names ([`followers`]).
 
 mod bootstrap;
+mod copied;
 mod copies;
 mod delegated;
 mod finding;
 mod follow;
 mod followers;
 mod position;
+mod proven;
+mod role;
 mod served;
 mod ship;
 mod shipped;
@@ -74,7 +79,8 @@ mod succession;
 mod timings;
 
 pub use bootstrap::Bootstrap;
-pub use copies::{Behind, Copied, Copies, DATABASES};
+pub use copied::Copied;
+pub use copies::{Behind, Copies, DATABASES};
 pub use delegated::{Delegated, Lent, Now};
 pub use followers::Follower;
 pub use shipped::{Follow, Shipped, Standing, Succeeding};
@@ -83,9 +89,9 @@ pub use timings::{BEAT, KEPT, SILENCE, Timings};
 pub(crate) use position::POSITION;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use xcore::lock::{Locked, ReadWriteLocked};
 use xcore::{Clock, SystemClock};
 
@@ -95,6 +101,7 @@ use super::client::StorageClient;
 use super::embedded::Embedded;
 use super::server::ALPN;
 use crate::{Engine, PersistError};
+use role::{Held, Role, Told};
 
 /// Where a Storage node keeps, in its runtime database, the latest epoch it
 /// met.
@@ -105,21 +112,6 @@ pub type Database = Copied<Arc<dyn Engine>>;
 
 /// A Storage node's databases while it is the primary.
 pub type Primary = Embedded<Database, Database>;
-
-/// What a Storage node is now.
-enum Role {
-    /// Asking the others, before it follows one or is promoted.
-    Finding,
-    /// The primary, and its databases.
-    Primary(Arc<Primary>),
-    /// A standby of the primary at this address.
-    Standby(String),
-}
-
-struct Held {
-    epoch: u64,
-    role: Role,
-}
 
 /// A Storage node of several: primary or standby, as they settle it.
 pub struct StorageNode {
@@ -156,15 +148,34 @@ pub struct StorageNode {
     last: Mutex<Option<String>>,
     /// How many operations its databases are lent to now.
     lent: AtomicUsize,
-    /// Set once a stop has waited for every operation lent: what its
-    /// standbys are handed is then all it wrote.
+    /// Set once a stop has waited for every operation lent, or the bound,
+    /// its databases then taking no write more: what its standbys are
+    /// handed is then all it wrote.
     drained: AtomicBool,
+    /// Set where its stop drained and synced: only then does it name a
+    /// successor (open problem 136).
+    handing: AtomicBool,
+    /// Set once its stop has said who succeeds it, or that none does: until
+    /// then an operation asked of it is held, never refused before its
+    /// successor can take it (open problem 139).
+    handed: AtomicBool,
+    /// Set from its answer that it kept the epoch it succeeds in until it
+    /// serves, or cannot: an operation asked of it meanwhile is held until
+    /// it serves (open problem 139).
+    succeeding: AtomicBool,
     /// How many connections it hands writes on, or refuses to: what a stop
     /// in order waits for, each hand-over said ([`succession`]).
     shipping: AtomicUsize,
     /// The place of the standby it named its successor as it stopped in
     /// order, once named: one, whichever was handed every write first.
     successor: Mutex<Option<u32>>,
+    /// The leaf certificate each Storage node listed presented as it was
+    /// last asked its standing: what one proves itself by to follow
+    /// ([`proven`]).
+    presented: Mutex<Vec<Option<Vec<u8>>>>,
+    /// What it tells each time its standing changes: its node publishes at
+    /// once (open problem 140).
+    telling: Mutex<Option<Told>>,
 }
 
 impl StorageNode {
@@ -253,8 +264,13 @@ impl StorageNode {
             last: Mutex::new(None),
             lent: AtomicUsize::new(0),
             drained: AtomicBool::new(false),
+            handing: AtomicBool::new(false),
+            handed: AtomicBool::new(false),
+            succeeding: AtomicBool::new(false),
             shipping: AtomicUsize::new(0),
             successor: Mutex::new(None),
+            presented: Mutex::new(vec![None; listed.len()]),
+            telling: Mutex::new(None),
         }))
     }
 
@@ -277,23 +293,6 @@ impl StorageNode {
         Ok(())
     }
 
-    /// Wait while `holds`, `most` at the longest: whatever it waits on tells
-    /// `settled` as it changes.
-    fn settle_while(&self, most: Duration, holds: impl Fn() -> bool) {
-        let deadline = Instant::now() + most;
-        let mut settling = self.settling.locked();
-        while holds() {
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            settling = self
-                .settled
-                .wait_timeout(settling, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
-    }
-
     fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
     }
@@ -314,47 +313,6 @@ impl StorageNode {
             Role::Primary(primary) => Some(Arc::clone(primary)),
             _ => None,
         }
-    }
-
-    /// `epoch` written, durable on return, where it is later than the one
-    /// held, and held from then: before any role is taken in it, so a node
-    /// started again never holds an epoch before one it took a role in.
-    ///
-    /// # Errors
-    ///
-    /// Where it could not be written; the epoch held is as it was then.
-    fn keep_epoch(&self, epoch: u64) -> Result<(), PersistError> {
-        if epoch <= self.held().epoch {
-            return Ok(());
-        }
-        self.engines[0].write(EPOCH, &epoch.to_be_bytes())?;
-        let mut held = self.held.write_locked();
-        held.epoch = held.epoch.max(epoch);
-        Ok(())
-    }
-
-    /// `role` held from now, in `epoch`, the epoch kept first where it is
-    /// later than the one kept ([`StorageNode::keep_epoch`]).
-    ///
-    /// # Errors
-    ///
-    /// Where the epoch could not be kept; no role is taken then.
-    fn take_up(&self, role: Role, epoch: u64) -> Result<(), PersistError> {
-        self.keep_epoch(epoch)?;
-        self.stand(role);
-        Ok(())
-    }
-
-    /// `role` held from now, in the epoch held.
-    fn stand(&self, role: Role) {
-        let was = std::mem::replace(&mut self.held.write_locked().role, role);
-        // A primary no more: every wait on its queues refused, so the node
-        // waiting moves to the new primary at once (`super::watch`).
-        if let Role::Primary(primary) = was {
-            primary.refuse_waits("this Storage node is the primary no more");
-        }
-        let _settling = self.settling.locked();
-        self.settled.notify_all();
     }
 
     /// Whether it is the primary now.

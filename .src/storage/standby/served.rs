@@ -20,8 +20,7 @@ struct Lending(Arc<StorageNode>);
 impl Drop for Lending {
     fn drop(&mut self) {
         if self.0.lent.fetch_sub(1, Ordering::SeqCst) == 1 && self.0.stopping() {
-            let _settling = self.0.settling.locked();
-            self.0.settled.notify_all();
+            self.0.notify_settled();
         }
     }
 }
@@ -42,6 +41,28 @@ impl StorageNode {
         }
     }
 
+    /// What it is, as a node or another Storage node asking it is answered:
+    /// a successor between its answer that it kept its epoch and serving
+    /// answers once it serves, or cannot, so a node asking it on the
+    /// connection it kept is answered by the primary it turned into, never
+    /// told it is a standby and failed (open problem 139).
+    #[must_use]
+    pub fn standing_asked(&self) -> Standing {
+        self.held_while_succeeding();
+        self.standing()
+    }
+
+    /// Held while it succeeds its primary, and is not serving yet: from its
+    /// answer that it kept its epoch until it serves or cannot, the silence
+    /// at the most.
+    fn held_while_succeeding(&self) {
+        if self.succeeding.load(Ordering::SeqCst) {
+            self.settle_while(self.timings.silence, || {
+                self.succeeding.load(Ordering::SeqCst) && !self.is_primary()
+            });
+        }
+    }
+
     /// Whether it is a standby its primary hands writes to now: it stands by
     /// a primary, and has been handed a frame on its connection to it — a
     /// beat, a write or a page — so that primary's stop in order hands over
@@ -53,11 +74,20 @@ impl StorageNode {
     }
 
     /// Its own databases lent for one operation, while it is the primary
-    /// and not stopping: held until the operation ends ([`Lent`]).
-    fn lent(self: &Arc<Self>) -> Option<Lent> {
+    /// and not stopping: held until the operation ends ([`Lent`]). Asked of
+    /// a successor not serving yet, it waits until it serves; asked of one
+    /// stopping, it waits until its stop has said who succeeds it, its loan
+    /// given back first so the drain does not wait for it, and is refused
+    /// then, in words naming that one, so the node asks it next and its
+    /// operation is answered, never failed through the drain (open problem
+    /// 139).
+    pub(super) fn lent(self: &Arc<Self>) -> Option<Lent> {
+        self.held_while_succeeding();
         self.lent.fetch_add(1, Ordering::SeqCst);
         let lending = Lending(Arc::clone(self));
         if self.stopping() {
+            drop(lending);
+            self.settle_while(self.timings.silence, || !self.handed.load(Ordering::SeqCst));
             return None;
         }
         let primary = self.primary()?;

@@ -11,7 +11,9 @@
 //! [`RULES`]): a certificate under the anchors proves a caller of the
 //! cluster, and only one that authenticates a server — a node's, never a
 //! person's, which authenticates a client alone (ADR-0034) — asks Xmip
-//! Storage anything, the secrets' operations named apart. A person's
+//! Storage anything, the secrets' operations named apart; and only a
+//! Storage node listed, by the certificate it presents, follows the primary
+//! (`standby::proven`; ADR-0056, amendment 2026-11-24). A person's
 //! certificate, which reaches a node's operate listener, is refused here in
 //! words and its connection closed.
 
@@ -219,8 +221,9 @@ struct Serving {
 }
 
 impl Serving {
-    /// What it is now: a Storage node of several says; one alone is the
-    /// primary of no epoch, and hands its writes to nobody.
+    /// What it is now: a Storage node of several says, once it serves where
+    /// it is succeeding its primary (`StorageNode::standing_asked`); one
+    /// alone is the primary of no epoch, and hands its writes to nobody.
     fn standing(&self) -> Standing {
         self.node.as_ref().map_or(
             Standing {
@@ -231,7 +234,7 @@ impl Serving {
                 next: [1; super::standby::DATABASES],
                 bootstrap: super::standby::Bootstrap::Ready,
             },
-            |node| node.standing(),
+            |node| node.standing_asked(),
         )
     }
 
@@ -304,7 +307,22 @@ fn serve(
             let counted = serving.peers.of(who.as_deref(), standing);
             ((who, standing), counted)
         });
-        if let Err(refused) = plane::admit(who.as_deref(), *standing, request.operation(), RULES) {
+        // Following the primary is a Storage node's alone, proven by the
+        // certificate it presents, never by what it says (open problem 135).
+        let (asking, place) = match (&request, &serving.node) {
+            (Request::Follow(_), Some(node)) => {
+                admitted::storage_node(&watched.guarded, node, *standing)
+            }
+            _ => (*standing, None),
+        };
+        if let Err(refused) = plane::admit(who.as_deref(), asking, request.operation(), RULES) {
+            let refused = match request {
+                Request::Follow(_) => format!(
+                    "{refused}: it is none of the Storage nodes listed, by the certificate it \
+                     proved"
+                ),
+                _ => refused,
+            };
             let _ = wire::send(&mut watched.guarded, &Answer::Failed(refused));
             return;
         }
@@ -313,13 +331,13 @@ fn serve(
             Request::Standing => (Answer::Standing(serving.standing()), None),
             Request::Standbys => (Answer::Standbys(serving.standbys()), None),
             Request::Follow(asked) => {
-                if let Some(node) = &serving.node {
+                if let (Some(node), Some(place)) = (&serving.node, place) {
                     // The standby is the node its certificate names; where it
                     // connected from is evidence (`standby::followers`).
                     let standby = admitted::node(who.as_deref(), *standing);
                     let at = peer.to_string();
                     let standby = (standby.as_deref(), at.as_str());
-                    node.ship(&mut watched.guarded, &asked, (standby, stopping));
+                    node.ship(&mut watched.guarded, (&asked, place), (standby, stopping));
                     return;
                 }
                 let only = "this Storage node is the only one: it hands its writes to none";

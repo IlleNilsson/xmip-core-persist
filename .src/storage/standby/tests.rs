@@ -157,6 +157,40 @@ fn killed((node, server): (Arc<StorageNode>, StorageServer)) {
     }
 }
 
+/// Whether `node` follows its primary, ready: what the deploy waits for
+/// (`running::activation::readiness`).
+fn following(node: &StorageNode) -> bool {
+    node.bootstrap() == Bootstrap::Ready && node.is_following()
+}
+
+/// Two Storage nodes of `listed` over `owns`, bounded by `timings`, both
+/// served before either starts; the first the primary, the second following
+/// it ready, every one of `writes` Journeys copied to it.
+fn settled(
+    owns: [&Own; 2],
+    (mut bound, listed): (Vec<TcpListener>, &[String]),
+    (authority, timings): (&Authority, Timings),
+    writes: u128,
+) -> [(Arc<StorageNode>, StorageServer); 2] {
+    let second = bound.pop().expect("two");
+    let first = bound.pop().expect("one");
+    let one = served_by(owns[0], (first, listed), authority, timings);
+    let two = served_by(owns[1], (second, listed), authority, timings);
+    for (node, _) in [&one, &two] {
+        node.start(Duration::from_secs(5)).expect("started");
+    }
+    assert!(one.0.is_primary(), "{}", one.0.said());
+    let client = client(listed, authority);
+    for number in 0..writes {
+        client
+            .write_journey(&journey(number, b"before"))
+            .expect("written");
+    }
+    let caught_up = || following(&two.0) && two.0.standing().next == one.0.standing().next;
+    assert!(until(Duration::from_secs(5), caught_up), "{}", two.0.said());
+    [one, two]
+}
+
 /// Until `holds`, or `within` passed.
 fn until(within: Duration, holds: impl Fn() -> bool) -> bool {
     let deadline = Instant::now() + within;
@@ -318,63 +352,12 @@ fn a_standby_is_not_promoted_while_its_primary_is_gone_and_one_is_once_every_one
     two_server.stop();
 }
 
-#[test]
-fn the_primary_serves_on_while_a_standby_is_gone_and_one_started_empty_is_copied_whole() {
-    let authority = Authority::new();
-    let (bound, listed) = listeners(2);
-    let (first, second) = (Own::new(), Own::new());
-    let second_address = listed[1].clone();
-    let [(one, one_server), (two, two_server)] =
-        both_started([&first, &second], (bound, &listed), &authority);
-    two.stop();
-    two_server.stop();
-    let client = client(&listed, &authority);
-    for number in 0..20 {
-        client
-            .write_journey(&journey(number, b"early"))
-            .expect("written, the standby gone");
-    }
-    assert!(one.is_primary(), "{}", one.said());
-
-    // The standby replaced by one started empty, late: copied whole.
-    let listener = TcpListener::bind(&second_address).expect("bound again");
-    let (late, late_server) = started(&Own::new(), (listener, &listed), &authority);
-    assert!(!late.is_primary(), "{}", late.said());
-    assert!(
-        until(Duration::from_secs(5), || late.standing().next
-            == one.standing().next),
-        "{} / {}",
-        one.said(),
-        late.said()
-    );
-    assert!(
-        until(Duration::from_secs(5), || late.standing().bootstrap
-            == Bootstrap::Ready),
-        "a whole copy taken, with no write while it was scanned, is ready: {}",
-        late.said()
-    );
-    let read = client.read_journey(journey(7, b"").journey).expect("read");
-    assert_eq!(read.map(|r| r.body), Some(b"early".to_vec()));
-    client
-        .write_journey(&journey(21, b"later"))
-        .expect("written");
-    assert!(
-        until(Duration::from_secs(5), || late.standing().next
-            == one.standing().next),
-        "copied on after the whole copy: {} / {}",
-        one.said(),
-        late.said()
-    );
-    late.stop();
-    late_server.stop();
-    one.stop();
-    one_server.stop();
-}
-
 mod bootstrap;
+mod costs;
 mod due;
 mod following;
 mod handed;
+mod handover;
 mod interrupted;
 mod membership;
 mod refused;

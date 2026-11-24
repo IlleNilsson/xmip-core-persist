@@ -1,7 +1,9 @@
 //! A standby's bootstrap by a whole copy, frame by frame as its primary
 //! sends them (ADR-0056, amendment 2026-11-12): copying, then catching up,
 //! then ready, each state kept across a restart, a catch-up going on only
-//! under its copy's epoch, and a whole copy starting it again.
+//! under its copy's epoch, and a whole copy starting it again; and over
+//! Xmip's own mutual TLS, a standby started empty, late, while its primary
+//! served on without it, copied whole.
 
 use super::*;
 use crate::storage::standby::bootstrap::BOOTSTRAP;
@@ -107,7 +109,6 @@ fn a_whole_copy_is_copying_then_catching_up_then_ready_each_kept_across_a_restar
         epoch: EPOCH,
         history: HISTORY,
         next: [5, 1, 1],
-        place: again.place().and_then(|place| u32::try_from(place).ok()),
     };
     assert_eq!(again.asked(), asked);
     let said = again.said();
@@ -168,4 +169,57 @@ fn a_catch_up_goes_on_only_under_its_copy_s_epoch_and_a_whole_copy_starts_it_aga
     );
     drop(node);
     assert_eq!(over(&own, &authority).standing().epoch, EPOCH + 1);
+}
+
+#[test]
+fn the_primary_serves_on_while_a_standby_is_gone_and_one_started_empty_is_copied_whole() {
+    let authority = Authority::new();
+    let (bound, listed) = listeners(2);
+    let (first, second) = (Own::new(), Own::new());
+    let second_address = listed[1].clone();
+    let [(one, one_server), (two, two_server)] =
+        both_started([&first, &second], (bound, &listed), &authority);
+    two.stop();
+    two_server.stop();
+    let client = client(&listed, &authority);
+    for number in 0..20 {
+        client
+            .write_journey(&journey(number, b"early"))
+            .expect("written, the standby gone");
+    }
+    assert!(one.is_primary(), "{}", one.said());
+
+    // The standby replaced by one started empty, late: copied whole.
+    let listener = TcpListener::bind(&second_address).expect("bound again");
+    let (late, late_server) = started(&Own::new(), (listener, &listed), &authority);
+    assert!(!late.is_primary(), "{}", late.said());
+    assert!(
+        until(Duration::from_secs(5), || late.standing().next
+            == one.standing().next),
+        "{} / {}",
+        one.said(),
+        late.said()
+    );
+    assert!(
+        until(Duration::from_secs(5), || late.standing().bootstrap
+            == Bootstrap::Ready),
+        "a whole copy taken, with no write while it was scanned, is ready: {}",
+        late.said()
+    );
+    let read = client.read_journey(journey(7, b"").journey).expect("read");
+    assert_eq!(read.map(|r| r.body), Some(b"early".to_vec()));
+    client
+        .write_journey(&journey(21, b"later"))
+        .expect("written");
+    assert!(
+        until(Duration::from_secs(5), || late.standing().next
+            == one.standing().next),
+        "copied on after the whole copy: {} / {}",
+        one.said(),
+        late.said()
+    );
+    late.stop();
+    late_server.stop();
+    one.stop();
+    one_server.stop();
 }

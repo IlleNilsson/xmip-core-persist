@@ -114,11 +114,15 @@ impl Followed {
 
 impl StorageNode {
     /// Follow the primary at `address` until it is lost or stops in order:
-    /// how it ended.
+    /// how it ended, each database written since its last sync synced. A
+    /// successor synced them already, so it syncs none again before it
+    /// serves (open problem 141; until 2026-11-24 every database was synced
+    /// again here).
     pub(super) fn follow(&self, address: &str) -> Ended {
-        let followed = self.following(address);
+        let mut taking = Taking::new(self.clock.monotonic_nanos());
+        let followed = self.following(address, &mut taking);
         self.followed.hold(None);
-        let _ = self.synced(&mut [true; DATABASES]);
+        let _ = self.synced(&mut taking.dirty);
         followed.unwrap_or_else(|problem| {
             if !self.stopping() {
                 self.told(&format!("stopped following {address}: {problem}"));
@@ -134,7 +138,7 @@ impl StorageNode {
     /// on a socket shut from another thread only when its peer closes — and
     /// the socket held for the stop to shut, which ends the read at once
     /// where the platform wakes it, Linux and macOS.
-    fn following(&self, address: &str) -> Result<Ended, String> {
+    fn following(&self, address: &str, taking: &mut Taking) -> Result<Ended, String> {
         let mut connection = self.connect(address, self.timings.silence)?;
         // Held before the stop is looked at, so a stop that shuts nothing
         // yet is seen before the first read.
@@ -153,16 +157,19 @@ impl StorageNode {
                 || self.clock.monotonic_nanos(),
             )
         };
-        let mut taking = Taking::new(self.clock.monotonic_nanos());
         while !self.stopping() {
             let frame = wire::receive::<Shipped>(&mut watched)
                 .map_err(|e| format!("heard nothing for {:?}: {e}", self.timings.silence))?
                 .ok_or("the primary ended the connection")?;
-            self.followed.heard.store(true, Ordering::SeqCst);
-            if let Shipped::Stopped(epoch, next, successor) = frame {
-                return Ok(self.succeeding(&mut watched, (epoch, next, successor), &mut taking));
+            // Handed its first frame, it is following: told, so its node
+            // publishes it at once.
+            if !self.followed.heard.swap(true, Ordering::SeqCst) {
+                self.tell();
             }
-            self.take(frame, &mut taking)?;
+            if let Shipped::Stopped(epoch, next, successor) = frame {
+                return Ok(self.succeeding(&mut watched, (epoch, next, successor), taking));
+            }
+            self.take(frame, taking)?;
         }
         Ok(Ended::Lost)
     }
@@ -170,9 +177,9 @@ impl StorageNode {
     /// Where it asks to be followed from: where it is; or nowhere, so it is
     /// copied whole, while it is copying, or while it catches up on a copy
     /// from the primary of another epoch than the one it follows now, whose
-    /// writes from where it is need not be those its pages reflect. With
-    /// it, its place among the Storage nodes listed, which its primary's
-    /// list of who follows it says (`super::followers`).
+    /// writes from where it is need not be those its pages reflect. Its
+    /// place among the Storage nodes listed is its primary's to work out,
+    /// from the certificate it proves (`super::proven`).
     pub(super) fn asked(&self) -> Follow {
         let epoch = self.held().epoch;
         let goes_on = match self.bootstrap() {
@@ -184,7 +191,6 @@ impl StorageNode {
             epoch,
             history: if goes_on { self.copies.history() } else { 0 },
             next: self.copies.next(),
-            place: self.place().and_then(|place| u32::try_from(place).ok()),
         }
     }
 
@@ -246,8 +252,11 @@ impl StorageNode {
             }
             Shipped::Declined(reason) => return Err(format!("declined: {reason}")),
             // Answered on the connection before it is taken: following ends
-            // there (`super::succession`).
+            // there (`super::succession`), the acknowledgment read there too.
             Shipped::Stopped(..) => return Err("the primary stopped in order".to_string()),
+            Shipped::Acknowledged(_) => {
+                return Err("an acknowledgment of an epoch never kept".to_string());
+            }
         }
         let now = self.clock.monotonic_nanos();
         if between(taking.synced, now) >= SYNC {

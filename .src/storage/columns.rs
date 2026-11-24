@@ -424,7 +424,7 @@ mod tests {
             start: 5,
             node: "a node".to_string(),
             roles: "storage".to_string(),
-            evidence: "declares storage; offline".to_string(),
+            evidence: "declares storage; no Node capability".to_string(),
             operate: Some("127.0.0.1:7443".to_string()),
             sync: Some("127.0.0.1:7444".to_string()),
             storage_place: Some(0),

@@ -33,10 +33,10 @@
 //!   within a millisecond beyond the six its stop wakes (`stopped`; open
 //!   problem 94, 2026-11-22);
 //! - a primary stopped in order is succeeded by its standby, serving as the
-//!   primary within a millisecond beyond the two wakes its hand-over makes,
-//!   over a rolling restart of two Storage nodes; and how long a node
-//!   writing all along waits across each stop is measured and printed
-//!   (`succession`; ADR-0056, amendment 2026-11-23).
+//!   primary within a millisecond beyond the four wakes its hand-over makes
+//!   in turn, over a rolling restart of two Storage nodes; and how long a
+//!   node writing all along waits across each stop is measured and printed
+//!   (`succession`; ADR-0056, amendments 2026-11-23 and 2026-11-24).
 //!
 //! Each wake is held as every wait that works as it wakes is, beside a
 //! plain wake measured in the same rounds (`xcore::latency::Rounds`): its

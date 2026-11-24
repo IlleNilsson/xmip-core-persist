@@ -52,7 +52,9 @@ impl StorageNode {
                 }
                 self.stand(Role::Finding);
                 match ended {
-                    Ended::Succeeding(epoch) => self.succeed(epoch, place),
+                    Ended::Succeeding(epoch, acknowledged) => {
+                        self.succeed(epoch, acknowledged.then_some(place));
+                    }
                     Ended::Deferring => self.rest(self.timings.beat),
                     Ended::Lost => {}
                 }
@@ -95,9 +97,11 @@ impl StorageNode {
     /// was — and each keeps the epoch before it asks again, so the one asking
     /// second finds the other's kept: at most one is promoted in an epoch,
     /// with no witness, as every one listed answers (ADR-0056, amendment
-    /// 2026-11-22). The one at `excused`, a primary that stopped in order and
-    /// handed over to it, is not asked: its hand-over is its answer, and its
-    /// stop waited for this epoch to be kept (`super::succession`).
+    /// 2026-11-22). The one at `excused`, a primary that stopped in order,
+    /// handed over to it and acknowledged the epoch it kept, is not asked:
+    /// it read that epoch kept, so started again it can never be promoted in
+    /// it (`super::succession`). One that did not acknowledge it is asked as
+    /// every other (ADR-0056, amendment 2026-11-24).
     ///
     /// # Errors
     ///
@@ -181,7 +185,11 @@ impl StorageNode {
     /// keeping its `[tuning] storage_unwaited` of what none waits on, its
     /// writer its `[tuning] storage_writer_kept` bytes of the records it
     /// writes, and its positions given up, so a copy of another primary
-    /// later starts whole.
+    /// later starts whole. Each position is given up by a write not synced
+    /// on its own: every write is durable in order, so the first it makes
+    /// durable as the primary makes that durable first, and a process gone
+    /// before any holds the databases as its positions say (open problem
+    /// 141; until 2026-11-24 three durable writes one after another).
     ///
     /// # Errors
     ///
@@ -206,7 +214,7 @@ impl StorageNode {
             );
         }
         for engine in &self.engines {
-            engine.remove(POSITION)?;
+            engine.apply_deferred(&[(POSITION, None)])?;
         }
         let opened = |at: usize| {
             let copied = Copied::new(Arc::clone(&self.engines[at]), at, Arc::clone(&self.copies));
@@ -261,7 +269,7 @@ impl StorageNode {
                 let standing = if Some(place) == own {
                     self.standing()
                 } else {
-                    self.ask_standing(address).ok()?
+                    self.ask_standing(place, address).ok()?
                 };
                 Some(Answered {
                     place,
@@ -276,15 +284,20 @@ impl StorageNode {
         answered
     }
 
-    /// What the Storage node at `address` is, asked within the silence: one
-    /// that does not answer by then did not answer. Windows takes about two
-    /// seconds to refuse a connection to a loopback port nobody listens on,
-    /// so a shorter bound is what keeps each round of asking, and the
-    /// settling once every one listed answers again, within the silence.
-    fn ask_standing(&self, address: &str) -> Result<Standing, String> {
+    /// What the Storage node listed at `place`, `address`, is, asked within
+    /// the silence: one that does not answer by then did not answer. The
+    /// certificate it presented, its host checked against `address`, is
+    /// kept as what it proves itself by to follow (`super::proven`).
+    /// Windows takes about two seconds to refuse a connection to a loopback
+    /// port nobody listens on, so a shorter bound is what keeps each round
+    /// of asking, and the settling once every one listed answers again,
+    /// within the silence.
+    fn ask_standing(&self, place: usize, address: &str) -> Result<Standing, String> {
         let mut connection = self.connect(address, self.timings.silence)?;
         wire::send(&mut connection, &Request::Standing).map_err(|e| e.to_string())?;
-        match wire::receive::<Answer>(&mut connection).map_err(|e| e.to_string())? {
+        let answered = wire::receive::<Answer>(&mut connection).map_err(|e| e.to_string())?;
+        self.presented_on(place, &connection);
+        match answered {
             Some(Answer::Standing(standing)) => Ok(standing),
             other => Err(format!("answered {other:?}")),
         }

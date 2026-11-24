@@ -1,7 +1,8 @@
 //! What a primary sends a standby following it, frame after frame on the
 //! connection the standby asked on, what the standby it names its successor
-//! as it stops in order answers it on that connection, and what a Storage
-//! node says of its standing (`super`).
+//! as it stops in order answers it on that connection — and the primary's
+//! acknowledgment of that answer — and what a Storage node says of its
+//! standing (`super`).
 
 use codec::CodecError;
 use codec::cursor::Cursor;
@@ -69,15 +70,15 @@ impl Form for Standing {
 }
 
 /// Where a standby asks to be followed from: the epoch it knows, the
-/// history it holds and the next write of each database; and its place
-/// among the Storage nodes listed, where it found itself among them, by
-/// which every node shows it from its primary's list (`super::followers`).
+/// history it holds and the next write of each database. Its place among
+/// the Storage nodes listed is never its own word: the primary works it out
+/// from the certificate the standby proved (`super::followers`; ADR-0056,
+/// amendment 2026-11-24).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Follow {
     pub epoch: u64,
     pub history: u128,
     pub next: [u64; DATABASES],
-    pub place: Option<u32>,
 }
 
 impl Form for Follow {
@@ -87,9 +88,6 @@ impl Form for Follow {
         for next in self.next {
             out.u64_be(next);
         }
-        field::optional(out, self.place, |out, place| {
-            out.u32_be(place);
-        });
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
@@ -97,7 +95,6 @@ impl Form for Follow {
             epoch: cursor.u64_be()?,
             history: cursor.u128_be()?,
             next: [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
-            place: field::read_optional(cursor, Cursor::u32_be)?,
         })
     }
 }
@@ -127,6 +124,11 @@ pub enum Shipped {
     /// standby at the place given, where one is, succeeds it
     /// (`super::succession`).
     Stopped(u64, [u64; DATABASES], Option<u32>),
+    /// The primary stopped in order read that its successor kept this
+    /// epoch (`Succeeding::Kept`): it can never be promoted in it, so its
+    /// successor need not ask it (`super::succession`; ADR-0056, amendment
+    /// 2026-11-24).
+    Acknowledged(u64),
 }
 
 /// What the standby a primary stopping in order names its successor answers
@@ -236,6 +238,10 @@ impl Form for Shipped {
                     out.u32_be(place);
                 });
             }
+            Self::Acknowledged(epoch) => {
+                out.byte(7);
+                out.u64_be(*epoch);
+            }
         }
     }
 
@@ -285,6 +291,7 @@ impl Form for Shipped {
                 [cursor.u64_be()?, cursor.u64_be()?, cursor.u64_be()?],
                 field::read_optional(cursor, Cursor::u32_be)?,
             ),
+            7 => Self::Acknowledged(cursor.u64_be()?),
             other => return Err(CodecError::new(format!("no frame is numbered {other}"))),
         })
     }
@@ -309,6 +316,7 @@ mod tests {
             Shipped::Declined("a standby".to_string()),
             Shipped::Stopped(4, [12, 3, 7], Some(1)),
             Shipped::Stopped(4, [12, 3, 7], None),
+            Shipped::Acknowledged(5),
         ];
         for frame in frames {
             assert_eq!(Shipped::from_bytes(&frame.bytes()).expect("read"), frame);

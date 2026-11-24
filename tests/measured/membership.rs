@@ -39,8 +39,8 @@ fn start(process: u128, place: usize) -> MemberRecord {
         start: u64::try_from(process).expect("a start"),
         node: scope(place),
         roles: "receiving".to_string(),
-        evidence: "declares receiving; offline; authentication and runtime capability are not \
-                   declared in this record"
+        evidence: "declares receiving; no Node capability; authentication and runtime \
+                   capability are not declared in this record"
             .to_string(),
         operate: Some("127.0.0.1:7443".to_string()),
         sync: None,

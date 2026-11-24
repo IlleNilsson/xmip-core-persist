@@ -45,7 +45,7 @@ fn numbered(process: u128, start: u64, node: &str, stopped: bool) -> MemberRecor
         start,
         node: node.to_string(),
         roles: "receiving".to_string(),
-        evidence: "declares receiving; offline".to_string(),
+        evidence: "declares receiving; no Node capability".to_string(),
         operate: Some("127.0.0.1:7443".to_string()),
         sync: None,
         storage_place: None,

@@ -1,24 +1,31 @@
 //! A primary stopped in order hands over to its standby, which succeeds it
-//! at once (ADR-0056, amendment 2026-11-23), over a rolling restart of two
-//! Storage nodes stopped in turn, each restarted only once the other
-//! follows ready, as the deploy restarts them.
+//! at once (ADR-0056, amendments 2026-11-23 and 2026-11-24), over a rolling
+//! restart of two Storage nodes stopped in turn, each restarted only once
+//! the other follows ready, as the deploy restarts them.
 //!
 //! - **Held**: the standby serves as the primary within a millisecond
-//!   beyond the two wakes the hand-over makes — the primary's shipping from
-//!   its wait, the standby's following from its read — beside a plain wake
-//!   measured in the same rounds, the fastest of five, timed from the
-//!   stop's start; no node asks anything meanwhile.
+//!   beyond the four wakes the hand-over makes, one after another — the
+//!   primary's shipping from its wait, the standby's following from its
+//!   read of the primary's last frame, the primary's from its read of the
+//!   epoch kept, the standby's from its read of that acknowledged — beside
+//!   a plain wake measured in the same rounds, the fastest of five, timed
+//!   from the stop's start; no node asks anything meanwhile. Until
+//!   2026-11-24 two: the primary acknowledged nothing, and a successor
+//!   slower than the silence could be promoted beside a former primary
+//!   come back (open problem 134).
 //! - **Measured, and printed**: how long a node writing all along waits
 //!   across each stop, the longest wait between two of its writes answered
 //!   one after the other from the stop until the next, beside one of its
 //!   writes, and how long the hand-over takes meanwhile. The node has a
 //!   wait under way, as every node has its membership's, so it is told who
-//!   follows the primary and keeps a connection to it (`client::waiting`);
-//!   a second of its threads asking at once opens one, its handshake some
-//!   1.8 ms on Linux and 4 to 8 ms on Windows, and the standby reads its
-//!   primary's last frame up to some 3 ms late while it is opened. Both are
-//!   defects by the millisecond rule, recorded as open problems, not
-//!   bounds.
+//!   follows the primary and keeps as many connections to it as it holds
+//!   to the primary (`client::waiting`); what it asks across the stop is
+//!   held by the primary until it hands over and by its successor until it
+//!   serves, never refused (open problems 139 and 142). Its writer asks at
+//!   once where one is refused, so a refusal would show as a wait. Storage
+//!   on disk, a key store and a third Storage node are measured by the
+//!   root's timing program (`.src/test/measured/switchover.rs`; open
+//!   problem 143).
 //!
 //! Until that day a standby waited for its primary to return, and the
 //! Hyper-V environment's rolling restart of 2026-11-22 failed writes for
@@ -41,8 +48,10 @@ use super::nodes::{Own, Served, listeners, served, timings};
 /// How many primaries are stopped in order, each restarted after.
 const STOPS: usize = 25;
 
-/// The threads a hand-over wakes where a plain wake wakes one.
-const WOKEN: u32 = 2;
+/// The threads a hand-over wakes one after another where a plain wake wakes
+/// one: the primary's shipping, the standby's following, the primary's
+/// hand-over reading the epoch kept, the standby's reading it acknowledged.
+const WOKEN: u32 = 4;
 
 /// How long a test waits for what it waits on.
 const WITHIN: Duration = Duration::from_secs(10);
@@ -124,17 +133,30 @@ fn promoted(node: &Arc<StorageNode>) -> std::thread::JoinHandle<Instant> {
     })
 }
 
+/// What a rolling restart came to: when each stop began and when its former
+/// primary was back, how long its standby took to serve, and a plain wake
+/// measured beside each.
+struct Rolled {
+    stops: Vec<Instant>,
+    backs: Vec<Instant>,
+    took: Vec<Duration>,
+    woke: Vec<Duration>,
+}
+
 /// The rolling restart: `rounds` times the primary of `nodes` stopped in
-/// order once the other follows ready and `ready` holds, and started again;
-/// when each stop began and how long its standby took to serve, a plain
-/// wake measured beside each.
+/// order once the other follows ready and `ready` holds, and started again.
 fn rolled(
     (nodes, owns): (&mut [Option<Served>], &[Own; 2]),
     (listed, authority): (&[String], &Authority),
     ready: &dyn Fn() -> bool,
-) -> (Vec<Instant>, Vec<Duration>, Vec<Duration>) {
+) -> Rolled {
     let plain = PlainWake::start();
-    let (mut stops, mut took, mut woke) = (Vec::new(), Vec::new(), Vec::new());
+    let mut rolled = Rolled {
+        stops: Vec::new(),
+        backs: Vec::new(),
+        took: Vec::new(),
+        woke: Vec::new(),
+    };
     for round in 0..STOPS {
         let primary = usize::from(!nodes[0].as_ref().is_some_and(|(node, _)| node.is_primary()));
         let (node, server) = nodes[primary].take().expect("running");
@@ -146,12 +168,13 @@ fn rolled(
         node.stop();
         let at = watched.join().expect("watched");
         server.stop();
-        stops.push(began);
-        took.push(at - began);
-        woke.push(plain.round().0);
+        rolled.stops.push(began);
+        rolled.took.push(at - began);
+        rolled.woke.push(plain.round().0);
         nodes[primary] = Some(started(&owns[primary], (listed, primary), authority));
+        rolled.backs.push(Instant::now());
     }
-    (stops, took, woke)
+    rolled
 }
 
 #[test]
@@ -164,9 +187,9 @@ fn a_primary_stopped_in_order_is_succeeded_within_a_millisecond_beyond_its_wakes
     for number in 0..500 {
         client.write_journey(&journey(number)).expect("written");
     }
-    let (_, took, woke) = rolled((&mut nodes, &owns), (&listed, &authority), &|| true);
-    let took = spread(WHAT, took).fastest_of_five;
-    let usual = spread("a plain wake beside it", woke).fastest_of_five;
+    let rolled = rolled((&mut nodes, &owns), (&listed, &authority), &|| true);
+    let took = spread(WHAT, rolled.took).fastest_of_five;
+    let usual = spread("a plain wake beside it", rolled.woke).fastest_of_five;
     woke_beside_a_plain_wake(WHAT, took, usual, WOKEN);
     for (node, server) in nodes.into_iter().flatten() {
         node.stop();
@@ -215,19 +238,19 @@ fn a_node_writing_all_along_across_a_rolling_restart_is_measured() {
             answered
         })
     };
-    // A write's own time measured first, over writes enough; then writes
-    // going on before each stop.
+    // A write's own time measured first, over writes enough; then a hundred
+    // writes going on once the standby follows, before each stop, as a
+    // deploy's restart of the next node takes its time: the node keeps its
+    // connections to a standby it is told follows on a thread of its own,
+    // which a stop the moment it follows would race. Until 2026-11-24 the
+    // writes were counted from the stop before, and nearly every stop came
+    // the moment the standby followed.
     assert!(until(|| count.load(Ordering::SeqCst) > 500), "no writes");
-    let mark = AtomicUsize::new(count.load(Ordering::SeqCst));
     let ready = || {
-        let now = count.load(Ordering::SeqCst);
-        let more = now > mark.load(Ordering::SeqCst) + 50;
-        if more {
-            mark.store(now, Ordering::SeqCst);
-        }
-        more
+        let from = count.load(Ordering::SeqCst);
+        until(|| count.load(Ordering::SeqCst) > from + 100)
     };
-    let (stops, took, _) = rolled((&mut nodes, &owns), (&listed, &authority), &ready);
+    let rolled = rolled((&mut nodes, &owns), (&listed, &authority), &ready);
     let from = count.load(Ordering::SeqCst);
     assert!(
         until(|| count.load(Ordering::SeqCst) > from + 50),
@@ -244,10 +267,26 @@ fn a_node_writing_all_along_across_a_rolling_restart_is_measured() {
         let waited = waits.map(|pair| pair[1] - pair[0]).max();
         waited.expect("a write answered after the stop")
     };
+    let Rolled {
+        stops, backs, took, ..
+    } = rolled;
+    // From each stop to the next, as measured until 2026-11-24; and apart,
+    // across the stop until its former primary was back, then from then
+    // until the next stop, while it came back to follow its successor.
     let gaps: Vec<Duration> = stops
         .iter()
         .enumerate()
         .map(|(at, began)| longest(*began, stops.get(at + 1)))
+        .collect();
+    let across: Vec<Duration> = stops
+        .iter()
+        .zip(&backs)
+        .map(|(began, back)| longest(*began, Some(back)))
+        .collect();
+    let after: Vec<Duration> = backs
+        .iter()
+        .enumerate()
+        .map(|(at, back)| longest(*back, stops.get(at + 1)))
         .collect();
     let writes: Vec<Duration> = answered
         .windows(2)
@@ -256,6 +295,11 @@ fn a_node_writing_all_along_across_a_rolling_restart_is_measured() {
         .collect();
     let _printed = spread("a write, one after another", writes);
     let _printed = spread("writes waited across a primary's stop in order", gaps);
+    let _printed = spread(
+        "of it, from the stop until the former primary was back",
+        across,
+    );
+    let _printed = spread("of it, as the former primary came back to follow", after);
     let _printed = spread("the hand-over meanwhile", took);
     for (node, server) in nodes.into_iter().flatten() {
         node.stop();

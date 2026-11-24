@@ -19,6 +19,7 @@
 //! lose, as it would, promoted, over one its primary's process took with it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use xcore::lock::Locked;
@@ -27,7 +28,7 @@ use xcore::wake::Revision;
 
 use super::position::position;
 use crate::encrypted_store::OWN;
-use crate::{BorrowedChange, Change, Engine, Entry, PersistError, borrowed, owned};
+use crate::{Change, Engine, PersistError, borrowed};
 
 /// The databases a Storage node keeps, in every list here: the runtime,
 /// the administration and the audit database.
@@ -90,6 +91,8 @@ pub struct Copies {
     /// How many writes were kept, all databases together: what a standby's
     /// shipping waits on.
     told: Revision,
+    /// Set once its Storage node's stop takes no write more ([`Copies::close`]).
+    closed: AtomicBool,
 }
 
 impl Copies {
@@ -108,6 +111,18 @@ impl Copies {
             }),
             most,
             told: Revision::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    /// No write taken from now on, each refused under its database's lock:
+    /// a stop whose bound an operation outlasted, so nothing that operation
+    /// writes after it is acknowledged that the node's standbys were not
+    /// handed (open problem 136).
+    pub(super) fn close(&self) {
+        for database in 0..DATABASES {
+            let _kept = self.kept(database);
+            self.closed.store(true, Ordering::SeqCst);
         }
     }
 
@@ -152,7 +167,8 @@ impl Copies {
     ///
     /// # Errors
     ///
-    /// The write's own; nothing is kept then.
+    /// The write's own; nothing is kept then. Where its Storage node's stop
+    /// takes no write more, nothing is written.
     pub(crate) fn written(
         &self,
         (database, durable): (usize, bool),
@@ -160,6 +176,11 @@ impl Copies {
         changes: impl FnOnce() -> Vec<Change>,
     ) -> Result<bool, PersistError> {
         let mut kept = self.kept(database);
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(PersistError::Standby {
+                reason: "this Storage node is stopping: it takes no write more".to_string(),
+            });
+        }
         let done = write()?;
         if !done {
             return Ok(false);
@@ -312,94 +333,9 @@ impl Copies {
     }
 }
 
-/// An engine whose every write is numbered and kept in `copies` as it is
-/// written: a Storage node's database as its standbys copy it.
-pub struct Copied<E> {
-    engine: E,
-    database: usize,
-    copies: Arc<Copies>,
-}
-
-impl<E: Engine> Copied<E> {
-    /// `engine`, the database at `database` of [`DATABASES`], kept in
-    /// `copies`.
-    pub fn new(engine: E, database: usize, copies: Arc<Copies>) -> Self {
-        Self {
-            engine,
-            database,
-            copies,
-        }
-    }
-
-    /// `write`, durable on return or not, numbered and kept.
-    fn written(
-        &self,
-        durable: bool,
-        write: impl FnOnce() -> Result<bool, PersistError>,
-        changes: impl FnOnce() -> Vec<Change>,
-    ) -> Result<bool, PersistError> {
-        self.copies
-            .written((self.database, durable), write, changes)
-    }
-}
-
-impl<E: Engine> Engine for Copied<E> {
-    fn engine(&self) -> &'static str {
-        self.engine.engine()
-    }
-
-    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, PersistError> {
-        self.engine.read(key)
-    }
-
-    fn write(&self, key: &[u8], value: &[u8]) -> Result<(), PersistError> {
-        let write = || self.engine.write(key, value).map(|()| true);
-        self.written(true, write, || vec![(key.to_vec(), Some(value.to_vec()))])
-            .map(drop)
-    }
-
-    fn write_new(&self, key: &[u8], value: &[u8]) -> Result<bool, PersistError> {
-        let write = || self.engine.write_new(key, value);
-        self.written(true, write, || vec![(key.to_vec(), Some(value.to_vec()))])
-    }
-
-    fn remove(&self, key: &[u8]) -> Result<(), PersistError> {
-        let write = || self.engine.remove(key).map(|()| true);
-        self.written(true, write, || vec![(key.to_vec(), None)])
-            .map(drop)
-    }
-
-    fn apply(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
-        let write = || self.engine.apply(batch).map(|()| true);
-        self.written(true, write, || owned(batch)).map(drop)
-    }
-
-    fn apply_deferred(&self, batch: &[BorrowedChange<'_>]) -> Result<(), PersistError> {
-        let write = || self.engine.apply_deferred(batch).map(|()| true);
-        self.written(false, write, || owned(batch)).map(drop)
-    }
-
-    fn sync(&self) -> Result<(), PersistError> {
-        self.copies.sync(self.database, &self.engine)
-    }
-
-    fn scan(
-        &self,
-        first: &[u8],
-        last: &[u8],
-        most: usize,
-        reverse: bool,
-    ) -> Result<Vec<Entry>, PersistError> {
-        self.engine.scan(first, last, most, reverse)
-    }
-
-    fn view(&self) -> Result<Box<dyn crate::Reads + '_>, PersistError> {
-        self.engine.view()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::copied::Copied;
     use super::super::position::positioned;
     use super::*;
     use crate::fixture::Memory;

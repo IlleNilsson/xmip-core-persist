@@ -18,17 +18,19 @@
 //! receive timed out (`SO_RCVTIMEO`), asked for claims and Publications
 //! again.
 
+use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use xcore::clock::between;
+use xcore::lock::Locked;
 
 use super::super::standby::Follower;
 use super::super::watch::{Ending, Moved, Position, Waiter};
 use super::super::wire::{Answer, Request};
 use super::expected::expected;
 use super::standbys::Standbys;
-use super::{Connection, StorageClient, exchange, unreachable};
+use super::{Asked, Connection, StorageClient, again, exchange, unreachable};
 use crate::PersistError;
 
 impl StorageClient {
@@ -39,9 +41,10 @@ impl StorageClient {
     /// stopped or renewed. Beside `seen`, each wait names where the
     /// primary's count of who follows it stands (`super::standbys`): where
     /// that moved, the list is read once of the Storage node that told it,
-    /// a connection kept to each standby it lists ([`StorageClient::reach`]),
-    /// and where nothing else moved, the wait is asked again for what is
-    /// left of `bound`.
+    /// connections kept to each standby it lists, as many as this client
+    /// held to that one at once ([`StorageClient::reach`]), and where
+    /// nothing else moved, the wait is asked again for what is left of
+    /// `bound`.
     pub(super) fn waited(
         &self,
         seen: &[Position],
@@ -60,9 +63,10 @@ impl StorageClient {
             };
             if self.standbys.moved_to(at) {
                 let said = self.standbys_of(index);
+                let most = self.nodes[index].most();
                 for follower in said.iter().flat_map(|(_, followers)| followers) {
                     if let Some(place) = follower.place.and_then(|p| usize::try_from(p).ok()) {
-                        self.reach(place);
+                        self.reach(place, most);
                     }
                 }
                 self.standbys.heard(at, said);
@@ -73,19 +77,59 @@ impl StorageClient {
         }
     }
 
-    /// A live connection kept to the Storage node listed at `place`, its
-    /// primary says follows it: what it is asked on the connection kept,
-    /// opened afresh where that one went with a process since restarted —
-    /// here, on the wait, never on a Message's path — and kept though it says
-    /// it is a standby (`Node::held`). So where it succeeds its primary
-    /// stopped in order, the node asks it on it at once, with no new
-    /// handshake (ADR-0056, amendment 2026-11-23): some 1.8 ms on Linux and
-    /// 4 to 8 ms on Windows of every write's wait across that stop.
-    fn reach(&self, place: usize) {
-        if let Some(node) = self.nodes.get(place) {
-            let asked = self.ask_node(node, &Request::Standing);
-            node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
+    /// `most` live connections kept to the Storage node listed at `place`,
+    /// its primary says follows it — as many as this client held to the
+    /// primary at once — on a thread of its own, never
+    /// the wait's nor a Message's: each kept one asked what it is, one that
+    /// went with a process since restarted let go, and new ones opened,
+    /// kept though it says it is a standby (`Node::held`). So where it
+    /// succeeds its primary stopped in order, every thread of the node asks
+    /// it at once, none opening a connection: a full handshake each, some
+    /// 1.8 ms on Linux and 4 to 8 ms on Windows (ADR-0056, amendments
+    /// 2026-11-23 and 2026-11-24; open problem 142). Until 2026-11-24 one
+    /// connection was kept, opened on the wait's thread.
+    fn reach(&self, place: usize, most: usize) {
+        if place >= self.nodes.len() {
+            return;
         }
+        let client = self.pinned_to(place);
+        let _ = std::thread::Builder::new()
+            .name("xmip-storage-reach".to_string())
+            .spawn(move || client.kept_to(place, most.max(1)));
+    }
+
+    /// [`StorageClient::reach`]'s work, on its own thread: what it keeps to
+    /// the Storage node listed at `place` asked what it is, and opened anew
+    /// until it keeps `most`.
+    fn kept_to(&self, place: usize, most: usize) {
+        let node = &self.nodes[place];
+        let kept: Vec<Connection> = std::mem::take(&mut *node.idle.locked());
+        let mut live: Vec<Connection> = kept
+            .into_iter()
+            .filter_map(|mut connection| match self.standing(&mut connection) {
+                Ok(()) | Err(Asked::Standby(_)) => Some(connection),
+                Err(Asked::Failed(_)) => None,
+            })
+            .collect();
+        let mut asked = Ok(());
+        while live.len() < most {
+            match self.opened(node) {
+                Ok((connection, Ok(()))) => {
+                    asked = Ok(());
+                    live.push(connection);
+                }
+                Ok((connection, Err(Asked::Standby(said)))) => {
+                    asked = Err(Asked::Standby(said));
+                    live.push(connection);
+                }
+                Ok((_, Err(failed))) | Err(failed) => {
+                    asked = Err(failed);
+                    break;
+                }
+            }
+        }
+        node.idle.locked().extend(live);
+        node.answered(&asked, self.pass_over, self.clock.monotonic_nanos());
     }
 
     /// Who follows the Storage node listed at `index`, as it says now, and
@@ -111,12 +155,12 @@ impl StorageClient {
         let read = |connection: &mut Connection, request: &Request| {
             awaited(connection, request, (within, self.timeout))
         };
-        let order: Vec<usize> = match self.pinned {
-            Some(index) => vec![index],
-            None => self.turn().collect(),
+        let mut order = match self.pinned {
+            Some(index) => VecDeque::from([(index, false)]),
+            None => self.order(),
         };
         let mut failures = Vec::new();
-        for index in order {
+        while let Some((index, first)) = order.pop_front() {
             if !waiter.ending(self.ending(index, token)) {
                 return Ok((None, Vec::new()));
             }
@@ -135,7 +179,10 @@ impl StorageClient {
                     })?;
                     return Ok((Some(index), moved));
                 }
-                Err(failure) => failures.push(format!("{}: {failure}", node.address)),
+                Err(failure) => {
+                    again(&mut order, (index, first), &failure);
+                    failures.push(format!("{}: {failure}", node.address));
+                }
             }
         }
         Err(unreachable(format!(

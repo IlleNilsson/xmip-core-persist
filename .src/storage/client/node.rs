@@ -1,9 +1,9 @@
 //! One Storage node as a client lists it (`super`): the connections to it
-//! no request is using, until when it is passed over, whether it said it is
-//! a standby, and what it last came to.
+//! no request is using, how many it held at once, until when it is passed
+//! over, whether it said it is a standby, and what it last came to.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use xcore::clock::nanos;
 use xcore::lock::Locked;
@@ -18,10 +18,26 @@ pub(super) struct Node {
     pub(super) address: String,
     pub(super) host: String,
     pub(super) idle: Mutex<Vec<Connection>>,
+    /// How many of its connections requests use now.
+    asking: AtomicUsize,
+    /// The most connections to it held at once, used and idle: as many as
+    /// a client keeps to a standby, so none of its threads opens one as the
+    /// standby succeeds (open problem 142).
+    most: AtomicUsize,
     /// Until when, on the client's monotonic reading.
     passed_over: Mutex<Option<i128>>,
     pub(super) standby: AtomicBool,
     pub(super) last: Mutex<Option<Reached>>,
+}
+
+/// One request's use of a connection to a Storage node, counted while it
+/// lasts.
+pub(super) struct Asking<'a>(&'a Node);
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.asking.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Node {
@@ -41,10 +57,26 @@ impl Node {
                 .trim_end_matches(']')
                 .to_string(),
             idle: Mutex::new(Vec::new()),
+            asking: AtomicUsize::new(0),
+            most: AtomicUsize::new(0),
             passed_over: Mutex::new(None),
             standby: AtomicBool::new(false),
             last: Mutex::new(None),
         })
+    }
+
+    /// A request's use of a connection to it begun, counted beside those
+    /// in use and idle until it ends.
+    pub(super) fn asking(&self) -> Asking<'_> {
+        let asking = self.asking.fetch_add(1, Ordering::Relaxed) + 1;
+        let held = asking + self.idle.locked().len();
+        self.most.fetch_max(held, Ordering::Relaxed);
+        Asking(self)
+    }
+
+    /// The most connections to it held at once.
+    pub(super) fn most(&self) -> usize {
+        self.most.load(Ordering::Relaxed)
     }
 
     /// `connection` to it, where `stands`, what it said it is, lets it be

@@ -17,7 +17,7 @@ fn row(place: usize, storage: Option<usize>) -> MemberRecord {
         start: u64::try_from(place).expect("a start") + 1,
         node: configure::fixture::test_cluster().node_scope(place),
         roles: "storage".to_string(),
-        evidence: "declares storage; offline".to_string(),
+        evidence: "declares storage; no Node capability".to_string(),
         operate: None,
         sync: None,
         storage_place: storage.and_then(|at| u32::try_from(at).ok()),
