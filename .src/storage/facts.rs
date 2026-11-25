@@ -99,13 +99,12 @@ pub struct AuditFacts {
     pub failed: bool,
     /// What the record says, in words, where it says anything.
     pub text: Option<String>,
-    /// Its origin: the program, the machine, the process, the scope the
-    /// process declared it serves, and whether its run is hidden.
+    /// Its origin: the program, the machine, the process and the scope the
+    /// process declared it serves.
     pub program: String,
     pub host: String,
     pub process: u32,
     pub location: Option<String>,
-    pub hidden: bool,
     /// The Message execution it belongs to, where it belongs to one.
     pub execution: Option<u128>,
     pub journey: Option<u128>,
@@ -296,8 +295,8 @@ impl Form for MessageFacts {
 impl Form for AuditFacts {
     fn capacity(&self) -> usize {
         // Its four times and numbers, its count of chunks and its process,
-        // its two flags, three identifiers and three digests.
-        let fixed = 4 * 8 + 2 * 4 + 2 + 3 * ID_MAYBE + 3 * DIGEST;
+        // its flag, three identifiers and three digests.
+        let fixed = 4 * 8 + 2 * 4 + 1 + 3 * ID_MAYBE + 3 * DIGEST;
         let words = [
             &self.action,
             &self.phase,
@@ -334,7 +333,6 @@ impl Form for AuditFacts {
         field::text(out, &self.host);
         out.u32_be(self.process);
         write_text_maybe(out, self.location.as_deref());
-        out.byte(u8::from(self.hidden));
         for id in [self.execution, self.journey, self.message] {
             write_id_maybe(out, id);
         }
@@ -369,7 +367,6 @@ impl Form for AuditFacts {
             host: field::read_text(cursor)?,
             process: cursor.u32_be()?,
             location: read_text_maybe(cursor)?,
-            hidden: cursor.byte()? != 0,
             execution: read_id_maybe(cursor)?,
             journey: read_id_maybe(cursor)?,
             message: read_id_maybe(cursor)?,
@@ -445,7 +442,6 @@ mod tests {
             program: "xmip-service".to_string(),
             host: "a host".to_string(),
             process: 4711,
-            hidden: true,
             artifact_kind: Some("ReceiveLocation".to_string()),
             journey: Some(2),
             node: Some(configure::fixture::test_cluster().node(0).name.clone()),

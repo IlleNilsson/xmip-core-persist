@@ -211,7 +211,6 @@ impl Columned for KeptAudit {
             ("host", Some(text(&facts.host))),
             ("process", Some(count(facts.process))),
             ("location", text_maybe(facts.location.as_ref())),
-            ("hidden", Some(Value::Flag(facts.hidden))),
             ("execution", id(facts.execution)),
             ("journey", id(facts.journey)),
             ("message", id(facts.message)),

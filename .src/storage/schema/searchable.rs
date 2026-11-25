@@ -187,7 +187,6 @@ pub(super) const AUDIT: &[Column] = &[
     column("host", Kind::Text),
     column("process", Kind::Count),
     maybe("location", Kind::Text),
-    column("hidden", Kind::Flag),
     maybe("execution", Kind::Identifier),
     maybe("journey", Kind::Identifier),
     maybe("message", Kind::Identifier),

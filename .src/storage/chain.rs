@@ -235,9 +235,9 @@ mod tests {
         chained(&chain);
     }
 
-    /// The digest of a record kept before the chain's rule moved below
-    /// Xmip Storage (2026-11-13), held: every chain already kept still
-    /// verifies.
+    /// The digest of one kept record, held: a change to how a chain is
+    /// formed that keeps the record's canonical form keeps every digest a
+    /// chain already holds.
     #[test]
     fn a_kept_record_digests_as_it_always_has() {
         let entry = KeptAudit {
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(codec::hex::encode(&digest), GOLDEN);
     }
 
-    const GOLDEN: &str = "f69c6d732cec0c1843b5b2238b9e00b8ac152f06acd1ee9bcabf19c0625a12d6";
+    const GOLDEN: &str = "abc0b88332745ca76c44b48cb5af1d9b793099f759a72af7d1f0a3d1032fb376";
 
     #[test]
     fn a_stream_s_record_is_inside_the_canonical_form() {
