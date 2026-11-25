@@ -8,6 +8,7 @@ use super::super::commit::{DEAD, HELD, JOURNEY, MESSAGE};
 use super::super::dead::Dead;
 use super::super::failed::{FAILED, Failed};
 use super::super::hold::Held;
+use super::super::instance::{INSTANCE, InstanceRecord};
 use super::super::kept_audit::KeptAudit;
 use super::super::membership::{MEMBERSHIP, MemberRecord};
 use super::super::record::{AdministrationRecord, JourneyRecord, MessageRecord};
@@ -31,12 +32,14 @@ pub(super) enum Searched {
     Secret,
     Membership,
     Act,
+    Instance,
 }
 
 impl Searched {
     /// The table records of `kind` in `database` are, where it is one.
     pub(super) fn of(database: Database, kind: &str) -> Option<Self> {
         Some(match (database, kind) {
+            (Database::Runtime, INSTANCE) => Self::Instance,
             (Database::Runtime, JOURNEY) => Self::Journey,
             (Database::Runtime, MESSAGE) => Self::Message,
             (Database::Runtime, HELD) => Self::Held,
@@ -67,6 +70,7 @@ impl Searched {
             Self::Secret => "secret",
             Self::Membership => MEMBERSHIP,
             Self::Act => ACT,
+            Self::Instance => "process_instance",
         }
     }
 
@@ -85,6 +89,7 @@ impl Searched {
             Self::Secret => row::<KeptSecret>(bytes),
             Self::Membership => row::<MemberRecord>(bytes),
             Self::Act => row::<ActRecord>(bytes),
+            Self::Instance => row::<InstanceRecord>(bytes),
         }
     }
 
@@ -108,6 +113,7 @@ impl Searched {
             Self::Secret => stamp::<KeptSecret>(bytes, before, now),
             Self::Membership => stamp::<MemberRecord>(bytes, before, now),
             Self::Act => stamp::<ActRecord>(bytes, before, now),
+            Self::Instance => stamp::<InstanceRecord>(bytes, before, now),
         }
     }
 }

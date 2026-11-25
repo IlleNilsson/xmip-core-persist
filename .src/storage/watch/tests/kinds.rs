@@ -75,6 +75,7 @@ pub(super) fn turned(
                 turns: over + 1,
                 ended,
                 body: Vec::new(),
+                updated_unix_nanos: 0,
             },
             over,
         }],

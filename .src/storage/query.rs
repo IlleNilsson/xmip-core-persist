@@ -76,6 +76,8 @@ pub enum Ask {
         kind: AdministrationKind,
         updated: Span,
     },
+    /// A Work Process's Instances, by when each was last written.
+    InstancesOf { work_process: String },
 }
 
 /// A question, and how many of its answers, in what order.
@@ -136,6 +138,9 @@ impl Ask {
             Self::AdministrationUpdated { .. } => {
                 (Administration, "administration", "administration_updated")
             }
+            Self::InstancesOf { .. } => {
+                (Runtime, "process_instance", "process_instance_work_process")
+            }
         }
     }
 
@@ -169,6 +174,7 @@ impl Ask {
                 artifact: text,
                 occurred: span,
             } => (vec![name(text)], Some(*span)),
+            Self::InstancesOf { work_process } => (vec![name(work_process)], None),
             Self::Held { queue, held: span }
             | Self::DeadMessages {
                 queue,
@@ -262,6 +268,10 @@ impl Form for Ask {
                 kind.write(out);
                 updated.write(out);
             }
+            Self::InstancesOf { work_process } => {
+                out.byte(self.number());
+                field::text(out, work_process);
+            }
             Self::AuditChain { writer, from } => {
                 out.byte(self.number());
                 field::text(out, writer);
@@ -335,6 +345,9 @@ impl Form for Ask {
                 writer: field::read_text(cursor)?,
                 from: cursor.u64_be()?,
             },
+            19 => Self::InstancesOf {
+                work_process: field::read_text(cursor)?,
+            },
             other => return Err(CodecError::new(format!("no question is numbered {other}"))),
         })
     }
@@ -362,6 +375,7 @@ impl Ask {
             Self::AdministrationUpdated { .. } => 16,
             Self::AuditOfStream { .. } => 17,
             Self::AuditChain { .. } => 18,
+            Self::InstancesOf { .. } => 19,
         }
     }
 }
@@ -435,6 +449,9 @@ mod tests {
             Ask::AdministrationUpdated {
                 kind: AdministrationKind::Operator,
                 updated: span,
+            },
+            Ask::InstancesOf {
+                work_process: "Order in parts".to_string(),
             },
         ];
         for ask in asks {

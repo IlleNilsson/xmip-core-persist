@@ -1,4 +1,4 @@
-//! The columns and indexes of the six tables a search reads (proposed
+//! The columns and indexes of the tables a search reads (proposed
 //! 2026-10-09; the owner, the same day: *Store it in the clear*, *All
 //! columns shall be laid out*): every single value of each table's record in
 //! a column of its own, in the clear, beside its sealed body, filled from
@@ -173,6 +173,33 @@ pub(super) const FAILED_MESSAGE: &[Column] = &[
 /// By its place in the index of failed Messages, numbered as every queue is.
 pub(super) const FAILED_MESSAGE_INDEXES: &[Index] =
     &[index(22, "failed_message_place", &["queue", "sequence"])];
+
+/// A Work Process's Instance (`runtime-model.md` section 22): its state
+/// sealed in the body, in `xmip-core-process`'s form, and in the clear its
+/// Work Process, how many turns it has taken, whether it has ended and when
+/// Xmip Storage last wrote it.
+pub(super) const PROCESS_INSTANCE: &[Column] = &[
+    column("instance", Kind::Identifier),
+    column("work_process", Kind::Text),
+    column("turns", Kind::Count),
+    column("ended", Kind::Flag),
+    column("body", Kind::Bytes),
+    column("updated_at", Kind::Time),
+];
+
+/// A key an Instance is correlated by: its identifier, and the Instance's.
+pub(super) const PROCESS_INSTANCE_KEY: &[Column] = &[
+    column("instance_key", Kind::Identifier),
+    column("instance", Kind::Identifier),
+];
+
+/// By its Work Process, newest written last: which Instances each Work
+/// Process has, a page from the newest (open problem 192).
+pub(super) const PROCESS_INSTANCE_INDEXES: &[Index] = &[index(
+    29,
+    "process_instance_work_process",
+    &["work_process", "updated_at"],
+)];
 
 pub(super) const AUDIT: &[Column] = &[
     column("id", Kind::Identifier),

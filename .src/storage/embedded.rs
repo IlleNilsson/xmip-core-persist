@@ -1164,6 +1164,7 @@ mod tests {
             turns,
             ended: false,
             body: vec![u8::try_from(turns).unwrap_or(u8::MAX)],
+            updated_unix_nanos: 0,
         };
         let turn = |hand_on: HandOn, turns: u64| Turn {
             hand_on,
@@ -1183,6 +1184,18 @@ mod tests {
         );
         assert_eq!(node.read_instance(40).expect("read"), Some(instance(1)));
         assert_eq!(node.read_instance_key(50).expect("read"), Some(40));
+        let of = |work_process: &str| {
+            let query = super::super::Query {
+                ask: super::super::Ask::InstancesOf {
+                    work_process: work_process.to_string(),
+                },
+                most: 10,
+                newest_first: true,
+            };
+            node.query(&query).expect("searched")
+        };
+        assert_eq!(of("OrderApproval"), [40], "found by its Work Process");
+        assert_eq!(of("Shipping"), [] as [u128; 0]);
         let stale = turn(leaving(&node, 7, 2, b"stale"), 1);
         assert!(
             !node.turn(&stale).expect("decided"),
@@ -1220,6 +1233,7 @@ mod tests {
                     turns: 1,
                     ended: false,
                     body: Vec::new(),
+                    updated_unix_nanos: 0,
                 },
                 over: 0,
             }],

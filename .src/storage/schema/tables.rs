@@ -1,6 +1,7 @@
 //! Every table of Xmip Storage's three databases, in the order the scripts
 //! make them ([`super::scripts`]).
 
+use super::process_instance::{INSTANCE_KEY_TABLE, INSTANCE_TABLE};
 use super::searchable::{
     ADMINISTRATION, ADMINISTRATION_INDEXES, AUDIT, AUDIT_INDEXES, AUDIT_STREAM,
     AUDIT_STREAM_INDEXES, DEAD_MESSAGE, DEAD_MESSAGE_INDEXES, FAILED_MESSAGE,
@@ -43,7 +44,7 @@ const fn versions(database: Database) -> Table {
 }
 
 /// Every table, in the order the scripts make them.
-pub const TABLES: [Table; 27] = [
+pub const TABLES: [Table; 29] = [
     versions(Database::Runtime),
     Table {
         database: Database::Runtime,
@@ -237,6 +238,8 @@ pub const TABLES: [Table; 27] = [
         unique: &[],
         indexes: &[],
     },
+    INSTANCE_TABLE,
+    INSTANCE_KEY_TABLE,
     Table {
         database: Database::Runtime,
         name: "audit",

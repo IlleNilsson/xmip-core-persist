@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use super::database::Server;
 
 mod dialect;
+mod process_instance;
 mod searchable;
 mod tables;
 mod upgrade;

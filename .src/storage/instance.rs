@@ -9,6 +9,12 @@
 //! - **Instance Key**: each value an Instance is correlated by — its Work
 //!   Process, Correlation and key, named — and the Instance it belongs to.
 //!
+//! The Process Instance table is searched by its Work Process, newest
+//! written first (`process_instance_work_process`; [`super::Ask::InstancesOf`]):
+//! which Instances each Work Process has, as every surface lists them (open
+//! problem 192). When an Instance was last written is Xmip Storage's own
+//! time, set as it writes it.
+//!
 //! Both are written in a hand-on and in nothing else, so an Instance moves
 //! on exactly when the Message that moved it does ([`super::HandOn`]). An
 //! Instance is written only over the turn it was read at: two nodes taking
@@ -27,6 +33,7 @@ use codec::writer::ByteWriter;
 
 use super::commit::Batch;
 use super::hand_on::HandOn;
+use super::row::{Columned, Row, Value};
 use crate::{EncryptedStore, Engine, PersistError};
 
 /// Where the Process Instance table keeps an Instance, by its identifier.
@@ -46,6 +53,9 @@ pub struct InstanceRecord {
     pub ended: bool,
     /// Its state, in `xmip-core-process`'s form.
     pub body: Vec<u8>,
+    /// When Xmip Storage last wrote it, on its own clock: set as it is
+    /// written, whatever its writer said.
+    pub updated_unix_nanos: u64,
 }
 
 /// An Instance written by a hand-on: the record, and the turns the one it
@@ -72,6 +82,7 @@ impl Form for InstanceRecord {
         out.u64_be(self.turns);
         out.byte(u8::from(self.ended));
         field::counted(out, &self.body);
+        out.u64_be(self.updated_unix_nanos);
     }
 
     fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
@@ -81,7 +92,27 @@ impl Form for InstanceRecord {
             turns: cursor.u64_be()?,
             ended: cursor.byte()? != 0,
             body: field::read_counted(cursor)?.to_vec(),
+            updated_unix_nanos: cursor.u64_be()?,
         })
+    }
+}
+
+impl Columned for InstanceRecord {
+    fn id(&self) -> u128 {
+        self.instance
+    }
+
+    fn stamp(&mut self, now: u64, _: Option<&Self>) {
+        self.updated_unix_nanos = now;
+    }
+
+    fn row(&self) -> Row {
+        vec![
+            ("work_process", Some(Value::Text(self.work_process.clone()))),
+            ("turns", Some(Value::Count(self.turns))),
+            ("ended", Some(Value::Flag(self.ended))),
+            ("updated_at", Some(Value::Time(self.updated_unix_nanos))),
+        ]
     }
 }
 
@@ -273,6 +304,7 @@ mod tests {
                 turns: 3,
                 ended: false,
                 body: vec![1, 2, 3],
+                updated_unix_nanos: 11,
             },
             over: 2,
         };

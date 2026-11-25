@@ -287,6 +287,12 @@ and 9).
   chunks, digest and when the Ledger wrote it, in the clear, found by the
   Stream (`Ask::AuditOfStream`) — and its bytes are in `audit_stream_chunk`
   (ADR-0070; the owner, the same day: *the whole shebang goes to audit*).
+  A Work Process Instance is a row of `process_instance` — its Work Process,
+  its turns, whether it has ended and when Xmip Storage last wrote it, in
+  the clear, its state sealed in the body — found by its Work Process, newest
+  written first (`Ask::InstancesOf`, index `process_instance_work_process`;
+  ADR-0066, amendment 2026-11-25), its keys in `instance_key` beside
+  it.
   The writer
   says the values, typed, beside the body (`JourneyFacts`, `MessageFacts`,
   `AuditFacts`; the runtime fills them in one place from its objects); the
