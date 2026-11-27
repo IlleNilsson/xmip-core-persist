@@ -1,8 +1,8 @@
 [package]
 name = "xmip-core-persist"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/IlleNilsson/xmip-core-persist"
 description = "Durable storage for Xmip runtime state, every record encrypted and authenticated before an engine sees it (ADR-0063)."
 
@@ -10,16 +10,8 @@ description = "Durable storage for Xmip runtime state, every record encrypted an
 # A host crate: the engines mount beside this source (ADR-0049).
 path = ".src/lib.rs"
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-too_many_lines = "warn"
-pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
-unwrap_used = "warn"
-expect_used = "allow"
+[lints]
+workspace = true
 
 [dependencies]
 # The identifiers a record is keyed by are the estate's, not this crate's
